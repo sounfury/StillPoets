@@ -1,0 +1,28 @@
+# Local reference docs (pulled from MyGo upstream, do not commit)
+docs/mygo/
+
+# MyGo & build outputs
+.mygo/
+build/
+dist/
+*.ipa
+*.apk
+*.aab
+*.appex
+
+# Local secrets & test configs (NEVER commit real WebDAV credentials)
+.env
+.env.*
+!.env.example
+local.webdav.json
+
+# SQLite local databases
+*.db
+*.db-wal
+*.db-shm
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,18 @@
+{
+  "name": "StillPoets",
+  "slug": "stillpoets",
+  "identifier": "app.stillpoets.client",
+  "version": "0.1.0",
+  "urlSchemes": ["stillpoets"],
+  "ios": {
+    "minimumSystemVersion": "17.0",
+    "orientations": ["portrait"],
+    "infoPlist": {
+      "CFBundleDisplayName": "StillPoets"
+    }
+  },
+  "android": {
+    "minSdk": 26,
+    "splash": "#F7F3E9"
+  }
+}

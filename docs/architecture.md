@@ -1,6 +1,6 @@
 # StillPoets 系统架构设计文档
 
-> **文档状态**：v0.2（V1.0 架构基线已确认，基于 [prd.md](./prd.md)）
+> **文档状态**：v0.3（V1.0 架构与 Per-Device 代次快照同步协议已定稿，基于 [prd.md](./prd.md)）
 > **目标平台**：第一期仅支持 **iOS（iPhone）与 Android（优先适配平板大屏）**；后续可考虑扩展 **Web / PWA**；**明确不做 Windows / macOS 桌面端**
 > **核心技术栈**：**MyGo 纯 Go 原生 UI（`package ui`，Metal / OpenGL ES 渲染，V1.1 复杂页面按需局部混用 WebView）** + SQLite (FTS5) + WebDAV（元数据同步 + 诗集原文件与解析包按需下载）+ 原生双端桌面小组件（WidgetKit / Glance）
 
@@ -11,7 +11,7 @@
 ### 1.1 设计原则
 1. **BYOD 数据私有与零版权风险**：无中心化内容服务器；所有诗集与用户创作数据均保存在用户自己的 WebDAV 目录中，应用仅作为渲染、管理与同步端。
 2. **元数据与内容实体分离（类 Reeden 模式）**：
-   - 多端默认仅同步轻量的**元数据层**（书架索引、收藏夹、诗篇小红心 ❤️、独立句子库、点评书评、阅读进度、主题设置）。
+   - V1.0 多端仅自动同步收敛后的轻量**元数据层**（诗集分组 `groups`、书架索引 `books`、诗篇小红心 ❤️ `favorites`、入口 B 独立句子库 `quotes`、阅读进度与已读诗篇集合 `progress`）；外观主题/字号/小组件规则与自定义字体留在**本机**，V1.1 再扩展批注与统计事件。
    - **诗集正文文件不自动全量拉取**；仅当用户主动点击某本诗集（或主动缓存 / 设为离线阅读）时，才按需从 WebDAV 下载到本地。
 3. **单一逻辑内核（Single Core）**：WebDAV 同步、文件解析、冲突合并、全文检索、小组件快照生成全部下沉到 Go 核心层，UI 层只负责状态消费与排版渲染。
 4. **内外联动一致**：桌面小组件与 App 主界面共享同一套主题 Token 与 Deeplink 协议，确保“外看诗选，内阅全诗”无缝衔接。
@@ -93,10 +93,11 @@ StillPoets/
 │   ├── parser/                    # 导入解析器（V1.0 主力 EPUB + 独立句子；后续扩展 MD/JSON）
 │   ├── storage/                   # SQLite Schema、迁移脚本、FTS5 检索、诗集与自定义字体本地缓存管理
 │   ├── sync/
-│   │   ├── webdav/                # WebDAV 客户端（PROPFIND/MKCOL/GET/PUT/MOVE/防抖/限流重试）
-│   │   ├── protocol.go            # 远端目录规范与 manifest.json 读写
-│   │   ├── merger.go              # 元数据字段级与集合级冲突合并引擎
-│   │   └── downloader.go          # 诗集与自定义字体按需下载调度器（带进度与取消）
+│   │   ├── webdav/                # WebDAV 客户端（PROPFIND/MKCOL/GET/PUT/防重定向降级/Retry-After/限流）
+│   │   ├── protocol.go            # Per-Device 代次快照与 .spbook 编解码、工作区初始化
+│   │   ├── merger.go              # 基于 Lamport 逻辑时钟的字段级确定性合并引擎
+│   │   ├── engine.go              # 串行同步调度、代次发布与回读校验、安全导书上传、旧设备退役
+│   │   └── downloader.go          # 诗集按需下载调度器（带进度、SHA-256 校验与取消）
 │   ├── widget/                    # 小组件候选池筛选、Timeline 快照生成、Deeplink 解析
 │   └── ui/                        # 纯 Go 原生 UI 层（package ui）
 │       ├── theme/                 # 宣纸 / 暗黑 / 磨砂等主题 Token + ui.RegisterFont 字体管理
@@ -121,100 +122,129 @@ StillPoets/
 
 ---
 
-## 4. WebDAV 存储规范与多端同步设计（类 Reeden 架构）
+## 4. WebDAV 存储规范与多端同步设计（Per-Device 代次快照 + 按需下载）
 
-### 4.1 远端目录初始化与命名规范
-用户在设置页输入自己的 WebDAV 服务地址（如 `https://dav.jianguoyun.com/dav/` 或 `https://nas.example.com:5006/dav/`）、用户名、应用密码后：
-1. **默认根目录隔离**：默认在用户输入地址下创建并使用专属子目录 **`StillPoets/`**（高级设置中允许用户修改文件夹名，如 `StillPoets-Dev`）。
-2. **连接验证与自动建库**：点击「验证连接」时：
-   - 先对目标路径执行 `PROPFIND (Depth: 0)` 检测连通性与鉴权。
-   - 若 `<base_url>/StillPoets/` 不存在，自动按层级执行 `MKCOL` 创建目录树；若已存在 `manifest.json`，则自动识别为已有云端书库，引导用户执行首次元数据拉取（而非覆盖）。
+> **设计背景**：WebDAV 本质是无事务、无可靠锁、各家后端行为差异极大的远程文件协议（坚果云严格限流 429，AList/OpenList + 115 挂载点对覆盖式 `MOVE`、`If-Match` 乐观锁与 `ETag` 支持不稳定）。StillPoets 面向单人 2~3 台设备（iPhone + Android 平板）低频读写场景，采用 **「Per-Device 单写者代次快照 + 不可变内容包按需下载」** 架构，彻底消除跨设备并发写冲突与共享清单半同步损坏。
 
-### 4.2 远端目录结构设计
-将「频繁同步的小元数据」与「大体积的诗集内容实体」彻底物理分离：
+### 4.1 V1.0 同步范围红线
+
+| 数据项 | V1.0 是否跨端同步 | 原因与约束 |
+| --- | --- | --- |
+| **诗集内容包**（`parsed.spbook.json.gz` + `cover.webp` + 原始 `.epub`） | ✅ **同步（一次写入，按需下载）** | 不可变对象，天然零冲突；删书仅软删元数据，不自动删远端实体文件（设置页提供手动清理孤儿文件入口，并提示会移除原 EPUB 恢复源）。 |
+| **诗集自定义分组**（`groups`） | ✅ **同步** | 轻量集合，完整支持新建空组、重命名、排序与解散；组解散后引用该组的书自动归入默认「全部诗集」。 |
+| **书架元数据**（`books`） | ✅ **同步** | 字段级版本控制（分组、标星、排序互不覆盖）；`LocalState` 严格不入快照，由本机已下载哈希推导。 |
+| **诗篇精选池 ❤️**（`favorites`） | ✅ **同步** | 按 `(bookId, poemId)` 合并与落库 upsert；收藏开关与金句节选独立版本化。 |
+| **入口 B：独立句子库**（`quotes`） | ✅ **同步** | 纯文本体积小，按 `quoteId` 合并，永久墓碑防复活。 |
+| **阅读进度**（`progress`） | ✅ **同步（续读诗篇 + 完读状态 + 已读 `poemId` 集合）** | 砍掉 `scrollRatio`（受屏幕/字号影响，留在本机）；同步 `readPoemIds` 并集去重，保证双端完读进度一致。 |
+| **主题 / 字号 / 行高 / 小组件配置** | ❌ **仅本机** | 手机与平板的排版和小组件展示诉求天然不同；本地小组件若引用到已删诗集自动回退可用来源。 |
+| **自定义字体文件** | ❌ **V1.0 仅本机导入** | 避免大体积二进制耦合进核心同步状态机；缺失时优雅回退内置字体。 |
+| **批注 / 长书评 / 读诗统计热力图** | ❌ **留到 V1.1** | V1.0 聚焦核心阅读与收藏闭环，收敛复杂度。 |
+
+### 4.2 远端目录初始化与结构规范
+用户在设置页输入 WebDAV 地址、用户名、应用密码后，默认在输入地址下创建隔离目录 **`StillPoets/`**（可自定义）：
+1. 连接验证先执行 `PROPFIND (Depth: 0)` 检测连通性与鉴权，再按层 `MKCOL` 创建 `state/` 与 `books/`（遇 `405`/`301` 须以 `Depth: 0 PROPFIND` 二次确认目标确为集合目录）。
+2. 初始化同时检测 `state/` 是否已有设备快照（提示首次拉取合并）以及根目录是否存在旧版 `manifest.json`（提醒迁移或切换目录，绝不静默覆盖）。
 
 ```text
 <user_webdav_url>/StillPoets/
-├── manifest.json                     # 同步清单（schemaVersion、各元数据文件的 rev/hash/updatedAt）
-├── meta/                             # 【元数据层：所有设备自动同步】
-│   ├── library.json                  # 入口 A：诗集元数据列表（不含正文，含完读状态/完读时间）
-│   ├── quotes.json                   # 入口 B：独立句子库全量数据（体积小，直接随元数据同步）
-│   ├── favorites.json                # 诗篇级精选池 ❤️（含轻量摘录 excerpt，供未下载时预览与小组件展示）
-│   ├── annotations.json              # 单诗微批注 + 诗集长书评
-│   ├── progress.json                 # 阅读进度与完读标记（独立分片，高频切换时单独同步，减少冲突）
-│   ├── stats-YYYY.json               # 按年分片的读诗事件日志（Append-Only，用于热力图/时段占比/作者云）
-│   └── settings.json                 # 主题、排版偏好、小组件规则（严禁包含 WebDAV 密码）
-├── books/                            # 【内容实体层：严格按需下载】
-│   └── <book_id>/
-│       ├── parsed.spbook.json.gz     # 标准化解析后的结构化诗集包（书->篇->节->行，gzip 压缩）
-│       ├── cover.webp                # 缩略封面（小图，书架展示时懒加载）
-│       └── <原文件名>_<随机短ID>.epub  # 默认同步备份原始导入文件（保留原名可读性 + 6~8位随机ID防重名覆盖）
-├── assets/
-│   └── fonts/                        # 用户自定义字体文件（V1.0 支持，按需下载并在阅读器与小组件中加载）
-└── backups/
-    └── meta-YYYYMMDD-HHMMSS.zip      # 自动滚动保留最近 10 份元数据快照，防误删或异常覆盖
+├── state/                            # 【元数据层：每设备单写者，按代次发布】
+│   ├── device_<installA>_12.json.gz  # 设备 A 上一份已验证快照（保底回退）
+│   ├── device_<installA>_13.json.gz  # 设备 A 最新已验证快照
+│   ├── device_<installB>_5.json.gz   # 设备 B 上一份已验证快照
+│   └── device_<installB>_6.json.gz   # 设备 B 最新已验证快照
+└── books/                            # 【内容实体层：不可变，严格按需下载】
+    └── <book_id>/
+        ├── parsed.spbook.json.gz     # 标准化解析后的结构化诗集包（书->篇->节->行，gzip 压缩）
+        ├── cover.webp                # 缩略封面（懒加载，失败降级占位图）
+        └── <原文件名>_<随机短ID>.epub  # 默认同步备份原始导入文件（保留原名可读性 + 6位随机ID防重名）
 ```
 
-> **核心设计亮点：为什么同步 `parsed.spbook.json.gz` 而不仅同步原始 EPUB？**
-> 1. **跨端 ID 强一致**：A 设备导入 EPUB 后在本地解析并生成稳定的 `bookId / poemId / stanzaIndex / lineIndex` 打包上传。B 设备点击下载 `.spbook.json.gz` 后，无需重复跑复杂 EPUB 启发式拆诗算法，确保诗篇小红心 ❤️、阅读进度、单诗点评、小组件高亮行号在所有设备 100% 精准对应。
-> 2. **体积小、秒解析**：纯文本结构化诗集经 gzip 压缩后通常仅几十 KB 到几百 KB，移动端弱网下点击诗集也能亚秒级打开。
+> **核心设计亮点**：
+> 1. **零并发写冲突 + 断电自愈**：每台设备拥有不随系统备份克隆的随机 `installId`，**只写 `state/device_<installId>_<rev>.json.gz`**，绝不触碰其他设备文件；每次提交写新代次 `rev`，**回读校验通过后再清理本设备更早代次，始终保留最近 2 份已验证快照**。即便在关闭原子 `MOVE` 的 AList/115 上中途断网写残最新文件，其他设备也能自动回退读取上一代有效快照。
+> 2. **跨端 ID 强一致的 `.spbook.json.gz`**：A 设备导入 EPUB 本地解析生成稳定 `bookId / poemId / stanzaIndex / lineIndex`；B 设备按需下载后无需重复启发式拆诗，确保 ❤️ 精选、已读集合、小组件高亮行号 100% 精准对应。
 
-### 4.3 按需下载（Lazy Download）完整流程
+### 4.3 同步触发时机与按需下载完整流程
+
+- **触发策略**：前台启动静默拉取 + 关键写操作（导书、分组、句子、点 ❤️、退出阅读页）防抖 **5~10 秒**推送 + 书架/设置页手动同步按钮；同一工作区共用**串行同步锁**（绝不并发发旧请求覆盖新请求）；不做后台保活轮询和翻页实时同步。
+- **安全导书顺序**：本地先持久化待传任务（`pending_uploads` 表），**先上传并回读校验 `parsed.spbook.json.gz` 与原始 `.epub` 可读，再发布包含该书的 `state/` 快照**；另一端如遇网盘写后读延迟导致短暂 404，保留书目并退避重试。
 
 ```mermaid
 sequenceDiagram
     actor User as 用户（设备 B）
     participant UI as Go 原生 UI（书架/阅读器）
-    participant Core as Go 同步与仓储引擎
+    participant Core as Go 同步引擎（串行队列）
     participant DB as 本地 SQLite
     participant DAV as 用户 WebDAV
 
     Note over User,DAV: 阶段一：启动或手动触发「元数据同步」
-    Core->>DAV: GET StillPoets/manifest.json
-    DAV-->>Core: 返回远端各 meta 文件 hash/rev
-    Core->>DAV: 拉取有变更的 meta/*.json
-    Core->>Core: 执行实体级三方合并（含软删除墓碑）
-    Core->>DB: 更新元数据表（书架中新增诗集标记为 local_state = 'remote'）
-    Core->>DAV: 如有本地新变更，原子上传合并后的 meta/*.json 与 manifest.json
-    UI-->>User: 书架立即可见全部诗集（带云端图标）与全部句子/精选
+    Core->>DAV: PROPFIND StillPoets/state/ (Depth: 1)
+    DAV-->>Core: 返回各设备代次快照列表
+    loop 逐台远端设备（单设备错误隔离）
+        Core->>DAV: GET 最新代次 device_<id>_<rev>.json.gz (Accept-Encoding: identity)
+        Core->>Core: 校验体积、gzip EOF、SchemaVersion/InstallID/Rev（损坏则自动回退上一代）
+    end
+    Core->>Core: 内存确定性合并（Lamport 字段级版本 + 永久墓碑 + ReadPoemIDs 并集）
+    Core->>DB: 事务落库元数据（LocalState 由本地已下载哈希动态推导）
+    alt 本机有未发布脏数据
+        Core->>DAV: PUT state/device_<myId>_<nextRev>.json.gz (application/gzip)
+        Core->>DAV: GET 回读校验字节与解压完整性
+        Core->>DAV: DELETE 本设备更早旧代次（保留最近 2 份已验证代次）
+    end
+    UI-->>User: 书架立即可见全部诗集分组、书目、精选与独立句子
 
     Note over User,DAV: 阶段二：用户点击某本未下载的诗集
     User->>UI: 点击诗集《海子诗全集》
     UI->>Core: OpenBook(bookId)
-    Core->>DB: 查询 local_state
-    alt local_state == 'downloaded' 且 contentHash 匹配
-        DB-->>Core: 直接读取本地 poems/stanzas/lines
-        Core-->>UI: 秒开阅读器并恢复阅读进度
-    else local_state == 'remote' 或远端 contentHash 已更新
-        Core-->>UI: 推送事件 book:download_progress (0%..100%)
+    Core->>DB: 对比 local_content_hash 与 content_hash
+    alt 已下载且哈希匹配
+        DB-->>Core: 直接读取本地 poems 表
+        Core-->>UI: 秒开阅读器并恢复续读诗篇与本机滚动位置
+    else 未下载或远端哈希已更新
+        Core-->>UI: 推送下载进度
         Core->>DAV: GET StillPoets/books/<bookId>/parsed.spbook.json.gz
-        DAV-->>Core: 返回压缩诗集包
-        Core->>Core: 校验 SHA-256 哈希并解压解析
-        Core->>DB: 事务写入 poems/stanzas/lines，置 local_state = 'downloaded'
-        Core-->>UI: 返回完整目录与当前阅读进度，进入阅读器
+        Core->>Core: 校验体积、SHA-256、SchemaVersion、BookID 并解压
+        Core->>DB: 事务写入 poems 表并更新 local_content_hash
+        Core-->>UI: 展开完整目录并进入阅读器
     end
 ```
 
-### 4.4 冲突合并策略（借鉴 Reeden 实践）
-为了避免“两台设备离线修改后互相覆盖丢数据”，所有元数据实体统一遵循以下结构与合并规则：
-- **通用字段**：每条记录均包含 `id`（ULID）、`createdAt`、`updatedAt`（UTC 毫秒时间戳）、`deletedAt`（软删除墓碑，可选）、`deviceId`。
-- **分类型合并规则**：
-  | 数据类型 | 存储文件 | 合并策略 | 说明 |
-  | --- | --- | --- | --- |
-  | 诗集元数据 | `meta/library.json` | **按 `bookId` 并集 + 字段级 LWW** | 设备 A 改分类、设备 B 改标星互不覆盖；`contentHash` 变更时自动触发已下载端标记 `stale` |
-  | 独立句子（入口 B） | `meta/quotes.json` | **按 `quoteId` 并集（尽量保留）** | 两端分别新增句子全部保留；同一句修改/软删除按 `updatedAt` 胜出 |
-  | 诗篇精选池 ❤️ | `meta/favorites.json` | **按 `(bookId, poemId)` 状态 LWW** | 点赞/取消点赞记录操作时间戳，保留最新意图 |
-  | 点评与长书评 | `meta/annotations.json` | **按 `annotationId` 并集；同 ID 冲突留副本** | 若同一条长书评在两台设备离线同时编辑，按时间戳主版本胜出，同时生成一条冲突副本标注 `[冲突备份]`，绝不静默丢字 |
-  | 阅读进度 | `meta/progress.json` | **独立文件 + 按 `bookId` LWW** | 类似 Reeden 的「阅读进度单独同步」：打开/退出诗集时可只同步 `progress.json`（极轻量），含完读状态与时间 |
-  | 读诗事件日志 | `meta/stats-YYYY.json` | **按年分片 + 按 `(eventId / day+bookId+poemId)` 并集追加** | 只追加不覆盖，多端读诗记录天然无冲突；历史年份归档后几乎不再变更，避免元数据膨胀 |
+### 4.4 确定性冲突合并规则（Lamport 逻辑时钟）
+彻底放弃依赖设备系统墙钟的时间戳裁决（避免单台设备时钟快偏污染全库），所有可同步变更均使用持久化 **Lamport 逻辑版本 `Version{Counter, InstallID}`**：
+- 本地产生写操作时：`counter = max(localCounter, maxVerifiedRemoteCounter) + 1`；全序比较先比 `Counter`，再按 `InstallID` 字典序决胜，转发他端记录时原样保留原版本。
+- 数学保证：所有集合与字段合并均严格满足**交换律、结合律、幂等性**，与三台以上设备的拉取顺序完全无关。
 
-### 4.5 WebDAV 工程兼容性加固（重点适配 AList/OpenList + 115 挂载点 & 坚果云）
-针对 AList/OpenList（如挂载 115 网盘）、坚果云、Nextcloud、群晖 NAS 等服务的真实差异，WebDAV 客户端内置以下保护：
-1. **原子上传开关（兼容 115 / AList 挂载点）**：支持先 `PUT` 到 `.tmp` 再 `MOVE` 覆盖正式文件；但鉴于部分 AList/OpenList 后端（尤其是 115 网盘挂载点）对覆盖式 `MOVE` 或高频临时文件操作支持不稳定，允许一键关闭原子上传回退为直接 `PUT`，并自动做好文件备份。
-2. **写入防抖与低频合并（防网盘风控）**：不在每次翻页/滑动时立刻发 `PUT`；阅读进度与读诗事件在本地 SQLite 实时落盘，对远端采用防抖批量提交（如退出阅读器、切后台或间隔 30~60s 合并同步一次）。
-3. **自定义 User-Agent 与低并发退避**：默认 `StillPoets/<version>`（可自定义）；默认并发度限制为 2（避免触发坚果云 / 115 的 `429` 频控），遇到 `429 / 503` 自动指数退避重试。
-4. **原始文件名安全清洗**：上传原始 EPUB 采用 `<清洗后的原文件名>_<6位随机ID>.<ext>`（剔除 `/ \ : * ? " < > |` 等非法字符并控制长度），既方便用户在网盘里直接识别书名，又彻底杜绝同名诗集冲突。
-5. **乐观锁与同步前自动快照**：上传前校验远端 `ETag` / `manifest.json` 版本号，若期间已被其他设备修改则先重新拉取合并再提交；每次有破坏性批量变更前在 `backups/` 留存元数据快照。
+| 数据集合 | 合并主键 | 字段级 / 集合级合并策略 | 删除语义 |
+| --- | --- | --- | --- |
+| **诗集分组**（`groups`） | `groupId` | `Name`（`NameVer`）、`SortOrder`（`SortVer`）独立合并 | **永久删除（吸收状态）**；解散后原引用书目归入默认组 |
+| **诗集元数据**（`books`） | `bookId` | 导入内容组（`ContentVer`）与 `GroupID`、`IsStarred`、`SortOrder` 各自独立版本合并；不含 `LocalState` | **永久删除（吸收状态）**，重导使用新 ID；删书后界面一并隐藏其精选/进度 |
+| **诗篇精选池 ❤️**（`favorites`） | `(bookId, poemId)` | `Active`（`ActiveVer`）与节选组 `Excerpt/HighlightLines/IsCustomQuote`（`ExcerptVer`）独立合并；落库按复合键 upsert | 取消保留墓碑，**仅显式重新点亮可恢复**，编辑节选绝不复活收藏 |
+| **独立句子**（`quotes`） | `quoteId` | 正文/出处/标签组（`BodyVer`）与收藏标记（`FavoriteVer`）独立合并 | **永久删除（吸收状态）**，普通编辑绝不复活已删句子 |
+| **阅读进度**（`progress`） | `bookId` | 续读位置 `LastPoemID`（`PositionVer`）与完读状态 `Status/FinishedAt`（`StatusVer`）独立合并，日常翻诗不倒退完读；**`ReadPoemIDs` 按并集去重合并** | 随书目生命周期隐藏；`LocalScrollRatio` 仅留本机 |
+
+### 4.5 WebDAV 工程兼容性加固（AList/OpenList + 115 & 坚果云实操防护）
+1. **默认直接 `PUT` + 代次快照**：不依赖易故障的覆盖式 `MOVE`、`If-Match` 或 `ETag`（仍保留可选 `AtomicUpload` 开关供标准 NAS 使用）。
+2. **安全重定向策略**：严格限制同源且保留 HTTP 方法的重定向，拒绝反代把 `PUT`/`PROPFIND`/`MKCOL` 经 `301`/`302` 降级为 `GET` 造成误报成功，绝不跨域泄露 Basic Auth。
+3. **防止代理透明解压破坏哈希**：所有 `.gz` 上传声明 `Content-Type: application/gzip`，下载强制 `Accept-Encoding: identity` 并禁用 HTTP 客户端自动解压，按原始字节校验 SHA-256 与体积上限。
+4. **低并发与 `Retry-After` 限流退避**：并发信号量（默认 2）覆盖**完整响应体读取生命周期**；遇到 `429 / 502 / 503 / 504` 优先遵守 `Retry-After` 头，辅以有上限指数退避与随机抖动。
+5. **健壮的 `PROPFIND` 解析与 URL 转义**：支持多 `<propstat>` 逐状态过滤（仅采纳 2xx），按 `href` 精确解析直接子项并排除目录自身；`resolveURL` 保留基址原有转义段（如 `%2F`）。
+6. **旧设备安全退役**：V1.0 不按文件年龄自动清理其他设备快照；重装/换机后通过手动「退役旧设备」流程，**先验证现役设备合并后的远端快照可读有效**，再清理旧 `installId` 的快照文件。
+
+### 4.6 诗集解析包（`SPBook`）非诗元素与附属结构规范
+真实诗集 EPUB 除正式诗篇外，常包含译序/导读/后记、跨章脚注/尾注、插图及分辑/题记/落款。为保证小组件抽选纯净、完读统计准确且 `parsed.spbook.json.gz` 保持轻量化，解析器统一遵循以下契约（对应 `internal/domain/models.go`）：
+
+1. **条目类型区分（`Poem.Kind`: `poem` | `prose`）**：
+   - `poem`：正式诗篇，计入 `Book.PoemCount`、完读进度、❤️ 精选与桌面小组件候选池。
+   - `prose`：译序、序言、导读、后记、年表等非诗附文，保留在目录中并以散文段落排版供阅读，**默认不计入完读篇数与小组件候选池**。
+   - 版权页（ISBN/CIP）、HTML 目录页、封面页 HTML 与空白页在解析阶段自动过滤（不入正文主目录）。
+   - 解析器基于标题关键词与文本结构特征给出自动分类，导入预览页允许用户一键微调（例如将散文诗改标为 `poem` 或剔除无用附文）。
+2. **注释抽取与内联（`Poem.Notes []Note`）**：
+   - 自动解析 EPUB `noteref` / `footnote` 锚点（含跨文件尾注章）及诗末附注，将注释文本内联归属到对应诗篇/附文的 `Notes` 数组，并将纯尾注章从主目录剥离。
+   - 阅读器点击行内上标即弹出轻卡片展示（不跳离当前诗），诗末柔和附注；小组件与默认节选自动剥离行内注释标号（如 `[1]` / `①`）。
+3. **图像策略（V1.0 暂不渲染正文插图，预留结构）**：
+   - 书籍封面提取为独立 `cover.webp`；装饰线与出版社 Logo 过滤；带 `alt` 的生僻字小图直接回填文字。
+   - 正文插图**严禁 Base64 写入 `.spbook.json.gz`**；V1.0 仅在 `Poem.Images []ImageRef` 预留路径/图注元数据，暂不打包上传 `media.zip` 或渲染正文插图（留到 V1.1 扩展）。
+4. **诗歌高频附属结构**：
+   - `Section`（分辑/卷名，供目录分组）、`Epigraph`（诗前题记，独立排版不混入首节）、`Colophon`（诗末日期/地点落款，浅灰右对齐且**排除出小组件抽选**）、`SPBook.Translator`（译者）。
 
 ---
 
@@ -224,27 +254,34 @@ sequenceDiagram
 
 ```mermaid
 erDiagram
+    BOOK_GROUPS ||--o{ BOOKS : "诗集归属分组(可选)"
     BOOKS ||--o{ POEMS : "按需下载后填充"
     BOOKS ||--o{ FAVORITE_POEMS : "诗篇级精选 ❤️"
-    BOOKS ||--o{ ANNOTATIONS : "单诗点评/诗集书评"
-    BOOKS ||--o| READING_PROGRESS : "阅读进度与完读"
-    BOOKS ||--o{ READING_EVENTS : "按诗篇读诗轨迹(统计)"
+    BOOKS ||--o{ ANNOTATIONS : "单诗点评/诗集书评(V1.1)"
+    BOOKS ||--o| READING_PROGRESS : "阅读进度/已读集合/完读"
+    BOOKS ||--o{ READING_EVENTS : "按诗篇读诗轨迹(V1.1)"
+
+    BOOK_GROUPS {
+        text id PK "ULID"
+        text name "分组名(独立Lamport版本)"
+        int sort_order "排序(独立Lamport版本)"
+        int deleted "永久删除标记 0/1"
+    }
 
     BOOKS {
         text id PK "ULID"
         text title "诗集名"
         text author "作者"
         text dynasty_or_genre "朝代/流派"
-        text category "自定义分类"
-        int is_starred "诗集级收藏 0/1"
-        int sort_order "自定义排序"
+        text group_id "分组ID(独立Lamport版本)"
+        int is_starred "标星(独立Lamport版本)"
+        int sort_order "排序(独立Lamport版本)"
         text cover_hash "封面哈希"
         text content_hash "parsed.spbook 哈希"
         int content_size "远端包大小(字节)"
         int poem_count "总篇目数"
-        text local_state "remote | downloading | downloaded | stale"
-        int updated_at
-        int deleted_at
+        text local_content_hash "仅本机已落库哈希(推导remote/downloaded/stale)"
+        int deleted "永久删除标记 0/1"
     }
 
     POEMS {
@@ -261,25 +298,24 @@ erDiagram
     FAVORITE_POEMS {
         text id PK
         text book_id FK
-        text poem_id "关联诗篇ID"
+        text poem_id "与book_id构成复合唯一键"
         text poem_title "冗余诗题(未下载时可展示)"
         text author "冗余作者"
-        text excerpt "精选节选片段(供小组件轻量使用)"
+        int active "精选开关(独立ActiveVer)"
+        text excerpt "精选节选(独立ExcerptVer)"
         text highlight_lines "高亮行范围如 3-4"
-        int updated_at
-        int deleted_at
+        int is_custom_quote "是否手动选句 0/1"
     }
 
     QUOTES {
         text id PK "入口 B 独立句子"
-        text content "句子正文"
+        text content "句子正文(BodyVer)"
         text author "作者(可选)"
         text source_book "原书出处(可选)"
         text import_source "reeden | weread | json | manual"
         text tags_json "标签数组"
-        int is_favorite "句子级收藏 0/1"
-        int updated_at
-        int deleted_at
+        int is_favorite "句子级收藏(FavoriteVer)"
+        int deleted "永久删除标记 0/1"
     }
 
     ANNOTATIONS {
@@ -294,12 +330,11 @@ erDiagram
 
     READING_PROGRESS {
         text book_id PK
-        text last_poem_id "上次读到的诗"
-        real scroll_ratio "滚动位置"
-        int read_poem_count "已读去重诗篇数"
-        text status "unread | reading | finished"
-        int finished_at "完读时间戳(自动或手动)"
-        int updated_at
+        text last_poem_id "续读诗篇(PositionVer)"
+        text status "unread | reading | finished(StatusVer)"
+        int finished_at "完读时间戳(StatusVer)"
+        text read_poem_ids_json "跨端并集同步的已读poemId列表"
+        real local_scroll_ratio "仅本机滚动比例(不同步)"
     }
 
     READING_EVENTS {
@@ -359,7 +394,7 @@ erDiagram
    }
    ```
 2. **与「按需下载」的无缝协同**：
-   - 即使某本诗集在当前设备尚未下载正文，只要它的精选诗篇在 `meta/favorites.json` 里带有轻量 `excerpt`，小组件依然可以正常展示该诗句。
+   - 即使某本诗集在当前设备尚未下载正文，只要它的精选诗篇已通过设备快照同步到本地 `favorite_poems` 表（自带轻量 `excerpt`），小组件依然可以正常展示该诗句。
    - 用户点击小组件触发 `stillpoets://poem/<bookId>/<poemId>?lines=4-4` 后：
      - 主 App 通过 `mygo.App.OnOpenURL` 收到路由并驱动 `ui.Router` 跳转。
      - 若该诗集已下载：直接进入整诗页面并短暂高亮第 4 行。
@@ -383,8 +418,8 @@ erDiagram
 1. **凭据与数据分离**：WebDAV 账号密码/应用密码仅存放在设备系统级安全存储（iOS Keychain、Android Keystore），通过 `native/modules/keyring` 读取；绝不落盘到 `settings.json`、SQLite 或日志中。
 2. **传输安全**：默认强制校验 TLS 证书（HTTPS），仅当用户显式勾选「允许局域网 HTTP / 自签名 NAS」时才放行内网明文或自签名证书连接，并在 UI 明确提示风险。
 3. **数据损坏防护**：
-   - 下载诗集包校验 SHA-256，校验失败不覆盖本地有效数据。
-   - 元数据写入先走本地 SQLite 事务 + 远端原子上传，关键变更前自动留存 `backups/` 快照。
+   - 下载诗集包校验体积、SHA-256、SchemaVersion 与 BookID，校验失败不覆盖本地有效数据。
+   - 元数据写入先走本地 SQLite 事务，再按新代次上传到 `state/device_<installId>_<rev>.json.gz` 并回读校验，始终保留最近 2 份已验证代次，损坏自动回退上一代。
 
 ---
 
@@ -392,7 +427,7 @@ erDiagram
 
 | 阶段 | 核心交付物 | 关键验证点 |
 | --- | --- | --- |
-| **Phase 0：骨架与协议固化** | 初始化 MyGo 项目骨架、定义 `.spbook` 与 `meta/*.json` Schema、封装 `internal/sync/webdav` 客户端 | 连接 AList(115) / 坚果云自动建 `StillPoets/` 目录、完成元数据同步、原文件 `<原名>_<随机ID>.epub` 上传与限流重试验证 |
+| **Phase 0：骨架与协议固化** | 初始化 MyGo 项目骨架、定义 `.spbook` 与 Per-Device 代次快照 Schema、实现 `internal/sync`（Lamport 合并引擎 + 安全 WebDAV 客户端） | 连接 AList(115) / 坚果云自动建 `StillPoets/state/` 与 `books/` 目录、完成双端代次快照合并与坏文件回退、原文件 `<原名>_<随机ID>.epub` 上传校验与 `Retry-After` 限流重试验证 |
 | **Phase 1：V1.0 核心阅读与双入口 MVP** | EPUB 解析器 + 入口 B 独立句子库、SQLite + FTS5、书架按需下载状态机、横排沉浸阅读器（上下滑读长诗 + 左右滑切诗 + **自定义字体**）、诗集/诗篇 ❤️ 收藏、**Android 平板大屏双栏适配** | 在 Android 平板真机 + iOS 跑通“导入 EPUB 上传原文件与解析包 -> 另一端仅同步元数据 -> 点击诗集按需下载 -> 左右滑切诗 & 换自定义字体”闭环 |
 | **Phase 2：V1.0 双端基础小组件联动** | `widgetbridge` 原生模块、iOS WidgetKit（小/中号，3 套预设主题 + 自定义字体）、Android Glance 微件（中号）、阅读器手动选句设为本诗金句、`stillpoets://` Deeplink 高亮跳转 | 小组件支持 4 种抽选模式 + 入口 B 数据源 -> 点击唤起 App -> 未下载诗集自动拉取并高亮定位到指定诗行 |
 | **Phase 3：V1.1 批注、统计、卡片与竖排** | 单诗微批注与长书评、数据统计（完读墙/按篇热力图/时段占比/作者云）、高清卡片导出引擎、古诗词竖排阅读（复杂排版页按需局部混用 WebView）、iOS 锁屏/大号小组件；后续按需评估 `mygo build -platform web` | 多端离线编辑书评冲突合并无丢数据；热力图在未下载诗集端可正常下钻展示；小组件与导出卡片主题视觉一致 |

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/json"
 	"encoding/xml"
 	"io"
 	"net/http"
@@ -92,6 +91,11 @@ func TestImportEPUBQuotesAndWidgetTimeline(t *testing.T) {
 	}
 
 	// 切到散页小组件池，校验诗歌节选跳回原诗、独立散句不跳原诗
+	var notifiedPath, notifiedFonts string
+	svc.SetWidgetUpdatedCallback(func(timelinePath, fontsDir string) {
+		notifiedPath = timelinePath
+		notifiedFonts = fontsDir
+	})
 	settings, err := svc.LoadSettings(ctx)
 	if err != nil {
 		t.Fatalf("LoadSettings: %v", err)
@@ -100,14 +104,13 @@ func TestImportEPUBQuotesAndWidgetTimeline(t *testing.T) {
 	if err := svc.SaveSettings(ctx, settings); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
 	}
-
-	rawTL, err := os.ReadFile(svc.WidgetTimelinePath())
-	if err != nil {
-		t.Fatalf("read widget_timeline.json: %v", err)
+	if notifiedPath != svc.WidgetTimelinePath() || notifiedFonts != svc.FontsDir() {
+		t.Fatalf("widget callback mismatch: path=%q fonts=%q", notifiedPath, notifiedFonts)
 	}
-	var tl domain.WidgetTimeline
-	if err := json.Unmarshal(rawTL, &tl); err != nil {
-		t.Fatalf("unmarshal widget_timeline.json: %v", err)
+
+	tl, err := svc.ReadWidgetTimeline()
+	if err != nil {
+		t.Fatalf("ReadWidgetTimeline: %v", err)
 	}
 	if len(tl.Entries) != 3 {
 		t.Fatalf("expected 3 widget entries, got %d", len(tl.Entries))

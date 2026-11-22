@@ -8,6 +8,9 @@ docs/mygo/
 .mygo/
 build/
 dist/
+native/ios/build/
+native/ios/DerivedData/
+native/ios/*.xcodeproj/
 *.ipa
 *.apk
 *.aab

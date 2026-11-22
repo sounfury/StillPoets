@@ -1,7 +1,7 @@
 # StillPoets 开发进展记录
 
 > 最后更新：2026-11-22  
-> 当前阶段：**Phase 1 已提交并完成 Android 真机首包装机，进入真机体验问题记录与打磨阶段**
+> 当前阶段：**Phase 2 双端桌面小组件代码全部就绪（Android 已装机验证；iOS WidgetKit 扩展 + Swift 桥接 + GitHub Actions 企业证书云端打包工作流已落地），待推送触发云端打包实机验证**
 
 ---
 
@@ -13,7 +13,7 @@
 | **Phase 1：V1.0 核心引擎与 V3 原生 UI** | ✅ 已提交（`622121d`） | EPUB 解析、SQLite+FTS5、WebDAV 多端同步引擎、应用编排层、V3 手机/平板自适应原生 UI、全仓单元测试与无头渲染测试通过 |
 | **Android 真机首包验证（OPPO Pad Mini）** | ✅ 已装机运行 | 成功产出 `android/arm64` APK（17.2 MB）并通过 ADB 安装启动 |
 | **Phase 1 真机体验打磨与联调** | 🚧 进行中 | 已开始真机实测并收集交互/动画问题；待完成实机 WebDAV 联调 |
-| **Phase 2：双端原生桌面小组件联动** | ⏳ 待开始 | Android Jetpack Glance 微件 + iOS WidgetKit Extension + `widgetbridge` + Deeplink 高亮跳转 |
+| **Phase 2：双端原生桌面小组件联动** | 🚧 代码已完成，待 iOS 云端实测 | Android 原生 AppWidget + `widgetbridge` 已装机验证；iOS WidgetKit Extension（小/中/大号 + iOS 17 原地换诗）+ Swift Keychain/AppGroup 双通道桥接 + GitHub Actions `macos-latest` 企业签名打包流程已就绪 |
 | **Phase 3：V1.1 扩展功能** | ⏳ 规划中 | 单诗微批注与长书评、完整统计看板（完读墙/热力图/作者云）、高清卡片导出、古诗词竖排 |
 
 ---
@@ -40,23 +40,29 @@
 
 ---
 
-## 三、实机测试已知问题（待后续修复）
+## 三、实机测试已知问题与修复状态
 
-> 以下问题来自 OPPO Pad Mini 真机实测反馈，当前仅记录归档，暂未改动代码：
+> 以下问题来自 OPPO Pad Mini 真机实测反馈：
 
-1. **[交互 / 动效] App 整体动画需要打磨**
-   - 现状：页面切换、弹窗/抽屉展开收起、书架与阅读器切换等缺少平滑自然的过渡动画，交互手感偏生硬。
-   - 预期：补齐关键导航、抽屉/弹层与切诗过渡动效，提升整体阅读沉浸感与跟手度。
-2. **[阅读器 / 手势] 无法左右滑动切换上一首 / 下一首诗**
-   - 现状：当前阅读器仅能通过底部「上一首 / 下一首」按钮切换诗篇，无法在正文区域通过横向滑动手势翻诗。
-   - 预期：在阅读器正文区域支持左右滑动切换上一首/下一首诗（需处理好与长诗纵向滚动以及划句选行模式的冲突边界）。
+1. **[交互 / 动效] App 整体动画打磨 — ✅ 已修复**
+   - 新增统一动效 Token（`internal/ui/theme/motion.go`），确立零过冲纸页弹簧与柔和过渡节奏。
+   - 补齐主导航（书架/统计/我的）淡入微浮过渡、手机端全屏阅读器右侧推入/滑出转场、划选诗行操作条平滑折叠展开、底部云同步胶囊浮现/淡出以及书封/卡片/导航按钮微缩按压反馈。
+   - 将新增菜单、诗集目录、排版 `Aa` 升级为可下拉关闭的原生底部手势抽屉（`mobile.Sheet`，平板居中限宽）；将记散页、散页详情、分组管理、全局检索升级为带遮罩淡入淡出与卡片缩放上浮的动效弹窗。
+2. **[阅读器 / 手势] 左右滑动切换上一首 / 下一首诗 — ✅ 已修复**
+   - 在阅读器正文区域实现 O(1) 窗口化横向跟手翻诗轨道（`internal/ui/views/reader.go`），支持左右滑动跟手切换上一首/下一首诗、首尾橡皮筋阻尼回弹、松手即刻同步顶栏/收藏/页码与已读进度。
+   - 妥善处理手势边界：长诗纵向滚动互不冲突；进入「划选诗行」模式时自动锁定横向切诗防止误翻；点击底栏按钮走平滑滑切，目录远距离跨诗跳转走柔和淡入过渡。
+3. **[手势] 诗集 / 散页手势切换 — ✅ 已修复**
+   - 手机端与平板端均支持横向跟手滑动在「诗集」与「散页」间平滑切换，且顶部下划线指示条随手势进度实时滑移。
+   - 平板端做好双层手势隔离：右栏阅读器横滑专职切诗，左栏书架左滑可切至全宽散页瀑布流、散页右滑回双栏工作区，且不与内部横向分组条/出处筛选条冲突。
 
 ---
 
 ## 四、后续待办队列
 
-- [ ] 修复真机实测问题：补齐阅读器左右滑动切诗手势。
-- [ ] 打磨 App 过渡与交互动画。
-- [ ] 在 OPPO Pad Mini 上完成真实 EPUB 导入、自定义字体切换与 WebDAV（AList / 坚果云）多端同步闭环验证。
-- [ ] 进入 Phase 2：实现 Android Jetpack Glance 中号桌面小组件、`widgetbridge` 原生模块及点击小组件经 `stillpoets://` 唤起 App 高亮原诗。
-- [ ] 规划 iOS / iPadOS WidgetKit Extension 与 macOS 真机签名构建。
+- [x] 修复真机实测问题：补齐阅读器左右滑动切诗手势。
+- [x] 修复真机实测问题：支持诗集 / 散页之间手势切换。
+- [x] 打磨 App 过渡与交互动画。
+- [x] 在 OPPO Pad Mini 上完成真实 EPUB 导入验证。
+- [x] 进入 Phase 2（Android）：实现 Android 原生桌面小组件（`modules/widgetbridge` + `StillPoetsWidgetProvider`）、App 内实时预览与一键添加桌面引导，以及点击小组件经 `stillpoets://` 冷/热启动唤起 App 高亮原诗或展开散页。
+- [x] 进入 Phase 2（iOS）：实现 iOS WidgetKit Extension（`native/ios/StillPoetsWidget/`，支持小/中/大号、3 套主题、小时轮播、iOS 17 原地换诗、`stillpoets://` 高亮直达）、Swift `widgetbridge` 双通道共享（App Group 优先 + 企业通配符证书 Keychain Access Group 互通）与 GitHub Actions `macos-latest` 自动签名打包工作流（`.github/workflows/ios-build.yml`）。
+- [ ] 在 GitHub 仓库配置企业证书 Secrets 并触发 `Build iOS IPA` 工作流，在 iPhone 上实测安装 `.ipa` 及桌面小组件联动；并在 OPPO Pad Mini 上完成 WebDAV（AList / 坚果云）多端同步闭环验证。

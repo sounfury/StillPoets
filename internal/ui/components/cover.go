@@ -37,6 +37,7 @@ func BookCoverCard(c *ui.Context, key, bookID, title, author string, pal theme.P
 	pattern := int(seed/7) % 4
 
 	outer := ui.Column(c.Key(key)).Gap(6).Cursor(ui.CursorPointer)
+	theme.ApplyPressScale(outer, 0.965)
 	outer.Children(func() {
 		cover := ui.Box(c.Key("art")).
 			FillWidth().

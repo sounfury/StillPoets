@@ -57,10 +57,31 @@ func (s *Service) RebuildWidgetTimeline(ctx context.Context) (domain.WidgetTimel
 		Entries:     entries,
 	}
 
-	if err := writeJSONAtomic(filepath.Join(s.dataDir, widgetTimelineFilename), timeline); err != nil {
+	timelinePath := filepath.Join(s.dataDir, widgetTimelineFilename)
+	if err := writeJSONAtomic(timelinePath, timeline); err != nil {
 		return domain.WidgetTimeline{}, fmt.Errorf("app: write widget timeline: %w", err)
 	}
+
+	s.mu.Lock()
+	cb := s.onWidgetUpdated
+	s.mu.Unlock()
+	if cb != nil {
+		cb(timelinePath, s.FontsDir())
+	}
 	return timeline, nil
+}
+
+// ReadWidgetTimeline 读取当前磁盘上已预编译的小组件时间线快照（供 App 内设置页实时预览）。
+func (s *Service) ReadWidgetTimeline() (domain.WidgetTimeline, error) {
+	raw, err := os.ReadFile(s.WidgetTimelinePath())
+	if err != nil {
+		return domain.WidgetTimeline{}, err
+	}
+	var tl domain.WidgetTimeline
+	if err := json.Unmarshal(raw, &tl); err != nil {
+		return domain.WidgetTimeline{}, err
+	}
+	return tl, nil
 }
 
 // WidgetTimelinePath 返回当前数据目录内预编译小组件快照的路径。

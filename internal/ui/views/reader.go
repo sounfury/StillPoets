@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -46,25 +47,164 @@ func (a *AppUI) renderReaderPane(c *ui.Context, pal theme.Palette, isTablet bool
 		// 1. 阅读器顶部工具栏（对应 stillpoets-v3-tablet.png 右侧顶栏）
 		a.renderReaderHeader(c, pal, book, current, isFav, isTablet)
 
-		// 2. 若处于「划选诗行」模式，展示轻量操作条（留作散页 / 设为本诗金句）
+		// 2. 若处于「划选诗行」模式，展示平滑展开的轻量操作条（留作散页 / 设为本诗金句）
 		if a.selectingLines && hasPoem {
 			a.renderSelectionActionBar(c, pal, book, current)
 		}
 
-		// 3. 沉浸式整诗阅读主体
-		ui.Scroll(c.Key("reader-body-scroll")).Grow(1).FillWidth().Children(func() {
-			ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(28, 28, 48, 28).Children(func() {
-				if !hasPoem {
-					ui.Text(c, "该诗集暂无可展示的篇目").FontSize(14).TextColor(pal.TextMuted)
-					return
-				}
-				a.renderPoemContent(c, pal, book, current)
-			})
-		})
+		// 3. 沉浸式整诗阅读主体（支持跟手左右滑动切换上一首/下一首诗，与长诗纵向滚动及划选模式无冲突）
+		a.renderPoemSwipePager(c, pal, book, poems, isTablet)
 
 		// 4. 底部翻诗栏（上一首 / 第 N / M 首 / 下一首）
 		if hasPoem {
 			a.renderReaderFooter(c, pal, book, poems)
+		}
+	})
+}
+
+func (a *AppUI) renderPoemSwipePager(c *ui.Context, pal theme.Palette, book domain.Book, poems []domain.Poem, isTablet bool) {
+	viewport := ui.Box(c.Key("reader-swipe-viewport")).Grow(1).FillWidth().Clip()
+	total := len(poems)
+	if total == 0 {
+		viewport.Children(func() {
+			ui.Column(c).Fill().Center().Padding(28).Children(func() {
+				ui.Text(c, "该诗集暂无可展示的篇目").FontSize(14).TextColor(pal.TextMuted)
+			})
+		})
+		return
+	}
+
+	idx := max(0, min(a.activePoemIdx, total-1))
+	a.activePoemIdx = idx
+
+	width := viewport.Bounds().W
+	if width <= 0 {
+		winW, _ := c.Size()
+		if isTablet {
+			width = max(320, winW-layout.NavRailWidthDIP-layout.MasterPaneWidthDIP)
+		} else {
+			width = max(320, winW)
+		}
+		c.AnimationFrame()
+	}
+
+	// 换书或容器宽度变化时，重新锚定偏移并递增 epoch，避免跨书/旋屏长距离飞跃
+	if a.poemPager.scopeKey != book.ID {
+		a.poemPager.scopeKey = book.ID
+		a.poemPager.width = width
+		a.poemPager.syncedPage = idx
+		a.poemPager.offset = ui.Point{X: -float32(idx) * width}
+		a.poemPager.epoch++
+	} else if math.Abs(float64(a.poemPager.width-width)) > 0.5 {
+		a.poemPager.width = width
+		a.poemPager.offset = ui.Point{X: -float32(idx) * width}
+		a.poemPager.epoch++
+	} else if a.poemPager.syncedPage != idx {
+		// 外部改了目标诗篇：相邻一首平滑滑过去，目录跨多首则轻淡入直达
+		delta := idx - a.poemPager.syncedPage
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta > 1 {
+			a.poemPager.epoch++
+		}
+		a.poemPager.syncedPage = idx
+		a.poemPager.offset = ui.Point{X: -float32(idx) * width}
+	}
+
+	viewport.Children(func() {
+		// 平板外层「诗集 ↔ 散页」拖拽进行中时，暂停内层阅读器横向 Draggable，
+		// 避免右栏随画布平移经过初始触点时触发 MyGo draggableAlong 抢占外层手势。
+		if isTablet && a.shelfDragging {
+			poem := poems[idx]
+			ui.Scroll(c.Key("poem-scroll-"+poem.ID)).Fill().Children(func() {
+				ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(28, 28, 48, 28).Children(func() {
+					a.renderPoemContent(c, pal, book, poem, true)
+				})
+			})
+			return
+		}
+
+		// 划选诗行模式下锁定横向滑切，防止点按/微拖选行误翻页；
+		// 同时在平板双栏模式下拦截右栏横向手势，避免误触发外层「诗集/散页」切换。
+		if a.selectingLines {
+			lockOffset := ui.Point{}
+			locked := ui.Box(c.Key("poem-selecting-lock")).Fill().Draggable(&lockOffset, ui.DraggableOptions{
+				Axis:   ui.Horizontal,
+				Bounds: &ui.Rect{X: 0, W: 0},
+				Rigid:  true,
+			})
+			locked.Children(func() {
+				poem := poems[idx]
+				ui.Scroll(c.Key("poem-scroll-"+poem.ID)).Fill().Children(func() {
+					ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(28, 28, 48, 28).Children(func() {
+						a.renderPoemContent(c, pal, book, poem, true)
+					})
+				})
+			})
+			return
+		}
+
+		trackKey := fmt.Sprintf("poem-track-%s-%d", book.ID, a.poemPager.epoch)
+		track := ui.Box(c.Key(trackKey)).
+			Absolute().
+			Left(0).Top(0).Bottom(0).
+			Width(width * float32(total)).
+			Transition(theme.PoemJumpTransition())
+
+		curIdx := idx
+		startX := -float32(curIdx) * width
+		threshold := min(width*0.26, 140)
+		track.Draggable(&a.poemPager.offset, ui.DraggableOptions{
+			Axis:      ui.Horizontal,
+			Bounds:    &ui.Rect{X: -float32(total-1) * width, W: float32(total-1) * width},
+			Animation: theme.PageSpring,
+			Snap: func(p ui.Point) ui.Point {
+				// 方向性翻页阈值（兼顾平板宽栏轻划手感与短距离防误触回弹），单次最多切一首
+				to := curIdx
+				delta := p.X - startX
+				switch {
+				case delta < -threshold && curIdx+1 < total:
+					to = curIdx + 1
+				case delta > threshold && curIdx > 0:
+					to = curIdx - 1
+				}
+				return ui.Point{X: -float32(to) * width}
+			},
+		})
+
+		shownX := track.DragOffset().X
+		at := max(0, min(total-1, int(math.Round(float64(-shownX/width)))))
+		lo, hi := max(0, at-1), min(total-1, at+1)
+
+		// O(1) 窗口化渲染：仅构建当前页及其紧邻前后两首诗，无论诗集百首还是千首都恒定开销
+		track.Children(func() {
+			for i := lo; i <= hi; i++ {
+				poem := poems[i]
+				isCurrent := i == a.activePoemIdx
+				ui.Box(c.Key("poem-page-"+poem.ID)).
+					Absolute().
+					Left(float32(i) * width).
+					Top(0).Bottom(0).
+					Width(width).
+					Children(func() {
+						ui.Scroll(c.Key("poem-scroll-"+poem.ID)).Fill().Children(func() {
+							ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(28, 28, 48, 28).Children(func() {
+								a.renderPoemContent(c, pal, book, poem, isCurrent)
+							})
+						})
+					})
+			}
+		})
+
+		// 松手落点确定后立即同步顶栏标题、收藏态、页码与已读进度，正文继续平滑完成弹簧落位
+		if !track.Dragging() {
+			target := max(0, min(total-1, int(math.Round(float64(-a.poemPager.offset.X/width)))))
+			if target != a.activePoemIdx {
+				a.poemPager.syncedPage = target
+				a.commitPoemIndex(book.ID, target)
+				c.AnimationFrame()
+			}
 		}
 	})
 }
@@ -119,6 +259,7 @@ func (a *AppUI) renderReaderHeader(c *ui.Context, pal theme.Palette, book domain
 		Children(func() {
 			if !isTablet {
 				backBtn := ui.Box(c.Key("reader-back")).Width(32).Height(32).Center().Radius(6).Cursor(ui.CursorPointer)
+				theme.ApplyPressScale(backBtn, 0.90)
 				backBtn.Children(func() {
 					ui.Icon(c, components.IconBack).Width(20).Height(20).TextColor(pal.TextPrimary)
 				})
@@ -133,6 +274,7 @@ func (a *AppUI) renderReaderHeader(c *ui.Context, pal theme.Palette, book domain
 
 			// 目录与书本管理
 			tocBtn := ui.Box(c.Key("reader-toc")).Width(34).Height(34).Center().Radius(6).Cursor(ui.CursorPointer)
+			theme.ApplyPressScale(tocBtn, 0.90)
 			tocBtn.Children(func() {
 				ui.Icon(c, components.IconList).Width(19).Height(19).TextColor(pal.TextPrimary)
 			})
@@ -143,6 +285,7 @@ func (a *AppUI) renderReaderHeader(c *ui.Context, pal theme.Palette, book domain
 			// 整诗 ❤️ 精选
 			if poem.ID != "" {
 				favBtn := ui.Box(c.Key("reader-fav")).Width(34).Height(34).Center().Radius(6).Cursor(ui.CursorPointer)
+				theme.ApplyPressScale(favBtn, 0.88)
 				favBtn.Children(func() {
 					if isFav {
 						ui.Icon(c, components.IconHeartFilled).Width(19).Height(19).TextColor(pal.Accent)
@@ -155,7 +298,9 @@ func (a *AppUI) renderReaderHeader(c *ui.Context, pal theme.Palette, book domain
 				}
 
 				// 🔖 划选留作散页 / 设为本诗金句
-				bmBtn := ui.Box(c.Key("reader-excerpt")).Width(34).Height(34).Center().Radius(6).Cursor(ui.CursorPointer)
+				bmBtn := ui.Box(c.Key("reader-excerpt")).Width(34).Height(34).Center().Radius(6).Cursor(ui.CursorPointer).
+					Transition(theme.ColorTransition())
+				theme.ApplyPressScale(bmBtn, 0.90)
 				if a.selectingLines {
 					bmBtn.Background(pal.HighlightBg)
 				}
@@ -174,6 +319,7 @@ func (a *AppUI) renderReaderHeader(c *ui.Context, pal theme.Palette, book domain
 
 			// Aa 排版面板
 			aaBtn := ui.Box(c.Key("reader-aa")).Padding(6, 8).Center().Radius(6).Cursor(ui.CursorPointer)
+			theme.ApplyPressScale(aaBtn, 0.92)
 			aaBtn.Children(func() {
 				ui.Text(c, "Aa").FontSize(15).Bold().TextColor(pal.TextPrimary)
 			})
@@ -193,6 +339,7 @@ func (a *AppUI) renderSelectionActionBar(c *ui.Context, pal theme.Palette, book 
 		Background(pal.HighlightBg).
 		BorderColor(pal.Border).
 		BorderWidth(1, 0, 1, 0).
+		Transition(theme.BarRevealTransition()).
 		Children(func() {
 			if selectedCount == 0 {
 				ui.Text(c, "点按下方诗行勾选句子（同一首诗可多次划选不同段落）").
@@ -213,7 +360,7 @@ func (a *AppUI) renderSelectionActionBar(c *ui.Context, pal theme.Palette, book 
 		})
 }
 
-func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.Book, poem domain.Poem) {
+func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.Book, poem domain.Poem, isCurrent bool) {
 	fontSize := a.settings.FontSize
 	if fontSize < 14 {
 		fontSize = 18
@@ -271,19 +418,20 @@ func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.
 						for _, line := range stanza.Lines {
 							lineNum++
 							curLine := lineNum
-							isHighlighted := a.isLineHighlighted(curLine)
-							isSelected := a.selectedLines[curLine]
+							isHighlighted := isCurrent && a.isLineHighlighted(curLine)
+							isSelected := isCurrent && a.selectedLines[curLine]
 
 							lineRow := ui.Box(c.Key(fmt.Sprintf("ln-%d", curLine))).
 								FillWidth().
 								Padding(3, 8).
-								Radius(4)
+								Radius(4).
+								Transition(theme.ColorTransition())
 							if isSelected {
 								lineRow.Background(pal.HighlightBg).Border(1, pal.Accent)
 							} else if isHighlighted {
 								lineRow.Background(pal.HighlightBg)
 							}
-							if a.selectingLines {
+							if isCurrent && a.selectingLines {
 								lineRow.Cursor(ui.CursorPointer)
 							}
 							lineRow.Children(func() {
@@ -293,7 +441,7 @@ func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.
 									TextColor(pal.TextPrimary)
 								applyFont(txt)
 							})
-							if a.selectingLines && lineRow.Clicked() {
+							if isCurrent && a.selectingLines && lineRow.Clicked() {
 								if a.selectedLines[curLine] {
 									delete(a.selectedLines, curLine)
 								} else {
@@ -350,6 +498,7 @@ func (a *AppUI) renderReaderFooter(c *ui.Context, pal theme.Palette, book domain
 			prevBtn := ui.Box(c.Key("poem-prev")).Padding(6, 10).Radius(6)
 			if idx > 0 {
 				prevBtn.Cursor(ui.CursorPointer)
+				theme.ApplyPressScale(prevBtn, 0.94)
 			}
 			prevBtn.Children(func() {
 				clr := pal.TextPrimary
@@ -365,6 +514,7 @@ func (a *AppUI) renderReaderFooter(c *ui.Context, pal theme.Palette, book domain
 			ui.Spacer(c)
 
 			counter := ui.Box(c.Key("poem-counter")).Padding(6, 12).Radius(6).Cursor(ui.CursorPointer)
+			theme.ApplyPressScale(counter, 0.94)
 			counter.Children(func() {
 				ui.Textf(c, "第 %d / %d 首", idx+1, total).FontSize(12).TextColor(pal.TextMuted)
 			})
@@ -377,6 +527,7 @@ func (a *AppUI) renderReaderFooter(c *ui.Context, pal theme.Palette, book domain
 			nextBtn := ui.Box(c.Key("poem-next")).Padding(6, 10).Radius(6)
 			if idx+1 < total {
 				nextBtn.Cursor(ui.CursorPointer)
+				theme.ApplyPressScale(nextBtn, 0.94)
 			}
 			nextBtn.Children(func() {
 				clr := pal.TextPrimary
@@ -391,7 +542,7 @@ func (a *AppUI) renderReaderFooter(c *ui.Context, pal theme.Palette, book domain
 		})
 }
 
-func (a *AppUI) navigatePoem(bookID string, nextIdx int) {
+func (a *AppUI) commitPoemIndex(bookID string, nextIdx int) {
 	if nextIdx < 0 || nextIdx >= len(a.activePoems) {
 		return
 	}
@@ -400,6 +551,10 @@ func (a *AppUI) navigatePoem(bookID string, nextIdx int) {
 	a.selectingLines = false
 	a.selectedLines = map[int]bool{}
 	a.recordPoemReadAsync(bookID, a.activePoems[nextIdx], a.activePoems)
+}
+
+func (a *AppUI) navigatePoem(bookID string, nextIdx int) {
+	a.commitPoemIndex(bookID, nextIdx)
 }
 
 func (a *AppUI) isLineHighlighted(lineNum int) bool {

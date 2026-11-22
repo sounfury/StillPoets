@@ -6,10 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
 	"stillpoets/internal/app"
+	"stillpoets/internal/domain"
+	"stillpoets/internal/storage"
 	"stillpoets/internal/ui/components"
 	"stillpoets/internal/ui/theme"
 )
@@ -153,4 +156,306 @@ func TestRenderPhoneAndTabletAllTabsAndThemes(t *testing.T) {
 			}
 		}
 	}
+}
+
+func advanceFrames(tt *ui.Tester, d time.Duration) {
+	steps := int(d / (16 * time.Millisecond))
+	for range steps {
+		tt.Advance(16 * time.Millisecond)
+	}
+}
+
+func swipeFinger(tt *ui.Tester, x0, y0, x1, y1 float32) {
+	tt.FingerDown(x0, y0)
+	tt.Advance(16 * time.Millisecond)
+	const steps = 8
+	for i := 1; i <= steps; i++ {
+		f := float32(i) / float32(steps)
+		tt.FingerMove(x0+(x1-x0)*f, y0+(y1-y0)*f)
+		tt.Frame()
+		tt.Advance(16 * time.Millisecond)
+	}
+	tt.FingerUp(x1, y1)
+	advanceFrames(tt, 600*time.Millisecond)
+}
+
+func newGestureTestAppUI(t *testing.T) *AppUI {
+	t.Helper()
+	ctx := t.Context()
+	svc, err := app.Open(ctx, t.TempDir(), app.NewMemorySecretStore())
+	if err != nil {
+		t.Fatalf("app.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+
+	matches, err := filepath.Glob(filepath.Join("..", "..", "..", "test-books", "*.epub"))
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("no test EPUB found: %v", err)
+	}
+	imp, err := svc.ImportEPUB(ctx, matches[0], "")
+	if err != nil {
+		t.Fatalf("ImportEPUB: %v", err)
+	}
+	_, _ = svc.CreateStandaloneQuote(ctx, "给一句诗多一点时间。", "测试诗人", "测试摘录")
+
+	appUI := NewAppUI(svc, nil, nil)
+	// 等待 NewAppUI 内部的 autoSelectInitialBook 异步加载完成，避免测试中产生竞态覆盖
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		appUI.mu.Lock()
+		ready := len(appUI.activePoems) > 0
+		appUI.mu.Unlock()
+		if ready {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	poems, err := svc.ListPoems(ctx, imp.Book.ID)
+	if err != nil || len(poems) < 3 {
+		t.Fatalf("ListPoems expected >=3 poems, got %d, err=%v", len(poems), err)
+	}
+	appUI.mu.Lock()
+	appUI.activeBookID = imp.Book.ID
+	appUI.activePoems = poems
+	appUI.activePoemIdx = 0
+	appUI.mu.Unlock()
+	return appUI
+}
+
+func TestReaderHorizontalSwipeAndConflicts(t *testing.T) {
+	appUI := newGestureTestAppUI(t)
+	appUI.activeTab = components.TabShelf
+	appUI.shelfSubTab = components.SubTabBooks
+	appUI.readerMobile = true
+
+	tt := ui.NewTester(appUI.Render, 390, 844)
+	tt.Frame()
+	tt.Frame()
+
+	// 1. 左滑切到下一首诗（0 -> 1）
+	swipeFinger(tt, 330, 420, 60, 420)
+	if appUI.activePoemIdx != 1 {
+		t.Fatalf("expected swipe left to advance poem to 1, got %d", appUI.activePoemIdx)
+	}
+
+	// 2. 纵向滚动（上下滑）不应误切诗
+	swipeFinger(tt, 195, 560, 195, 220)
+	if appUI.activePoemIdx != 1 {
+		t.Fatalf("expected vertical scroll not to change poem index, got %d", appUI.activePoemIdx)
+	}
+
+	// 3. 划选诗行模式下横向滑动应锁定不切诗
+	appUI.selectingLines = true
+	tt.Frame()
+	swipeFinger(tt, 330, 420, 60, 420)
+	if appUI.activePoemIdx != 1 {
+		t.Fatalf("expected selectingLines to lock horizontal swipe, got %d", appUI.activePoemIdx)
+	}
+	appUI.selectingLines = false
+	tt.Frame()
+
+	// 4. 退出划选后右滑切回上一首诗（1 -> 0）
+	swipeFinger(tt, 60, 420, 330, 420)
+	if appUI.activePoemIdx != 0 {
+		t.Fatalf("expected swipe right to go back to poem 0, got %d", appUI.activePoemIdx)
+	}
+
+	// 5. 第 0 首继续右拉不越界
+	swipeFinger(tt, 60, 420, 330, 420)
+	if appUI.activePoemIdx != 0 {
+		t.Fatalf("expected boundary rubberband to stay at 0, got %d", appUI.activePoemIdx)
+	}
+}
+
+func TestShelfSubTabSwipeGesturePhoneAndTablet(t *testing.T) {
+	t.Run("phone", func(t *testing.T) {
+		appUI := newGestureTestAppUI(t)
+		appUI.activeTab = components.TabShelf
+		appUI.shelfSubTab = components.SubTabBooks
+		appUI.readerMobile = false
+
+		tt := ui.NewTester(appUI.Render, 390, 844)
+		tt.Frame()
+		tt.Frame()
+
+		// 手机书架向左滑 -> 切到「散页」
+		swipeFinger(tt, 330, 500, 50, 500)
+		if appUI.shelfSubTab != components.SubTabQuotes {
+			t.Fatalf("expected phone swipe left to switch to SubTabQuotes, got %v", appUI.shelfSubTab)
+		}
+
+		// 散页向右滑 -> 切回「诗集」
+		swipeFinger(tt, 50, 500, 330, 500)
+		if appUI.shelfSubTab != components.SubTabBooks {
+			t.Fatalf("expected phone swipe right to switch back to SubTabBooks, got %v", appUI.shelfSubTab)
+		}
+	})
+
+	t.Run("tablet_isolation_and_switch", func(t *testing.T) {
+		appUI := newGestureTestAppUI(t)
+		appUI.activeTab = components.TabShelf
+		appUI.shelfSubTab = components.SubTabBooks
+		appUI.readerMobile = false
+
+		// 平板横屏：左侧导航轨 72 + 左书架 348 = 420，右侧阅读器 x ∈ [420, 1080]
+		tt := ui.NewTester(appUI.Render, 1080, 720)
+		tt.Frame()
+		tt.Frame()
+
+		// 1. 在右栏阅读器左滑：只切诗（0 -> 1），不误切到「散页」
+		swipeFinger(tt, 960, 380, 540, 380)
+		if appUI.activePoemIdx != 1 {
+			t.Fatalf("expected tablet right pane swipe left to advance poem to 1, got %d", appUI.activePoemIdx)
+		}
+		if appUI.shelfSubTab != components.SubTabBooks {
+			t.Fatalf("expected tablet right pane swipe not to switch shelfSubTab, got %v", appUI.shelfSubTab)
+		}
+
+		// 2. 右栏处于划选模式时左滑：既不切诗，也不透传切到「散页」
+		appUI.selectingLines = true
+		tt.Frame()
+		swipeFinger(tt, 960, 380, 540, 380)
+		if appUI.activePoemIdx != 1 || appUI.shelfSubTab != components.SubTabBooks {
+			t.Fatalf("expected selectingLines lock on tablet, got idx=%d subTab=%v", appUI.activePoemIdx, appUI.shelfSubTab)
+		}
+		appUI.selectingLines = false
+		tt.Frame()
+
+		// 3. 在左栏书架区（x ∈ [72, 420]）左滑：切到全宽「散页」
+		swipeFinger(tt, 380, 480, 100, 480)
+		if appUI.shelfSubTab != components.SubTabQuotes {
+			t.Fatalf("expected tablet left shelf swipe left to switch to SubTabQuotes, got %v (pager=%+v)", appUI.shelfSubTab, appUI.shelfPager)
+		}
+
+		// 4. 在全宽散页区右滑：切回「诗集 + 阅读器」双栏
+		swipeFinger(tt, 220, 420, 820, 420)
+		if appUI.shelfSubTab != components.SubTabBooks {
+			t.Fatalf("expected tablet quotes swipe right to switch back to SubTabBooks, got %v", appUI.shelfSubTab)
+		}
+	})
+}
+
+func TestAnimatedOverlaysAndNavigationTransitions(t *testing.T) {
+	appUI := newGestureTestAppUI(t)
+	tt := ui.NewTester(appUI.Render, 1080, 720)
+	tt.Frame()
+
+	// 依次验证主导航切换动画、底部手势抽屉（新增/目录/排版）与居中动效弹层（搜索/散页编辑）
+	for _, tab := range []components.NavTab{components.TabStats, components.TabProfile, components.TabShelf} {
+		appUI.activeTab = tab
+		tt.Frame()
+		advanceFrames(tt, 260*time.Millisecond)
+	}
+
+	appUI.showAddModal = true
+	tt.Frame()
+	advanceFrames(tt, 360*time.Millisecond)
+	appUI.showAddModal = false
+	tt.Frame()
+	advanceFrames(tt, 360*time.Millisecond)
+
+	appUI.showTOCModal = true
+	tt.Frame()
+	advanceFrames(tt, 360*time.Millisecond)
+	appUI.showTOCModal = false
+	tt.Frame()
+	advanceFrames(tt, 360*time.Millisecond)
+
+	appUI.showTypoModal = true
+	tt.Frame()
+	advanceFrames(tt, 360*time.Millisecond)
+	appUI.showTypoModal = false
+	tt.Frame()
+	advanceFrames(tt, 360*time.Millisecond)
+
+	appUI.showSearchModal = true
+	tt.Frame()
+	advanceFrames(tt, 260*time.Millisecond)
+	// 点击左上角遮罩外部应关闭搜索弹层
+	tt.FingerDown(20, 20)
+	tt.FingerUp(20, 20)
+	tt.Frame()
+	if appUI.showSearchModal {
+		t.Fatalf("expected clicking backdrop to close AnimatedDialog")
+	}
+	advanceFrames(tt, 260*time.Millisecond)
+
+	// 验证 Toast 浮现与自动退场
+	appUI.showTransientToast("云同步完成")
+	tt.Frame()
+	advanceFrames(tt, 320*time.Millisecond)
+	appUI.mu.Lock()
+	appUI.toastMessage = ""
+	appUI.mu.Unlock()
+	tt.Frame()
+	advanceFrames(tt, 240*time.Millisecond)
+
+	// 验证手机全屏阅读器推入与退出动画
+	_ = domain.LocalStateDownloaded
+	phoneTT := ui.NewTester(appUI.Render, 390, 844)
+	phoneTT.Frame()
+	appUI.readerMobile = true
+	phoneTT.Frame()
+	advanceFrames(phoneTT, 360*time.Millisecond)
+	appUI.readerMobile = false
+	phoneTT.Frame()
+	advanceFrames(phoneTT, 300*time.Millisecond)
+}
+
+func TestWidgetDeeplinkNavigation(t *testing.T) {
+	appUI := newGestureTestAppUI(t)
+	bookID := appUI.activeBookID
+	targetPoem := appUI.activePoems[2]
+
+	// 1. 通过 stillpoets://poem/... 唤起指定诗篇并携带高亮诗行
+	appUI.HandleDeeplink("stillpoets://poem/" + bookID + "/" + targetPoem.ID + "?lines=1-2&highlight=1")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		appUI.mu.Lock()
+		ok := appUI.activePoemIdx == 2 && len(appUI.highlightRanges) == 1 && appUI.readerMobile
+		appUI.mu.Unlock()
+		if ok {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	appUI.mu.Lock()
+	gotIdx := appUI.activePoemIdx
+	gotRanges := len(appUI.highlightRanges)
+	gotMobile := appUI.readerMobile
+	appUI.mu.Unlock()
+	if gotIdx != 2 || gotRanges != 1 || !gotMobile {
+		t.Fatalf("poem deeplink failed: idx=%d ranges=%d mobile=%v", gotIdx, gotRanges, gotMobile)
+	}
+
+	// 渲染验证含高亮行及「我的」小组件预览页均无 panic
+	tt := ui.NewTester(appUI.Render, 1080, 720)
+	tt.Frame()
+	appUI.activeTab = components.TabProfile
+	tt.Frame()
+
+	// 2. 通过 stillpoets://quote/... 唤起独立散页并弹出详情卡片
+	quotes, err := appUI.svc.ListQuotes(t.Context(), storage.QuoteFilter{})
+	if err != nil || len(quotes) == 0 {
+		t.Fatalf("expected standalone quote for deeplink test, err=%v", err)
+	}
+	quoteID := quotes[0].Quote.ID
+	appUI.HandleDeeplink("stillpoets://quote/" + quoteID)
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		appUI.mu.Lock()
+		ok := appUI.showQuoteDetail && appUI.detailQuote != nil && appUI.detailQuote.Quote.ID == quoteID
+		appUI.mu.Unlock()
+		if ok {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	appUI.mu.Lock()
+	opened := appUI.showQuoteDetail && appUI.shelfSubTab == components.SubTabQuotes && appUI.detailQuote != nil && appUI.detailQuote.Quote.ID == quoteID
+	appUI.mu.Unlock()
+	if !opened {
+		t.Fatalf("quote deeplink did not open quote detail modal")
+	}
+	tt.Frame()
 }

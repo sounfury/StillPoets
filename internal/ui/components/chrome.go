@@ -35,6 +35,7 @@ func BrandHeader(c *ui.Context, pal theme.Palette, title string, showActions boo
 			if showActions {
 				ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 					searchBtn := ui.Box(c.Key("btn-search")).Width(34).Height(34).Center().Radius(8).Cursor(ui.CursorPointer)
+					theme.ApplyPressScale(searchBtn, 0.92)
 					searchBtn.Children(func() {
 						ui.Icon(c, IconSearch).Width(19).Height(19).TextColor(pal.TextPrimary)
 					})
@@ -43,6 +44,7 @@ func BrandHeader(c *ui.Context, pal theme.Palette, title string, showActions boo
 					}
 
 					addBtn := ui.Box(c.Key("btn-add")).Width(34).Height(34).Center().Radius(8).Cursor(ui.CursorPointer)
+					theme.ApplyPressScale(addBtn, 0.92)
 					addBtn.Children(func() {
 						ui.Icon(c, IconPlus).Width(20).Height(20).TextColor(pal.TextPrimary)
 					})
@@ -54,45 +56,67 @@ func BrandHeader(c *ui.Context, pal theme.Palette, title string, showActions boo
 		})
 }
 
-// ShelfSubTabs 渲染「诗集 / 散页」常驻顶切换（选中态配主题短下划线）。
-func ShelfSubTabs(c *ui.Context, pal theme.Palette, active ShelfSubTab, onSelect func(ShelfSubTab)) {
+// ShelfSubTabs 渲染「诗集 / 散页」常驻顶切换（选中态下划线支持随手势进度实时平滑滑移）。
+// slideProgress 取值 [0, 1]：0 对应「诗集」，1 对应「散页」。
+func ShelfSubTabs(c *ui.Context, pal theme.Palette, active ShelfSubTab, slideProgress float32, onSelect func(ShelfSubTab)) {
+	if slideProgress < 0 {
+		slideProgress = 0
+	} else if slideProgress > 1 {
+		slideProgress = 1
+	}
+
 	row := ui.Row(c.Key("shelf-subtabs")).
 		FillWidth().
 		Padding(4, 20, 0, 20).
-		Gap(26).
 		AlignItems(ui.End)
 	if pal.HeroStyle == theme.HeroOpenPaper {
 		row.BorderColor(pal.Border).BorderWidth(0, 0, 1, 0)
 	}
 	row.Children(func() {
-		items := []struct {
-			tab   ShelfSubTab
-			label string
-		}{
-			{SubTabBooks, "诗集"},
-			{SubTabQuotes, "散页"},
-		}
-		for _, item := range items {
-			isActive := active == item.tab
-			col := ui.Column(c.Key(item.label)).AlignItems(ui.Center).Gap(6).Padding(4, 0, 0, 0).Cursor(ui.CursorPointer)
-			col.Children(func() {
-				txt := ui.Text(c, item.label).FontSize(16)
-				if isActive {
-					txt.Bold().TextColor(pal.TextPrimary)
-				} else {
-					txt.TextColor(pal.TextMuted)
+		const (
+			itemW float32 = 46
+			gapW  float32 = 22
+			barW  float32 = 32
+		)
+		// 指示条随 slideProgress 在两个标签中心之间平滑滑移
+		barX := (itemW-barW)/2 + slideProgress*(itemW+gapW)
+
+		tabsWrap := ui.Column(c.Key("shelf-subtabs-wrap")).Gap(6)
+		tabsWrap.Children(func() {
+			ui.Row(c).Gap(gapW).AlignItems(ui.End).Children(func() {
+				items := []struct {
+					tab   ShelfSubTab
+					label string
+				}{
+					{SubTabBooks, "诗集"},
+					{SubTabQuotes, "散页"},
 				}
-				line := ui.Box(c.Key("underline")).Width(32).Height(2.5).Radius(2)
-				if isActive {
-					line.Background(pal.Accent)
-				} else {
-					line.Background(ui.Transparent)
+				for _, item := range items {
+					isActive := active == item.tab
+					col := ui.Box(c.Key(item.label)).Width(itemW).Center().Padding(4, 0, 0, 0).Cursor(ui.CursorPointer)
+					theme.ApplyPressScale(col, 0.94)
+					col.Children(func() {
+						txt := ui.Text(c, item.label).FontSize(16)
+						if isActive {
+							txt.Bold().TextColor(pal.TextPrimary)
+						} else {
+							txt.TextColor(pal.TextMuted)
+						}
+					})
+					if col.Clicked() && onSelect != nil {
+						onSelect(item.tab)
+					}
 				}
 			})
-			if col.Clicked() && onSelect != nil {
-				onSelect(item.tab)
-			}
-		}
+
+			// 跟手滑动的主题短下划线轨道
+			ui.Box(c.Key("subtab-track")).
+				Width(itemW*2+gapW).
+				Height(2.5).
+				Draw(func(p *ui.Painter, r ui.Rect) {
+					p.Fill(ui.Rect{X: r.X + barX, Y: r.Y, W: barW, H: r.H}, pal.Accent, 1.5)
+				})
+		})
 	})
 }
 
@@ -115,6 +139,7 @@ func BottomNavBar(c *ui.Context, pal theme.Palette, active NavTab, onSelect func
 					Center().
 					Gap(3).
 					Cursor(ui.CursorPointer)
+				theme.ApplyPressScale(col, 0.93)
 				col.Children(func() {
 					clr := pal.TextMuted
 					if isActive {
@@ -129,7 +154,7 @@ func BottomNavBar(c *ui.Context, pal theme.Palette, active NavTab, onSelect func
 					if isActive {
 						lbl.Bold()
 					}
-					dot := ui.Box(c.Key("dot")).Width(4).Height(4).Radius(2)
+					dot := ui.Box(c.Key("dot")).Width(4).Height(4).Radius(2).Transition(theme.ColorTransition())
 					if isActive && pal.HeroStyle != theme.HeroOpenPaper {
 						dot.Background(pal.Accent)
 					} else {
@@ -166,6 +191,7 @@ func TabletNavRail(c *ui.Context, pal theme.Palette, active NavTab, onSelect fun
 					Gap(4).
 					Radius(8).
 					Cursor(ui.CursorPointer)
+				theme.ApplyPressScale(col, 0.93)
 				col.Children(func() {
 					clr := pal.TextMuted
 					if isActive {
@@ -180,7 +206,7 @@ func TabletNavRail(c *ui.Context, pal theme.Palette, active NavTab, onSelect fun
 					if isActive {
 						lbl.Bold()
 					}
-					dot := ui.Box(c.Key("dot")).Width(4).Height(4).Radius(2)
+					dot := ui.Box(c.Key("dot")).Width(4).Height(4).Radius(2).Transition(theme.ColorTransition())
 					if isActive {
 						dot.Background(pal.Accent)
 					} else {
@@ -200,13 +226,15 @@ func SyncToastPill(c *ui.Context, pal theme.Palette, message string, onClick fun
 		return
 	}
 	pill := ui.Row(c.Key("sync-toast-pill")).
-		Padding(7, 14).
+		Padding(8, 15).
 		Gap(7).
 		AlignItems(ui.Center).
 		Background(pal.Surface).
 		Border(1, pal.Border).
 		Radius(999).
+		Shadow(0, 6, 18, 0, ui.RGBA(0, 0, 0, 0.14)).
 		Cursor(ui.CursorPointer)
+	theme.ApplyPressScale(pill, 0.96)
 	pill.Children(func() {
 		ui.Icon(c, IconCloudCheck).Width(15).Height(15).TextColor(pal.Accent)
 		ui.Text(c, message).FontSize(12).TextColor(pal.TextSecondary)

@@ -1,0 +1,45 @@
+name: StillPoetsWidget
+options:
+  bundleIdPrefix: app.stillpoets
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+targets:
+  StillPoetsWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: StillPoetsWidget
+        excludes:
+          - Info.plist
+    settings:
+      base:
+        INFOPLIST_FILE: StillPoetsWidget/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        PRODUCT_BUNDLE_IDENTIFIER: app.stillpoets.client.widget
+        PRODUCT_NAME: StillPoetsWidget
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "0.1.0"
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        SKIP_INSTALL: YES
+        CODE_SIGN_STYLE: Manual
+        STILLPOETS_KEYCHAIN_GROUP: ""
+        STILLPOETS_APP_GROUP: ""
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/Frameworks"
+          - "@executable_path/../../Frameworks"
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+      - sdk: AppIntents.framework
+      - sdk: Security.framework
+      - sdk: CoreText.framework
+schemes:
+  StillPoetsWidget:
+    build:
+      targets:
+        StillPoetsWidget: all

@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <receiver
+            android:name="stillpoets.modules.widgetbridge.StillPoetsWidgetProvider"
+            android:label="@string/stillpoets_widget_name"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="stillpoets.modules.widgetbridge.ACTION_NEXT_ENTRY" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/stillpoets_widget_info" />
+        </receiver>
+    </application>
+</manifest>

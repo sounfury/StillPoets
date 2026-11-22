@@ -6,6 +6,7 @@
 
 1. **产品需求文档**：`docs/prd.md`
 2. **系统架构设计文档**：`docs/architecture.md`
+3. **进度文档**：`process.md`
 
 > 补充：若任务涉及界面交互与视觉风格，可一并参考 `docs/prototypes/`（注意 `docs/prototypes/注意.md`：原型中旧名 `AnyQuote` 已统一更名为 `StillPoets`）。
 

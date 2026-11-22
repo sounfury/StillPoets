@@ -160,8 +160,9 @@ type Service struct {
 	debounceTimer *time.Timer
 	closed        bool
 
-	onSyncToast   func(SyncToastState)
-	onDataChanged func()
+	onSyncToast     func(SyncToastState)
+	onDataChanged   func()
+	onWidgetUpdated func(timelinePath, fontsDir string)
 }
 
 // Open 初始化数据目录、SQLite 仓储与本地 WebDAV 配置。
@@ -215,6 +216,16 @@ func (s *Service) SetCallbacks(onSyncToast func(SyncToastState), onDataChanged f
 	s.onDataChanged = onDataChanged
 	s.mu.Unlock()
 }
+
+// SetWidgetUpdatedCallback 注册小组件时间线写入后的原生通知回调（供 Android AppWidget / iOS WidgetKit 实时刷新）。
+func (s *Service) SetWidgetUpdatedCallback(fn func(timelinePath, fontsDir string)) {
+	s.mu.Lock()
+	s.onWidgetUpdated = fn
+	s.mu.Unlock()
+}
+
+// FontsDir 返回本地自定义字体存放目录。
+func (s *Service) FontsDir() string { return filepath.Join(s.dataDir, "fonts") }
 
 // SetSyncDebounce 允许测试或调用方调整写入后的防抖延迟。
 func (s *Service) SetSyncDebounce(d time.Duration) {

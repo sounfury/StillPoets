@@ -82,6 +82,7 @@ func (a *AppUI) renderStatsPage(c *ui.Context, pal theme.Palette, isTablet bool)
 									Border(1, pal.Border).
 									AlignItems(ui.Center).
 									Cursor(ui.CursorPointer)
+								theme.ApplyPressScale(row, 0.985)
 								row.Children(func() {
 									components.BookCoverThumbnail(c, "st-th-"+b.ID, b.ID, pal)
 									ui.Column(c).Grow(1).Gap(5).Children(func() {

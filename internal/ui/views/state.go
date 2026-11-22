@@ -18,10 +18,21 @@ import (
 	"stillpoets/internal/ui/components"
 	"stillpoets/internal/ui/layout"
 	"stillpoets/internal/ui/theme"
+	"stillpoets/modules/widgetbridge"
 )
 
 // PickFileFunc 抽象原生文件选择框（EPUB 或字体导入），便于解耦 mygo.Dialog。
 type PickFileFunc func(title string, extensions []string) (string, error)
+
+// horizontalPagerState 保存横向手势翻页轨道的瞬时拖拽与同步状态。
+type horizontalPagerState struct {
+	scopeKey   string
+	epoch      int
+	width      float32
+	offset     ui.Point
+	syncedPage int
+	progress   float32
+}
 
 // AppUI 持有 StillPoets V3 界面的全部视图状态与交互调度。
 type AppUI struct {
@@ -51,9 +62,12 @@ type AppUI struct {
 	quotes        []storage.QuoteView
 	quoteFacets   storage.QuoteFacets
 	stats         storage.StatsOverview
-	syncOverview  app.SyncOverview
-	localFonts    []app.LocalFont
-	widgetCount   int
+	syncOverview      app.SyncOverview
+	localFonts        []app.LocalFont
+	widgetCount       int
+	activeWidgetCount int
+	widgetPreview     *domain.WidgetTimeline
+	deeplinkHandled   bool
 
 	// 阅读器状态
 	activeBookID    string
@@ -104,6 +118,11 @@ type AppUI struct {
 	davStatus    string
 	davBusy      bool
 	davHasSecret bool
+
+	// 阅读器与双入口手势分页状态
+	poemPager     horizontalPagerState
+	shelfPager    horizontalPagerState
+	shelfDragging bool
 
 	// 排版滑块中间值（float64 适配 ui.Slider）
 	fontSizeSlider   float64
@@ -210,6 +229,8 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 	stats, _ := a.svc.GetStatsOverview(ctx)
 	syncOv, _ := a.svc.GetSyncOverview(ctx)
 	localFonts := a.svc.ListLocalFonts()
+	widgetTL, widgetErr := a.svc.ReadWidgetTimeline()
+	activeWidgets := widgetbridge.ActiveWidgetCount()
 
 	var poems []domain.Poem
 	favMap := map[string]domain.FavoritePoem{}
@@ -236,6 +257,12 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 	a.stats = stats
 	a.syncOverview = syncOv
 	a.localFonts = localFonts
+	a.activeWidgetCount = activeWidgets
+	if widgetErr == nil {
+		cp := widgetTL
+		a.widgetPreview = &cp
+		a.widgetCount = len(widgetTL.Entries)
+	}
 	a.davHasSecret = a.svc.HasWebDAVPassword()
 	if curBookID != "" {
 		a.activePoems = poems
@@ -249,7 +276,7 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 
 func (a *AppUI) autoSelectInitialBook() {
 	a.mu.Lock()
-	if a.activeBookID != "" {
+	if a.activeBookID != "" || a.deeplinkHandled {
 		a.mu.Unlock()
 		return
 	}
@@ -285,11 +312,19 @@ func (a *AppUI) HandleDeeplink(rawURL string) {
 	switch target.Kind {
 	case app.DeeplinkPoem:
 		a.mu.Lock()
+		a.deeplinkHandled = true
 		a.activeTab = components.TabShelf
 		a.shelfSubTab = components.SubTabBooks
+		a.shelfPager.scopeKey = ""
+		a.poemPager.scopeKey = ""
+		a.showQuoteDetail = false
 		a.mu.Unlock()
 		a.openBook(target.BookID, target.PoemID, target.LineRanges, true)
+		a.requestRepaint()
 	case app.DeeplinkQuote:
+		a.mu.Lock()
+		a.deeplinkHandled = true
+		a.mu.Unlock()
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -303,6 +338,8 @@ func (a *AppUI) HandleDeeplink(rawURL string) {
 					a.mu.Lock()
 					a.activeTab = components.TabShelf
 					a.shelfSubTab = components.SubTabQuotes
+					a.shelfPager.scopeKey = ""
+					a.readerMobile = false
 					a.detailQuote = &q
 					a.showQuoteDetail = true
 					a.mu.Unlock()
@@ -310,6 +347,7 @@ func (a *AppUI) HandleDeeplink(rawURL string) {
 					return
 				}
 			}
+			a.showTransientToast("未在本地找到该散页")
 		}()
 	}
 }
@@ -347,6 +385,16 @@ func (a *AppUI) Render(c *ui.Context) {
 	a.renderModals(c, pal)
 }
 
+func (a *AppUI) selectShelfSubTab(sub components.ShelfSubTab) {
+	if a.shelfSubTab == sub {
+		return
+	}
+	a.shelfSubTab = sub
+	if sub == components.SubTabQuotes {
+		go a.reloadQuotesOnly()
+	}
+}
+
 func (a *AppUI) renderTabletShell(c *ui.Context, pal theme.Palette) {
 	ui.Row(c.Key("tablet-root")).Fill().Children(func() {
 		components.TabletNavRail(c, pal, a.activeTab, func(tab components.NavTab) {
@@ -354,47 +402,65 @@ func (a *AppUI) renderTabletShell(c *ui.Context, pal theme.Palette) {
 			a.readerMobile = false
 		})
 
-		ui.Column(c.Key("tablet-content")).Grow(1).FillHeight().Children(func() {
-			switch a.activeTab {
-			case components.TabShelf:
-				if a.shelfSubTab == components.SubTabBooks {
-					layout.MasterDetail(c, layout.MasterPaneWidthDIP, pal.Border,
-						func() { a.renderShelfPane(c, pal, true) },
-						func() { a.renderReaderPane(c, pal, true) },
-					)
-				} else {
-					a.renderShelfPane(c, pal, true)
-				}
-			case components.TabStats:
-				a.renderStatsPage(c, pal, true)
-			case components.TabProfile:
-				a.renderProfilePage(c, pal, true)
-			}
+		ui.Box(c.Key("tablet-content")).Grow(1).FillHeight().Clip().Children(func() {
+			tabKey := fmt.Sprintf("tablet-tab-%d", a.activeTab)
+			ui.Box(c.Key(tabKey)).
+				Absolute().
+				Fill().
+				Background(pal.Background).
+				Transition(theme.TabPageTransition()).
+				Children(func() {
+					switch a.activeTab {
+					case components.TabShelf:
+						a.renderTabletShelfWorkspace(c, pal)
+					case components.TabStats:
+						a.renderStatsPage(c, pal, true)
+					case components.TabProfile:
+						a.renderProfilePage(c, pal, true)
+					}
+				})
 		})
 	})
 }
 
 func (a *AppUI) renderPhoneShell(c *ui.Context, pal theme.Palette) {
-	if a.readerMobile && a.activeBookID != "" {
-		a.renderReaderPane(c, pal, false)
-		return
-	}
+	ui.Box(c.Key("phone-stage")).Fill().Clip().Children(func() {
+		ui.Column(c.Key("phone-root")).Fill().Children(func() {
+			ui.Box(c.Key("phone-body")).Grow(1).FillWidth().Clip().Children(func() {
+				tabKey := fmt.Sprintf("phone-tab-%d", a.activeTab)
+				ui.Box(c.Key(tabKey)).
+					Absolute().
+					Fill().
+					Background(pal.Background).
+					Transition(theme.TabPageTransition()).
+					Children(func() {
+						switch a.activeTab {
+						case components.TabShelf:
+							a.renderShelfPane(c, pal, false)
+						case components.TabStats:
+							a.renderStatsPage(c, pal, false)
+						case components.TabProfile:
+							a.renderProfilePage(c, pal, false)
+						}
+					})
+			})
+			components.BottomNavBar(c, pal, a.activeTab, func(tab components.NavTab) {
+				a.activeTab = tab
+				a.readerMobile = false
+			})
+		})
 
-	ui.Column(c.Key("phone-root")).Fill().Children(func() {
-		ui.Column(c.Key("phone-body")).Grow(1).FillWidth().Clip().Children(func() {
-			switch a.activeTab {
-			case components.TabShelf:
-				a.renderShelfPane(c, pal, false)
-			case components.TabStats:
-				a.renderStatsPage(c, pal, false)
-			case components.TabProfile:
-				a.renderProfilePage(c, pal, false)
-			}
-		})
-		components.BottomNavBar(c, pal, a.activeTab, func(tab components.NavTab) {
-			a.activeTab = tab
-			a.readerMobile = false
-		})
+		// 手机端全屏阅读器以右侧推入转场叠在书架之上，返回时保留书架滚动位置
+		if a.readerMobile && a.activeBookID != "" {
+			ui.Box(c.Key("phone-reader-layer")).
+				Absolute().
+				Fill().
+				Background(pal.ReaderPaper).
+				Transition(theme.MobileReaderTransition()).
+				Children(func() {
+					a.renderReaderPane(c, pal, false)
+				})
+		}
 	})
 }
 
@@ -424,6 +490,7 @@ func (a *AppUI) renderSyncToastOverlay(c *ui.Context, pal theme.Palette, isTable
 			Bottom(bottom).
 			Width(width).
 			Justify(ui.Center).
+			Transition(theme.ToastTransition()).
 			Children(func() {
 				components.SyncToastPill(c, pal, msg, func() {
 					a.activeTab = components.TabProfile
@@ -496,6 +563,12 @@ func (a *AppUI) openBook(bookID, poemID string, highlightRanges []app.LineRange,
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if targetBook == nil {
+			if b, err := a.svc.Store().GetBook(ctx, bookID); err == nil && b.LocalState != domain.LocalStateDownloaded {
+				a.downloadBookAsync(bookID, poemID, highlightRanges)
+				return
+			}
+		}
 		poems, err := a.svc.ListPoems(ctx, bookID)
 		if err != nil {
 			a.mu.Lock()
@@ -540,6 +613,7 @@ func (a *AppUI) openBook(bookID, poemID string, highlightRanges []app.LineRange,
 		a.activePoems = poems
 		a.activePoemIdx = idx
 		a.activeFavorites = favMap
+		a.poemPager.scopeKey = ""
 		a.mu.Unlock()
 
 		// 仅在显式进入阅读或有效诗篇时记录阅读位置

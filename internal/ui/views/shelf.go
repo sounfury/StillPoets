@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -16,29 +17,188 @@ import (
 	"stillpoets/internal/ui/theme"
 )
 
+func (a *AppUI) syncShelfPager(scope string, width float32) int {
+	page := int(a.shelfSubTab)
+	if page < 0 || page > 1 {
+		page = 0
+	}
+	if a.shelfPager.scopeKey != scope {
+		a.shelfPager.scopeKey = scope
+		a.shelfPager.width = width
+		a.shelfPager.syncedPage = page
+		a.shelfPager.offset = ui.Point{X: -float32(page) * width}
+		a.shelfPager.progress = float32(page)
+		a.shelfPager.epoch++
+	} else if math.Abs(float64(a.shelfPager.width-width)) > 0.5 {
+		a.shelfPager.width = width
+		a.shelfPager.offset = ui.Point{X: -float32(page) * width}
+		a.shelfPager.progress = float32(page)
+		a.shelfPager.epoch++
+	} else if a.shelfPager.syncedPage != page {
+		a.shelfPager.syncedPage = page
+		a.shelfPager.offset = ui.Point{X: -float32(page) * width}
+	}
+	return page
+}
+
+func (a *AppUI) attachShelfPagerDraggable(track ui.Element, width float32, curPage int) float32 {
+	startX := -float32(curPage) * width
+	// 适配平板左窄书架栏（348 DIP）：避免在 1000+ DIP 工作区中需要划过半屏才能切到散页
+	threshold := min(width*0.28, 130)
+	track.Draggable(&a.shelfPager.offset, ui.DraggableOptions{
+		Axis:      ui.Horizontal,
+		Bounds:    &ui.Rect{X: -width, W: width},
+		Animation: theme.PageSpring,
+		Snap: func(p ui.Point) ui.Point {
+			to := curPage
+			delta := p.X - startX
+			switch {
+			case delta < -threshold && curPage == 0:
+				to = 1
+			case delta > threshold && curPage == 1:
+				to = 0
+			}
+			return ui.Point{X: -float32(to) * width}
+		},
+	})
+	shownX := track.DragOffset().X
+	a.shelfDragging = track.Dragging()
+	prog := float32(0)
+	if width > 0 {
+		prog = max(0, min(1, -shownX/width))
+	}
+	a.shelfPager.progress = prog
+
+	if !track.Dragging() {
+		target := max(0, min(1, int(math.Round(float64(-a.shelfPager.offset.X/width)))))
+		if target != curPage {
+			a.shelfPager.syncedPage = target
+			a.selectShelfSubTab(components.ShelfSubTab(target))
+			// 让顶栏文字与下划线在下一帧同步更新
+			if target == int(components.SubTabBooks) {
+				a.shelfPager.progress = 0
+			} else {
+				a.shelfPager.progress = 1
+			}
+		}
+	}
+	return prog
+}
+
+// renderTabletShelfWorkspace 渲染平板端「诗集+阅读器双栏 ↔ 散页全宽瀑布流」可手势横滑工作区。
+func (a *AppUI) renderTabletShelfWorkspace(c *ui.Context, pal theme.Palette) {
+	viewport := ui.Box(c.Key("tablet-shelf-viewport")).Fill().Clip()
+	width := viewport.Bounds().W
+	if width <= 0 {
+		winW, _ := c.Size()
+		width = max(500, winW-layout.NavRailWidthDIP)
+		c.AnimationFrame()
+	}
+	curPage := a.syncShelfPager("tablet", width)
+
+	viewport.Children(func() {
+		trackKey := fmt.Sprintf("tablet-shelf-track-%d", a.shelfPager.epoch)
+		track := ui.Box(c.Key(trackKey)).
+			Absolute().
+			Left(0).Top(0).Bottom(0).
+			Width(width * 2)
+
+		a.attachShelfPagerDraggable(track, width, curPage)
+
+		track.Children(func() {
+			// Page 0：左书架（诗集）+ 右阅读器双栏工作区
+			ui.Box(c.Key("tablet-page-books")).
+				Absolute().
+				Left(0).Top(0).Bottom(0).
+				Width(width).
+				Children(func() {
+					layout.MasterDetail(c, layout.MasterPaneWidthDIP, pal.Border,
+						func() {
+							ui.Column(c.Key("tablet-books-col")).Fill().Children(func() {
+								a.renderShelfHeaderAndTabs(c, pal)
+								ui.Scroll(c.Key("tablet-books-scroll")).Grow(1).FillWidth().Children(func() {
+									a.renderBooksSubTab(c, pal, true)
+								})
+							})
+						},
+						func() { a.renderReaderPane(c, pal, true) },
+					)
+				})
+
+			// Page 1：全宽散页大瀑布流
+			ui.Box(c.Key("tablet-page-quotes")).
+				Absolute().
+				Left(width).Top(0).Bottom(0).
+				Width(width).
+				Children(func() {
+					ui.Column(c.Key("tablet-quotes-col")).Fill().Children(func() {
+						a.renderShelfHeaderAndTabs(c, pal)
+						ui.Scroll(c.Key("tablet-quotes-scroll")).Grow(1).FillWidth().Children(func() {
+							a.renderQuotesSubTab(c, pal, true)
+						})
+					})
+				})
+		})
+	})
+}
+
+func (a *AppUI) renderShelfHeaderAndTabs(c *ui.Context, pal theme.Palette) {
+	components.BrandHeader(c, pal, "StillPoets", true,
+		func() {
+			a.showSearchModal = true
+		},
+		func() {
+			a.showAddModal = true
+		},
+	)
+	components.ShelfSubTabs(c, pal, a.shelfSubTab, a.shelfPager.progress, a.selectShelfSubTab)
+}
+
 func (a *AppUI) renderShelfPane(c *ui.Context, pal theme.Palette, isTablet bool) {
 	ui.Column(c.Key("shelf-pane")).Fill().Children(func() {
-		components.BrandHeader(c, pal, "StillPoets", true,
-			func() {
-				a.showSearchModal = true
-			},
-			func() {
-				a.showAddModal = true
-			},
-		)
-		components.ShelfSubTabs(c, pal, a.shelfSubTab, func(sub components.ShelfSubTab) {
-			a.shelfSubTab = sub
-			if sub == components.SubTabQuotes {
-				go a.reloadQuotesOnly()
-			}
-		})
+		a.renderShelfHeaderAndTabs(c, pal)
 
-		ui.Scroll(c.Key("shelf-content-scroll")).Grow(1).FillWidth().Children(func() {
-			if a.shelfSubTab == components.SubTabBooks {
-				a.renderBooksSubTab(c, pal, isTablet)
-			} else {
-				a.renderQuotesSubTab(c, pal, isTablet)
-			}
+		viewport := ui.Box(c.Key("phone-shelf-viewport")).Grow(1).FillWidth().Clip()
+		width := viewport.Bounds().W
+		if width <= 0 {
+			winW, _ := c.Size()
+			width = max(320, winW)
+			c.AnimationFrame()
+		}
+		curPage := a.syncShelfPager("phone", width)
+
+		viewport.Children(func() {
+			trackKey := fmt.Sprintf("phone-shelf-track-%d", a.shelfPager.epoch)
+			track := ui.Box(c.Key(trackKey)).
+				Absolute().
+				Left(0).Top(0).Bottom(0).
+				Width(width * 2)
+
+			a.attachShelfPagerDraggable(track, width, curPage)
+
+			track.Children(func() {
+				// Page 0：诗集书架
+				ui.Box(c.Key("phone-page-books")).
+					Absolute().
+					Left(0).Top(0).Bottom(0).
+					Width(width).
+					Children(func() {
+						ui.Scroll(c.Key("shelf-books-scroll")).Fill().Children(func() {
+							a.renderBooksSubTab(c, pal, isTablet)
+						})
+					})
+
+				// Page 1：散页瀑布流
+				ui.Box(c.Key("phone-page-quotes")).
+					Absolute().
+					Left(width).Top(0).Bottom(0).
+					Width(width).
+					Children(func() {
+						ui.Scroll(c.Key("shelf-quotes-scroll")).Fill().Children(func() {
+							a.renderQuotesSubTab(c, pal, isTablet)
+						})
+					})
+			})
 		})
 	})
 }
@@ -144,6 +304,7 @@ func (a *AppUI) renderHeroActions(c *ui.Context, pal theme.Palette, today *app.T
 			Background(pal.Accent).
 			AlignItems(ui.Center).
 			Cursor(ui.CursorPointer)
+		theme.ApplyPressScale(readBtn, 0.95)
 		readBtn.Children(func() {
 			ui.Text(c, "读完整首 ↗").FontSize(13).Bold().TextColor(pal.AccentText)
 		})
@@ -159,6 +320,7 @@ func (a *AppUI) renderHeroActions(c *ui.Context, pal theme.Palette, today *app.T
 			AlignItems(ui.Center).
 			Radius(6).
 			Cursor(ui.CursorPointer)
+		theme.ApplyPressScale(saveBtn, 0.95)
 		saveBtn.Children(func() {
 			ui.Icon(c, components.IconBookmark).Width(15).Height(15).TextColor(pal.TextPrimary)
 			ui.Text(c, "留作散页").FontSize(13).TextColor(pal.TextPrimary)
@@ -216,8 +378,10 @@ func (a *AppUI) renderContinueReading(c *ui.Context, pal theme.Palette, item *st
 			FillWidth().
 			Padding(10, 4).
 			Gap(12).
+			Radius(8).
 			AlignItems(ui.Center).
 			Cursor(ui.CursorPointer)
+		theme.ApplyPressScale(card, 0.98)
 		card.Children(func() {
 			components.BookCoverThumbnail(c, "cont-thumb", item.Book.ID, pal)
 			ui.Column(c).Grow(1).Gap(5).Children(func() {
@@ -261,7 +425,7 @@ func (a *AppUI) renderMyBooksSection(c *ui.Context, pal theme.Palette, isTablet 
 						} else {
 							txt.TextColor(pal.TextMuted)
 						}
-						bar := ui.Box(c).Width(24).Height(2).Radius(1)
+						bar := ui.Box(c).Width(24).Height(2).Radius(1).Transition(theme.ColorTransition())
 						if active {
 							bar.Background(pal.Accent)
 						} else {
@@ -494,6 +658,7 @@ func (a *AppUI) renderQuoteCard(c *ui.Context, pal theme.Palette, qv storage.Quo
 		Background(sw.Bg).
 		Border(1, sw.Border).
 		Cursor(ui.CursorPointer)
+	theme.ApplyPressScale(card, 0.975)
 	card.Children(func() {
 		ui.Text(c, tagLabel).FontSize(11).TextColor(sw.Muted)
 
@@ -533,7 +698,7 @@ func (a *AppUI) renderQuoteCard(c *ui.Context, pal theme.Palette, qv storage.Quo
 				ui.Text(c, "读完整首 ↗").FontSize(12).Bold().TextColor(sw.Text)
 			})
 			if jump.Clicked() {
-				a.shelfSubTab = components.SubTabBooks
+				a.selectShelfSubTab(components.SubTabBooks)
 				a.openBook(qv.Quote.BookID, qv.Quote.PoemID, app.ParseLineRanges(qv.Quote.HighlightLines), true)
 				return
 			}

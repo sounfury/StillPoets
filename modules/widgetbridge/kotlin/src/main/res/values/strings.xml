@@ -1,0 +1,7 @@
+<resources>
+    <string name="stillpoets_widget_name">StillPoets 诗笺</string>
+    <string name="stillpoets_widget_desc">在桌面轻遇一首诗，点击直达整诗阅读</string>
+    <string name="stillpoets_widget_empty_poem">纸上有风，留一首诗给自己。</string>
+    <string name="stillpoets_widget_empty_meta">打开 StillPoets 导入诗集或记一张散页</string>
+    <string name="stillpoets_widget_next_cd">换一首诗</string>
+</resources>

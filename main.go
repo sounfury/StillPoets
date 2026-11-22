@@ -5,12 +5,15 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"stillpoets/internal/app"
 	"stillpoets/internal/ui/views"
+	"stillpoets/modules/widgetbridge"
 )
 
 type mygoSecretsAdapter struct {
@@ -23,14 +26,22 @@ func (s mygoSecretsAdapter) Delete(key string) error            { return s.mod.D
 
 func main() {
 	var (
-		svc   *app.Service
-		appUI *views.AppUI
-		win   *mygo.Window
+		mu         sync.Mutex
+		svc        *app.Service
+		appUI      *views.AppUI
+		win        *mygo.Window
+		pendingURL string
 	)
 
 	mygo.App.OnOpenURL(func(rawURL string) {
-		if appUI != nil {
-			appUI.HandleDeeplink(rawURL)
+		mu.Lock()
+		uiRef := appUI
+		if uiRef == nil {
+			pendingURL = rawURL
+		}
+		mu.Unlock()
+		if uiRef != nil {
+			uiRef.HandleDeeplink(rawURL)
 		}
 	})
 
@@ -55,6 +66,16 @@ func main() {
 			log.Fatalf("初始化 StillPoets 数据层失败：%v", err)
 		}
 
+		// 绑定原生桌面小组件刷新通道，并在启动后同步一次最新快照路径与内容
+		svc.SetWidgetUpdatedCallback(widgetbridge.Reload)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := svc.RebuildWidgetTimeline(ctx); err != nil {
+				widgetbridge.Reload(svc.WidgetTimelinePath(), svc.FontsDir())
+			}
+		}()
+
 		pickFile := func(title string, extensions []string) (string, error) {
 			paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
 				Parent: win,
@@ -69,7 +90,7 @@ func main() {
 			return paths[0], nil
 		}
 
-		appUI = views.NewAppUI(svc, pickFile, nil)
+		uiInst := views.NewAppUI(svc, pickFile, nil)
 		win = mygo.NewWindow(mygo.WindowOptions{
 			Title:           "StillPoets",
 			Width:           1080,
@@ -78,14 +99,24 @@ func main() {
 			MinHeight:       600,
 			BackgroundColor: "#F4F4EF",
 			StateKey:        "stillpoets-main",
-			Content:         ui.View(appUI.Render),
+			Content:         ui.View(uiInst.Render),
 		})
-		appUI.SetRepaint(func() {
+		uiInst.SetRepaint(func() {
 			if win != nil {
 				win.Update(func() {})
 			}
 		})
-		appUI.TriggerStartupSync()
+
+		mu.Lock()
+		appUI = uiInst
+		queuedURL := pendingURL
+		pendingURL = ""
+		mu.Unlock()
+
+		if queuedURL != "" {
+			uiInst.HandleDeeplink(queuedURL)
+		}
+		uiInst.TriggerStartupSync()
 	})
 
 	if err := mygo.App.Run(); err != nil {

@@ -2,6 +2,7 @@ package views
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"stillpoets/internal/ui/components"
 	"stillpoets/internal/ui/layout"
 	"stillpoets/internal/ui/theme"
+	"stillpoets/modules/widgetbridge"
 )
 
 func (a *AppUI) renderProfilePage(c *ui.Context, pal theme.Palette, isTablet bool) {
@@ -55,7 +57,9 @@ func (a *AppUI) renderThemeAndFontSection(c *ui.Context, pal theme.Palette) {
 						Gap(6).
 						Radius(8).
 						Background(preset.Background).
-						Cursor(ui.CursorPointer)
+						Cursor(ui.CursorPointer).
+						Transition(theme.ColorTransition())
+					theme.ApplyPressScale(card, 0.96)
 					if active {
 						card.Border(2, pal.Accent)
 					} else {
@@ -232,17 +236,33 @@ func (a *AppUI) renderWebDAVSection(c *ui.Context, pal theme.Palette) {
 }
 
 func (a *AppUI) renderWidgetSection(c *ui.Context, pal theme.Palette) {
+	a.mu.Lock()
+	preview := a.widgetPreview
+	wCount := a.widgetCount
+	pinnedCount := a.activeWidgetCount
+	a.mu.Unlock()
+
 	ui.Column(c.Key("sec-widget")).
 		FillWidth().
 		Padding(18).
-		Gap(12).
+		Gap(14).
 		Radius(10).
 		Background(pal.Surface).
 		Border(1, pal.Border).
 		Children(func() {
-			ui.Text(c, "桌面小组件（WidgetKit / Glance）").FontSize(16).Bold().TextColor(pal.TextPrimary)
-			ui.Text(c, "自动预编译 widget_timeline.json；散页池中诗歌节选跳回原诗，独立散句打开单句卡").
-				FontSize(12).LineHeight(1.5).TextColor(pal.TextMuted)
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+				ui.Column(c).Grow(1).Gap(2).Children(func() {
+					ui.Text(c, "桌面小组件（诗笺）").FontSize(16).Bold().TextColor(pal.TextPrimary)
+					ui.Text(c, "自动同步当前主题与内容池；点击诗句直达整首诗并高亮原行").
+						FontSize(12).LineHeight(1.5).TextColor(pal.TextMuted)
+				})
+				if pinnedCount > 0 {
+					ui.Textf(c, "已添加 %d 个", pinnedCount).FontSize(11).Bold().TextColor(pal.Accent)
+				}
+			})
+
+			// 所见即所得的小组件实时预览卡片
+			a.renderWidgetPreviewCard(c, pal, preview)
 
 			modes := []struct {
 				mode  domain.WidgetSourceMode
@@ -263,6 +283,7 @@ func (a *AppUI) renderWidgetSection(c *ui.Context, pal theme.Palette) {
 						bg, fg, bd = pal.Accent, pal.AccentText, pal.Accent
 					}
 					chip := ui.Box(c.Key("wm-"+string(m.mode))).Padding(6, 12).Radius(999).Background(bg).Border(1, bd).Cursor(ui.CursorPointer)
+					theme.ApplyPressScale(chip, 0.96)
 					chip.Children(func() {
 						ui.Text(c, m.label).FontSize(12).TextColor(fg)
 					})
@@ -285,6 +306,7 @@ func (a *AppUI) renderWidgetSection(c *ui.Context, pal theme.Palette) {
 							bg, fg, bd = pal.Accent, pal.AccentText, pal.Accent
 						}
 						chip := ui.Box(c.Key("wbk-"+b.ID)).Padding(5, 10).Radius(6).Background(bg).Border(1, bd).Cursor(ui.CursorPointer)
+						theme.ApplyPressScale(chip, 0.96)
 						chip.Children(func() {
 							ui.Text(c, b.Title).FontSize(12).TextColor(fg)
 						})
@@ -295,15 +317,78 @@ func (a *AppUI) renderWidgetSection(c *ui.Context, pal theme.Palette) {
 				})
 			}
 
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-				info := fmt.Sprintf("快照路径：%s", a.svc.WidgetTimelinePath())
-				if a.widgetCount > 0 {
-					info = fmt.Sprintf("已编译 %d 条小组件候选内容", a.widgetCount)
+			ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Wrap().Children(func() {
+				info := "尚未生成候选诗句，请先导入诗集或记一张散页"
+				if wCount > 0 {
+					info = fmt.Sprintf("已预编译 %d 条候选内容 · 支持桌面右上角一键换诗", wCount)
 				}
-				ui.Text(c, info).FontSize(11).TextColor(pal.TextMuted).Grow(1).MaxLines(1)
-				if ui.Button(c, "立即刷新快照").Clicked() {
+				ui.Text(c, info).FontSize(11).TextColor(pal.TextMuted).Grow(1).MaxLines(2)
+				if ui.PrimaryButton(c, "添加到桌面").Clicked() {
+					a.pinWidgetToHomeScreen()
+				}
+				if ui.Button(c, "立即刷新").Clicked() {
 					a.refreshWidgetSnapshot()
 				}
+			})
+		})
+}
+
+func (a *AppUI) renderWidgetPreviewCard(c *ui.Context, pal theme.Palette, preview *domain.WidgetTimeline) {
+	poemText := "纸上有风，留一首诗给自己。"
+	metaText := "导入诗集或记一张散页后将自动轮播"
+	tagText := "诗笺"
+	hintText := "读全诗 ›"
+	if preview != nil && len(preview.Entries) > 0 {
+		e := preview.Entries[0]
+		poemText = e.DisplayText
+		if e.EntryType == "quote" {
+			tagText = "散页"
+		}
+		if strings.HasPrefix(e.Deeplink, "stillpoets://quote/") {
+			hintText = "看散页 ›"
+		}
+		var parts []string
+		if strings.TrimSpace(e.PoemTitle) != "" {
+			parts = append(parts, "《"+strings.TrimSpace(e.PoemTitle)+"》")
+		} else if strings.TrimSpace(e.SourceTitle) != "" {
+			parts = append(parts, "《"+strings.TrimSpace(e.SourceTitle)+"》")
+		}
+		if strings.TrimSpace(e.Author) != "" {
+			parts = append(parts, strings.TrimSpace(e.Author))
+		}
+		if len(parts) > 0 {
+			metaText = strings.Join(parts, " · ")
+		} else {
+			metaText = "StillPoets"
+		}
+	}
+
+	ui.Column(c.Key("widget-live-preview")).
+		FillWidth().
+		MaxWidth(360).
+		Padding(14, 18).
+		Gap(10).
+		Radius(16).
+		Background(pal.Background).
+		Border(1, pal.Border).
+		Transition(theme.ColorTransition()).
+		Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
+				ui.Box(c).Width(6).Height(6).Radius(3).Background(pal.Accent)
+				ui.Text(c, tagText).FontSize(10).TextColor(pal.TextMuted).Grow(1)
+				ui.Text(c, "4×2 预览").FontSize(10).TextColor(pal.TextMuted)
+			})
+			poemEl := ui.Text(c, poemText).
+				FontSize(15).
+				LineHeight(1.45).
+				TextColor(pal.TextPrimary).
+				MaxLines(4)
+			if a.settings.FontFamily != "" {
+				poemEl.Font(a.settings.FontFamily)
+			}
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+				ui.Text(c, metaText).FontSize(11).TextColor(pal.TextMuted).Grow(1).MaxLines(1)
+				ui.Text(c, hintText).FontSize(10).TextColor(pal.Accent)
 			})
 		})
 }
@@ -362,6 +447,16 @@ func (a *AppUI) saveTypography(fontSize, lineHeight float32) {
 func (a *AppUI) applyFontFamily(family string) {
 	a.settings.FontFamily = family
 	a.settings.WidgetTheme.FontFamily = family
+	fontFile := ""
+	if family != "" {
+		for _, lf := range a.localFonts {
+			if lf.Family == family {
+				fontFile = lf.Filename
+				break
+			}
+		}
+	}
+	a.settings.WidgetTheme.FontFile = fontFile
 	st := a.settings
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -379,10 +474,13 @@ func (a *AppUI) updateWidgetMode(mode domain.WidgetSourceMode, bookID string) {
 		defer cancel()
 		if err := a.svc.SaveSettings(ctx, st); err == nil {
 			if tl, err := a.svc.RebuildWidgetTimeline(ctx); err == nil {
+				cp := tl
 				a.mu.Lock()
+				a.widgetPreview = &cp
 				a.widgetCount = len(tl.Entries)
+				a.activeWidgetCount = widgetbridge.ActiveWidgetCount()
 				a.mu.Unlock()
-				a.showTransientToast(fmt.Sprintf("小组件池已更新（%d 条）", len(tl.Entries)))
+				a.showTransientToast(fmt.Sprintf("小组件已同步更新（%d 条）", len(tl.Entries)))
 			}
 		}
 	}()
@@ -397,10 +495,32 @@ func (a *AppUI) refreshWidgetSnapshot() {
 			a.showTransientToast("刷新失败：" + err.Error())
 			return
 		}
+		cp := tl
 		a.mu.Lock()
+		a.widgetPreview = &cp
 		a.widgetCount = len(tl.Entries)
+		a.activeWidgetCount = widgetbridge.ActiveWidgetCount()
 		a.mu.Unlock()
-		a.showTransientToast(fmt.Sprintf("小组件快照已更新（%d 条）", len(tl.Entries)))
+		a.showTransientToast(fmt.Sprintf("桌面小组件已刷新（%d 条）", len(tl.Entries)))
+	}()
+}
+
+func (a *AppUI) pinWidgetToHomeScreen() {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = a.svc.RebuildWidgetTimeline(ctx)
+		ok, err := widgetbridge.RequestPin()
+		switch {
+		case errors.Is(err, errors.ErrUnsupported):
+			a.showTransientToast("请在设备主屏幕长按添加「StillPoets 诗笺」小组件")
+		case err != nil:
+			a.showTransientToast("无法呼出添加弹窗，请在桌面长按添加小组件")
+		case !ok:
+			a.showTransientToast("请在主屏幕长按空白处，搜索添加「StillPoets 诗笺」小组件")
+		default:
+			a.showTransientToast("已呼出桌面添加引导")
+		}
 	}()
 }
 

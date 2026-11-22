@@ -16,9 +16,9 @@ struct WidgetThemePayload: Codable, Equatable {
         preset: "artbook",
         fontFamily: nil,
         fontFile: nil,
-        bgColor: "#F7F3E9",
-        textColor: "#241F1A",
-        accentColor: "#B35C3E"
+        bgColor: "#F4F4EF",
+        textColor: "#1A1A1A",
+        accentColor: "#BC5B46"
     )
 }
 
@@ -71,8 +71,16 @@ struct WidgetEntryPayload: Codable, Equatable {
 
 struct WidgetTimelinePayload: Codable {
     var generatedAt: Int64?
+    var refreshIntervalMinutes: Int?
     var theme: WidgetThemePayload?
     var entries: [WidgetEntryPayload]?
+
+    var effectiveIntervalMinutes: Int {
+        guard let raw = refreshIntervalMinutes, raw > 0 else {
+            return 60
+        }
+        return min(max(raw, 15), 1440)
+    }
 }
 
 /// 负责从主 App 与 WidgetKit 扩展的共享通道读取预编译的 widget_timeline.json：

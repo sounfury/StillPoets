@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StillPoets App Icon 方案预览</title>
+  <style>
+    :root {
+      --bg: #F6F5F0;
+      --surface: #FFFFFF;
+      --border: #E2DFD7;
+      --text: #1A1A1A;
+      --muted: #6C6A63;
+      --accent: #F2573D;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 40px 28px 72px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", sans-serif;
+    }
+    .wrap { max-width: 1080px; margin: 0 auto; }
+    h1 { font-size: 26px; margin: 0 0 8px; letter-spacing: -0.01em; }
+    .sub { color: var(--muted); font-size: 14px; margin: 0 0 32px; }
+    h2 {
+      font-size: 18px;
+      margin: 40px 0 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .badge-new {
+      font-size: 11px;
+      font-weight: 600;
+      color: #fff;
+      background: #1F4CE6;
+      padding: 2px 8px;
+      border-radius: 99px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+      gap: 24px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+    }
+    .card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 18px;
+    }
+    .card-title { font-size: 17px; font-weight: 600; }
+    .card-tag {
+      font-size: 12px;
+      color: var(--accent);
+      background: #FFEBE6;
+      padding: 2px 9px;
+      border-radius: 99px;
+    }
+    .preview-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 22px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+    }
+    .sample { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+    .sample span { font-size: 11px; color: var(--muted); }
+    .ios-lg {
+      width: 128px; height: 128px;
+      border-radius: 28.5px;
+      overflow: hidden;
+      box-shadow: 0 10px 24px rgba(0,0,0,0.10), 0 1px 2px rgba(0,0,0,0.06);
+    }
+    .android-circle {
+      width: 108px; height: 108px;
+      border-radius: 50%;
+      overflow: hidden;
+      box-shadow: 0 8px 18px rgba(0,0,0,0.09);
+    }
+    .ios-sm {
+      width: 56px; height: 56px;
+      border-radius: 12.5px;
+      overflow: hidden;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.12);
+    }
+    .dark-strip {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      background: #1B1C20;
+      padding: 14px 18px;
+      border-radius: 12px;
+      color: #D8D5CE;
+      font-size: 12px;
+    }
+    .dark-strip .ios-sm { box-shadow: 0 4px 12px rgba(0,0,0,0.45); }
+    img { width: 100%; height: 100%; display: block; object-fit: cover; }
+    .desc { font-size: 13px; color: var(--muted); line-height: 1.6; margin: 14px 0 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>StillPoets 应用图标 SVG 方案预览</h1>
+    <p class="sub">同时检验 iOS 圆角矩形（Squircle）、Android 圆形裁切、桌面 56px 小尺寸与深色壁纸效果。</p>
+
+    <h2>V2 · 大胆文艺亮色系列 <span class="badge-new">NEW</span></h2>
+    <div class="grid">
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">V2-1 · 马蒂斯剪纸：跃动的诗页与晨阳</div>
+          <div class="card-tag">画册艺术感</div>
+        </div>
+        <div class="preview-row">
+          <div class="sample">
+            <div class="ios-lg"><img src="./icon-v2-1-matisse-stanza.svg" alt="V2-1 iOS" /></div>
+            <span>iOS 圆角</span>
+          </div>
+          <div class="sample">
+            <div class="android-circle"><img src="./icon-v2-1-matisse-stanza.svg" alt="V2-1 Android" /></div>
+            <span>Android 圆形</span>
+          </div>
+          <div class="sample">
+            <div class="ios-sm"><img src="./icon-v2-1-matisse-stanza.svg" alt="V2-1 Small" /></div>
+            <span>56px 桌面</span>
+          </div>
+        </div>
+        <div class="dark-strip">
+          <div class="ios-sm"><img src="./icon-v2-1-matisse-stanza.svg" alt="V2-1 Dark" /></div>
+          <span>珊瑚朱红 + 暖黄日轮 + 克莱因蓝与薄荷绿叠印诗叶</span>
+        </div>
+        <p class="desc">把 V3 抽象书封彻底拉高明度与张力：斜切掀起的奶油白纸页像一阵风吹开诗集，蓝绿双叶叠印出浓郁靛青。</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">V2-2 · 孔版画册：巨型雕塑引号与叠印日轮</div>
+          <div class="card-tag">孔版印刷风</div>
+        </div>
+        <div class="preview-row">
+          <div class="sample">
+            <div class="ios-lg"><img src="./icon-v2-2-risograph-quote.svg" alt="V2-2 iOS" /></div>
+            <span>iOS 圆角</span>
+          </div>
+          <div class="sample">
+            <div class="android-circle"><img src="./icon-v2-2-risograph-quote.svg" alt="V2-2 Android" /></div>
+            <span>Android 圆形</span>
+          </div>
+          <div class="sample">
+            <div class="ios-sm"><img src="./icon-v2-2-risograph-quote.svg" alt="V2-2 Small" /></div>
+            <span>56px 桌面</span>
+          </div>
+        </div>
+        <div class="dark-strip">
+          <div class="ios-sm"><img src="./icon-v2-2-risograph-quote.svg" alt="V2-2 Dark" /></div>
+          <span>柠檬奶黄亮底极其抓眼，深梅紫叠印一眼看出独立刊物气质</span>
+        </div>
+        <p class="desc">将“留住的句子”核心符号——弯引号放大到雕塑比例，与珊瑚朱红日轮孔版叠印，右下点缀奶白四芒诗眼。</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">V2-3 · 晴空拱窗：展翅诗页与暖阳</div>
+          <div class="card-tag">浪漫叙事感</div>
+        </div>
+        <div class="preview-row">
+          <div class="sample">
+            <div class="ios-lg"><img src="./icon-v2-3-arched-window.svg" alt="V2-3 iOS" /></div>
+            <span>iOS 圆角</span>
+          </div>
+          <div class="sample">
+            <div class="android-circle"><img src="./icon-v2-3-arched-window.svg" alt="V2-3 Android" /></div>
+            <span>Android 圆形</span>
+          </div>
+          <div class="sample">
+            <div class="ios-sm"><img src="./icon-v2-3-arched-window.svg" alt="V2-3 Small" /></div>
+            <span>56px 桌面</span>
+          </div>
+        </div>
+        <div class="dark-strip">
+          <div class="ios-sm"><img src="./icon-v2-3-arched-window.svg" alt="V2-3 Dark" /></div>
+          <span>高纯度克莱因蓝框出明亮地中海拱窗，翻开的诗集化作飞鸟</span>
+        </div>
+        <p class="desc">灵感来自波德莱尔《邀游》与霍克尼画册：在日常屏幕里推开一扇亮色拱窗，一只化作书页的白鸟掠过红日与绿丘。</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">V2-4 · 撞色诗刊：亮橘折页与四芒诗眼</div>
+          <div class="card-tag">高能现代感</div>
+        </div>
+        <div class="preview-row">
+          <div class="sample">
+            <div class="ios-lg"><img src="./icon-v2-4-bauhaus-poet.svg" alt="V2-4 iOS" /></div>
+            <span>iOS 圆角</span>
+          </div>
+          <div class="sample">
+            <div class="android-circle"><img src="./icon-v2-4-bauhaus-poet.svg" alt="V2-4 Android" /></div>
+            <span>Android 圆形</span>
+          </div>
+          <div class="sample">
+            <div class="ios-sm"><img src="./icon-v2-4-bauhaus-poet.svg" alt="V2-4 Small" /></div>
+            <span>56px 桌面</span>
+          </div>
+        </div>
+        <div class="dark-strip">
+          <div class="ios-sm"><img src="./icon-v2-4-bauhaus-poet.svg" alt="V2-4 Dark" /></div>
+          <span>亮珊瑚橘 + 天蓝柠檬黄叠印翠绿 + 微倾克莱因蓝阴影诗页</span>
+        </div>
+        <p class="desc">打破规矩对称构图：诗页微倾 5° 配克莱因蓝硬边撞色投影、亮黄缎带书签与四芒星诗眼，既大胆活泼又紧扣诗歌。</p>
+      </div>
+    </div>
+
+    <h2>V1 · 早期克制配色初稿（留档对比）</h2>
+    <div class="grid">
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">方案 1A · 画册风折页诗行</div>
+          <div class="card-tag">低饱和原型风</div>
+        </div>
+        <div class="preview-row">
+          <div class="sample">
+            <div class="ios-lg"><img src="./icon-1a-artbook-hero.svg" alt="1A iOS" /></div>
+            <span>iOS 圆角</span>
+          </div>
+          <div class="sample">
+            <div class="android-circle"><img src="./icon-1a-artbook-hero.svg" alt="1A Android" /></div>
+            <span>Android 圆形</span>
+          </div>
+          <div class="sample">
+            <div class="ios-sm"><img src="./icon-1a-artbook-hero.svg" alt="1A Small" /></div>
+            <span>56px 桌面</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">方案 1B · 墨蓝底暖纸折角诗页</div>
+          <div class="card-tag">低饱和沉稳风</div>
+        </div>
+        <div class="preview-row">
+          <div class="sample">
+            <div class="ios-lg"><img src="./icon-1b-folded-page.svg" alt="1B iOS" /></div>
+            <span>iOS 圆角</span>
+          </div>
+          <div class="sample">
+            <div class="android-circle"><img src="./icon-1b-folded-page.svg" alt="1B Android" /></div>
+            <span>Android 圆形</span>
+          </div>
+          <div class="sample">
+            <div class="ios-sm"><img src="./icon-1b-folded-page.svg" alt="1B Small" /></div>
+            <span>56px 桌面</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">方案 2A · 抽象书脊双弧</div>
+          <div class="card-tag">低饱和几何</div>
+        </div>
+        <div class="preview-row">
+          <div class="sample">
+            <div class="ios-lg"><img src="./icon-2a-book-curves.svg" alt="2A iOS" /></div>
+            <span>iOS 圆角</span>
+          </div>
+          <div class="sample">
+            <div class="android-circle"><img src="./icon-2a-book-curves.svg" alt="2A Android" /></div>
+            <span>Android 圆形</span>
+          </div>
+          <div class="sample">
+            <div class="ios-sm"><img src="./icon-2a-book-curves.svg" alt="2A Small" /></div>
+            <span>56px 桌面</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">方案 2B · 几何折页 S 徽标</div>
+          <div class="card-tag">深底徽标</div>
+        </div>
+        <div class="preview-row">
+          <div class="sample">
+            <div class="ios-lg"><img src="./icon-2b-ribbon-s.svg" alt="2B iOS" /></div>
+            <span>iOS 圆角</span>
+          </div>
+          <div class="sample">
+            <div class="android-circle"><img src="./icon-2b-ribbon-s.svg" alt="2B Android" /></div>
+            <span>Android 圆形</span>
+          </div>
+          <div class="sample">
+            <div class="ios-sm"><img src="./icon-2b-ribbon-s.svg" alt="2B Small" /></div>
+            <span>56px 桌面</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

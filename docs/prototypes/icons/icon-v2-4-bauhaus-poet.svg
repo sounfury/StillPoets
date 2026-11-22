@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>StillPoets V2-4 - 撞色诗刊：亮橘折页与四芒诗眼</title>
+  <defs>
+    <clipPath id="canvas">
+      <rect width="1024" height="1024"/>
+    </clipPath>
+    <clipPath id="sky-circle-clip">
+      <circle cx="746" cy="778" r="258"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#canvas)">
+    <!-- 元气亮珊瑚橘底色 -->
+    <rect width="1024" height="1024" fill="#FF6644"/>
+
+    <!-- 右下清透天蓝几何大圆块 -->
+    <circle cx="746" cy="778" r="258" fill="#52C5FA"/>
+
+    <!-- 左下明快柠檬黄几何圆块 -->
+    <circle cx="408" cy="864" r="250" fill="#FFE04F"/>
+
+    <!-- 天蓝与柠檬黄的孔版叠印亮翠绿交叠区 -->
+    <circle cx="408" cy="864" r="250" fill="#3CC481" clip-path="url(#sky-circle-clip)"/>
+
+    <!-- 居中微倾 -5° 的暖奶油白诗页卡片（大胆且富文艺呼吸感） -->
+    <g transform="rotate(-5 512 492)">
+      <!-- 轻盈偏置撞色阴影（克莱因蓝平面阴影，极富独立出版物感） -->
+      <rect x="260" y="206" width="516" height="612" rx="46" fill="#1B46D9"/>
+      <!-- 暖白主诗页 -->
+      <rect x="234" y="180" width="516" height="612" rx="46" fill="#FFFDF7"/>
+
+      <!-- 顶部亮黄书签缎带 -->
+      <path d="M 592 180 L 676 180 L 676 326 L 634 290 L 592 326 Z" fill="#FFD63D"/>
+
+      <!-- 错落现代诗三行（高饱和克莱因蓝） -->
+      <rect x="306" y="376" width="320" height="44" rx="22" fill="#1B46D9"/>
+      <rect x="306" y="468" width="368" height="44" rx="22" fill="#1B46D9"/>
+      <rect x="306" y="560" width="210" height="44" rx="22" fill="#1B46D9"/>
+
+      <!-- 诗行尽头的珊瑚橘四芒星（灵感诗眼） -->
+      <path
+        d="M 626 520
+           Q 626 582, 688 582
+           Q 626 582, 626 644
+           Q 626 582, 564 582
+           Q 626 582, 626 520 Z"
+        fill="#FF6644"
+      />
+    </g>
+  </g>
+</svg>

@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"image"
+	"image/color"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/mobile"
 
 	"stillpoets/internal/app"
 	"stillpoets/internal/domain"
@@ -488,4 +490,137 @@ func TestReloadSyncSurvivesExpiredContext(t *testing.T) {
 	if gotInstallID == "" {
 		t.Fatalf("expected installId to remain loaded when reloadSync receives expired context")
 	}
+}
+
+func TestEditorialPaperAfterThemeSwitchOnTablet(t *testing.T) {
+	mobile.SetLook(mobile.Material)
+	defer mobile.SetLook(mobile.Automatic)
+	appUI := newGestureTestAppUI(t)
+	appUI.activeTab = components.TabProfile
+	var windowBg string
+	appUI.SetWindowBgFunc(func(hex string) { windowBg = hex })
+	tt := ui.NewTester(appUI.Render, 1080, 720)
+	tt.SetInsets(24, 0, 16, 0)
+	if err := tt.Click("刊物风"); err != nil {
+		t.Fatal(err)
+	}
+	checkPaper := func(region string, x, y int) {
+		t.Helper()
+		if got := tt.Image().RGBAAt(x, y); got != (color.RGBA{255, 255, 255, 255}) {
+			t.Errorf("%s at (%d,%d) = %v, want opaque white", region, x, y, got)
+		}
+	}
+	advanceFrames(tt, 400*time.Millisecond)
+	checkPaper("top safe area", 540, 8)
+	checkPaper("profile header", 400, 45)
+	checkPaper("profile scroll gutter", 110, 180)
+	checkPaper("profile card interior", 914, 110)
+	if windowBg != "#FFFFFF" {
+		t.Errorf("native window background = %q, want #FFFFFF", windowBg)
+	}
+	appUI.activeTab = components.TabStats
+	tt.Frame()
+	advanceFrames(tt, 400*time.Millisecond)
+	checkPaper("stats scroll gutter", 80, 180)
+	appUI.activeTab = components.TabShelf
+	tt.Frame()
+	advanceFrames(tt, 400*time.Millisecond)
+	checkPaper("shelf gutter", 80, 180)
+	checkPaper("reader margin", 1068, 310)
+	appUI.selectShelfSubTab(components.SubTabQuotes)
+	tt.Frame()
+	advanceFrames(tt, 400*time.Millisecond)
+	checkPaper("quotes gutter", 80, 180)
+}
+
+func TestCupertinoFloatingGlassNavEditorialPaperAndOriginalCover(t *testing.T) {
+	mobile.SetLook(mobile.Cupertino)
+	defer mobile.SetLook(mobile.Automatic)
+
+	if !components.DefaultFloatingBottomNav() {
+		t.Fatalf("expected Cupertino look to default to floating bottom nav")
+	}
+
+	appUI := newGestureTestAppUI(t)
+	var syncedBg string
+	appUI.SetWindowBgFunc(func(hex string) { syncedBg = hex })
+
+	// 1. 刊物风纸白主题 + iOS 液态玻璃悬浮底栏（默认开启）+ 开启原书封面
+	if !appUI.useFloatingBottomNav() {
+		t.Fatalf("expected floating bottom nav enabled by default on Cupertino")
+	}
+	appUI.settings.ThemePreset = string(theme.PresetEditorial)
+	appUI.settings.UseOriginalCover = true
+	appUI.settings.WidgetRefreshMinutes = 180
+	appUI.activeTab = components.TabShelf
+	appUI.shelfSubTab = components.SubTabBooks
+
+	// 首次渲染触发原书封面异步解码，等待解码完成后再渲染最终画面
+	_ = ui.Render(appUI.Render, 390, 844, 2.0)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		appUI.uiThreadMu.Lock()
+		fetching := len(appUI.coverFetching)
+		appUI.uiThreadMu.Unlock()
+		if fetching == 0 {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+
+	imgBooks := ui.Render(appUI.Render, 390, 844, 2.0)
+	if imgBooks == nil {
+		t.Fatalf("expected non-nil Editorial Cupertino books render")
+	}
+	if syncedBg != "#FFFFFF" {
+		t.Fatalf("expected native window bg synced to #FFFFFF, got %q", syncedBg)
+	}
+	px := imgBooks.RGBAAt(20, 20)
+	if px != (color.RGBA{255, 255, 255, 255}) {
+		t.Fatalf("expected crisp paper white background, got RGBA(%d,%d,%d,%d)", px.R, px.G, px.B, px.A)
+	}
+	maybeSavePNG(t, imgBooks, "ios-editorial-origcover-books")
+
+	// 2. 切换为色块封面对比渲染
+	appUI.settings.UseOriginalCover = false
+	imgColorBlocks := ui.Render(appUI.Render, 390, 844, 2.0)
+	if imgColorBlocks == nil {
+		t.Fatalf("expected non-nil Editorial Cupertino color-block books render")
+	}
+	maybeSavePNG(t, imgColorBlocks, "ios-editorial-colorblock-books")
+
+	// 3. 设置页（含「使用原书封面」开关与「自动换诗频率」选择器）
+	appUI.activeTab = components.TabProfile
+	imgProfile := ui.Render(appUI.Render, 390, 844, 2.0)
+	if imgProfile == nil {
+		t.Fatalf("expected non-nil Editorial Cupertino profile render")
+	}
+	maybeSavePNG(t, imgProfile, "ios-editorial-profile")
+
+	// 4. 关闭悬浮底栏开关：在 Cupertino 下应切回经典贴底导航栏
+	off := false
+	appUI.settings.FloatingBottomBar = &off
+	if appUI.useFloatingBottomNav() {
+		t.Fatalf("expected explicit FloatingBottomBar=false to override Cupertino default")
+	}
+	appUI.activeTab = components.TabShelf
+	appUI.shelfSubTab = components.SubTabBooks
+	if imgDocked := ui.Render(appUI.Render, 390, 844, 1.0); imgDocked == nil {
+		t.Fatalf("expected non-nil docked bottom nav render when FloatingBottomBar=false")
+	}
+
+	// 5. 恢复开启并渲染暗夜极简 + iOS 液态玻璃悬浮底栏
+	on := true
+	appUI.settings.FloatingBottomBar = &on
+	appUI.settings.ThemePreset = string(theme.PresetDarkMinimal)
+	appUI.activeTab = components.TabShelf
+	appUI.shelfSubTab = components.SubTabBooks
+	imgDark := ui.Render(appUI.Render, 390, 844, 2.0)
+	if imgDark == nil {
+		t.Fatalf("expected non-nil DarkMinimal Cupertino render")
+	}
+	if syncedBg != "#151517" {
+		t.Fatalf("expected native window bg synced to #151517, got %q", syncedBg)
+	}
+	maybeSavePNG(t, imgDark, "ios-dark-books")
 }

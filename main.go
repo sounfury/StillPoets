@@ -12,6 +12,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"stillpoets/internal/app"
+	"stillpoets/internal/ui/theme"
 	"stillpoets/internal/ui/views"
 	"stillpoets/modules/widgetbridge"
 )
@@ -90,6 +91,11 @@ func main() {
 			return paths[0], nil
 		}
 
+		initialBg := theme.Artbook().BgHex
+		if st, err := svc.LoadSettings(context.Background()); err == nil {
+			initialBg = theme.ByID(theme.PresetID(st.ThemePreset)).BgHex
+		}
+
 		uiInst := views.NewAppUI(svc, pickFile, nil)
 		win = mygo.NewWindow(mygo.WindowOptions{
 			Title:           "StillPoets",
@@ -97,11 +103,14 @@ func main() {
 			Height:          720,
 			MinWidth:        360,
 			MinHeight:       600,
-			BackgroundColor: "#F4F4EF",
+			BackgroundColor: initialBg,
 			StateKey:        "stillpoets-main",
 			Content:         ui.View(uiInst.Render),
 		})
 		uiInst.SetUIDispatch(win.Update)
+		uiInst.SetWindowBgFunc(func(hex string) {
+			_ = win.SetBackgroundColor(hex)
+		})
 
 		mu.Lock()
 		appUI = uiInst

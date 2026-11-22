@@ -50,3 +50,25 @@ func TestBuildRawFilename(t *testing.T) {
 		t.Fatalf("expected truncated filename, got rune len %d", len([]rune(gotLong)))
 	}
 }
+
+func TestNormalizeWidgetRefreshMinutes(t *testing.T) {
+	tests := []struct {
+		in   int
+		want int
+	}{
+		{-10, DefaultWidgetRefreshMinutes},
+		{0, DefaultWidgetRefreshMinutes},
+		{5, MinWidgetRefreshMinutes},
+		{15, 15},
+		{30, 30},
+		{60, 60},
+		{180, 180},
+		{1440, 1440},
+		{3000, MaxWidgetRefreshMinutes},
+	}
+	for _, tc := range tests {
+		if got := NormalizeWidgetRefreshMinutes(tc.in); got != tc.want {
+			t.Fatalf("NormalizeWidgetRefreshMinutes(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}

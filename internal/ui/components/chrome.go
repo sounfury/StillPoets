@@ -1,7 +1,9 @@
 package components
 
 import (
+	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/mobile"
 
 	"stillpoets/internal/ui/layout"
 	"stillpoets/internal/ui/theme"
@@ -120,7 +122,96 @@ func ShelfSubTabs(c *ui.Context, pal theme.Palette, active ShelfSubTab, slidePro
 	})
 }
 
-// BottomNavBar 渲染手机端三栏底部导航（书架 / 统计 / 我的）。
+// DefaultFloatingBottomNav 返回当前运行平台默认是否启用液态玻璃悬浮底栏（iOS/Cupertino 默认开启，其余默认关闭）。
+func DefaultFloatingBottomNav() bool {
+	return mobile.Current() == mobile.Cupertino
+}
+
+// FloatingBottomNavBar 渲染 iOS 风格的悬浮液态玻璃底栏（底部柔化滚边 + 悬浮胶囊玻璃 + 选中态微光胶囊）。
+func FloatingBottomNavBar(c *ui.Context, pal theme.Palette, active NavTab, onSelect func(NavTab)) {
+	_, _, safeBottom, _ := c.SafeArea()
+	// 键盘弹出时自动隐藏悬浮底栏，避免遮挡输入区
+	if safeBottom > 120 {
+		return
+	}
+
+	// 底部柔化滚边，让滚动到悬浮胶囊下方的诗集/散页自然过渡并保留液态玻璃折射层次
+	ui.Box(c.Key("bottom-nav-scroll-edge")).
+		Absolute().
+		Left(0).Right(0).
+		Bottom(-safeBottom).
+		Height(84 + safeBottom).
+		PassThrough().
+		Material(glass.ScrollEdge{Bottom: true, Background: pal.Background})
+
+	isDark := pal.ID == theme.PresetDarkMinimal
+	shadowClr := ui.RGBA(0, 0, 0, 0.09)
+	activePillBg := pal.Accent.Alpha(0.12)
+	inactiveClr := pal.TextSecondary
+	if isDark {
+		shadowClr = ui.RGBA(0, 0, 0, 0.30)
+		activePillBg = ui.RGBA(255, 255, 255, 0.14)
+		inactiveClr = pal.TextMuted
+	}
+
+	ui.Row(c.Key("bottom-nav-float-wrap")).
+		Absolute().
+		Left(0).Right(0).
+		Bottom(8).
+		Padding(0, 22).
+		Justify(ui.Center).
+		PassThrough().
+		Children(func() {
+			ui.Row(c.Key("bottom-nav")).
+				FillWidth().
+				MaxWidth(316).
+				Height(60).
+				Padding(5, 6).
+				Gap(4).
+				Radius(30).
+				AlignItems(ui.Center).
+				Material(glass.Glass{Style: glass.Regular, Interactive: true}).
+				Shadow(0, 6, 20, 0, shadowClr).
+				Role(ui.RoleTabList).
+				Children(func() {
+					for _, item := range navItems() {
+						isActive := active == item.tab
+						col := ui.Column(c.Key(item.label)).
+							Grow(1).
+							Basis(0).
+							FillHeight().
+							Center().
+							Gap(2).
+							Radius(25).
+							Cursor(ui.CursorPointer).
+							Transition(theme.ColorTransition()).
+							Role(ui.RoleTab).
+							Label(item.label).
+							Checked(isActive)
+						if isActive {
+							col.Background(activePillBg)
+						}
+						theme.ApplyPressScale(col, 0.94)
+						col.Children(func() {
+							clr := inactiveClr
+							if isActive {
+								clr = pal.Accent
+							}
+							ui.Icon(c, item.icon).Width(20).Height(20).TextColor(clr)
+							lbl := ui.Text(c, item.label).FontSize(11).TextColor(clr)
+							if isActive {
+								lbl.Bold()
+							}
+						})
+						if col.Clicked() && onSelect != nil {
+							onSelect(item.tab)
+						}
+					}
+				})
+		})
+}
+
+// BottomNavBar 渲染手机端三栏底部导航（Android 经典平铺底栏：书架 / 统计 / 我的）。
 func BottomNavBar(c *ui.Context, pal theme.Palette, active NavTab, onSelect func(NavTab)) {
 	ui.Row(c.Key("bottom-nav")).
 		FillWidth().

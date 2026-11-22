@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>StillPoets V2-1 - 马蒂斯剪纸：跃动的诗页与晨阳</title>
+  <defs>
+    <clipPath id="canvas">
+      <rect width="1024" height="1024"/>
+    </clipPath>
+    <clipPath id="blue-leaf-clip">
+      <path d="M 248 824 C 288 552, 488 372, 816 336 C 756 618, 566 774, 248 824 Z"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#canvas)">
+    <!-- 明艳热烈的珊瑚朱红底 -->
+    <rect width="1024" height="1024" fill="#F2573D"/>
+
+    <!-- 左上角日光暖黄圆日（晨阳 / 诗意停顿） -->
+    <circle cx="286" cy="264" r="112" fill="#FFE056"/>
+
+    <!-- 大胆斜切掀起的奶油白诗页 -->
+    <path
+      d="M 0 650
+         C 172 508, 330 264, 636 186
+         C 824 138, 952 188, 1024 256
+         L 1024 1024
+         L 0 1024 Z"
+      fill="#FFFBF2"
+    />
+
+    <!-- 马蒂斯剪纸风：克莱因蓝主诗叶 / 跃动纸翼 -->
+    <path
+      d="M 248 824
+         C 288 552, 488 372, 816 336
+         C 756 618, 566 774, 248 824 Z"
+      fill="#1F4CE6"
+    />
+
+    <!-- 清亮薄荷翠绿次诗叶（展开的第二页，与蓝叶大方交叠） -->
+    <path
+      d="M 412 856
+         C 510 622, 688 532, 898 576
+         C 792 786, 628 866, 412 856 Z"
+      fill="#5CD19A"
+    />
+
+    <!-- Risograph 孔版叠印交叠色（深靛蓝，真实矢量裁切确保跨端渲染一致） -->
+    <path
+      d="M 412 856
+         C 510 622, 688 532, 898 576
+         C 792 786, 628 866, 412 856 Z"
+      fill="#122B7A"
+      clip-path="url(#blue-leaf-clip)"
+    />
+  </g>
+</svg>

@@ -80,10 +80,11 @@ func (s *Store) LoadSettings(ctx context.Context) (domain.Settings, error) {
 
 func (s *Store) loadSettingsLocked(ctx context.Context) (domain.Settings, error) {
 	settings := domain.Settings{
-		ThemePreset: "artbook",
-		FontSize:    18,
-		LineHeight:  1.85,
-		WidgetMode:  domain.WidgetModeGlobalRandom,
+		ThemePreset:          "artbook",
+		FontSize:             18,
+		LineHeight:           1.85,
+		WidgetMode:           domain.WidgetModeGlobalRandom,
+		WidgetRefreshMinutes: domain.DefaultWidgetRefreshMinutes,
 		WidgetTheme: domain.WidgetThemeConfig{
 			Preset: "artbook", BgColor: "#F4F4EF", TextColor: "#1A1A1A", AccentColor: "#BC5B46",
 		},
@@ -98,6 +99,7 @@ func (s *Store) loadSettingsLocked(ctx context.Context) (domain.Settings, error)
 	if err := json.Unmarshal([]byte(row.text(0)), &settings); err != nil {
 		return domain.Settings{}, fmt.Errorf("storage: decode settings: %w", err)
 	}
+	settings.WidgetRefreshMinutes = domain.NormalizeWidgetRefreshMinutes(settings.WidgetRefreshMinutes)
 	return settings, nil
 }
 

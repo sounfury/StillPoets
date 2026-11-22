@@ -44,16 +44,23 @@ struct StillPoetsTimelineProvider: TimelineProvider {
         let theme = payload.theme ?? .fallback
         let fontName = WidgetStore.resolveCustomFontName(fontFile: theme.fontFile)
         let manualOffset = WidgetStore.readManualOffset()
-        let hourSlot = Int(now.timeIntervalSince1970 / 3600)
+        let intervalMinutes = payload.effectiveIntervalMinutes
+        let baseSlot = slotIndex(at: now, intervalMinutes: intervalMinutes)
         let total = items.count
-        let slots = min(max(total, 1), 24)
+        let slots = total > 1 ? 24 : 1
 
         var timelineEntries: [StillPoetsWidgetEntry] = []
         timelineEntries.reserveCapacity(slots)
 
         for step in 0..<slots {
-            let entryDate = Calendar.current.date(byAdding: .hour, value: step, to: now) ?? now.addingTimeInterval(Double(step) * 3600)
-            let idx = (hourSlot + manualOffset + step) % total
+            let entryDate: Date
+            if step == 0 {
+                entryDate = now
+            } else {
+                entryDate = slotBoundaryDate(from: now, step: step, intervalMinutes: intervalMinutes)
+            }
+            let rawIdx = (baseSlot + manualOffset + step) % total
+            let idx = rawIdx >= 0 ? rawIdx : rawIdx + total
             timelineEntries.append(
                 StillPoetsWidgetEntry(
                     date: entryDate,
@@ -63,6 +70,12 @@ struct StillPoetsTimelineProvider: TimelineProvider {
                     hasMultipleEntries: total > 1
                 )
             )
+        }
+
+        if total <= 1 {
+            let nextRefresh = slotBoundaryDate(from: now, step: 1, intervalMinutes: intervalMinutes)
+            completion(Timeline(entries: timelineEntries, policy: .after(nextRefresh)))
+            return
         }
 
         completion(Timeline(entries: timelineEntries, policy: .atEnd))
@@ -83,8 +96,9 @@ struct StillPoetsTimelineProvider: TimelineProvider {
         let theme = payload.theme ?? .fallback
         let fontName = WidgetStore.resolveCustomFontName(fontFile: theme.fontFile)
         let manualOffset = WidgetStore.readManualOffset()
-        let hourSlot = Int(date.timeIntervalSince1970 / 3600)
-        let idx = (hourSlot + manualOffset) % items.count
+        let slot = slotIndex(at: date, intervalMinutes: payload.effectiveIntervalMinutes)
+        let rawIdx = (slot + manualOffset) % items.count
+        let idx = rawIdx >= 0 ? rawIdx : rawIdx + items.count
         return StillPoetsWidgetEntry(
             date: date,
             item: items[idx],
@@ -92,6 +106,27 @@ struct StillPoetsTimelineProvider: TimelineProvider {
             customFontName: fontName,
             hasMultipleEntries: items.count > 1
         )
+    }
+
+    private func slotIndex(at date: Date, intervalMinutes: Int) -> Int {
+        let clamped = min(max(intervalMinutes, 15), 1440)
+        let tzOffset = Double(TimeZone.current.secondsFromGMT(for: date))
+        let localSeconds = date.timeIntervalSince1970 + tzOffset
+        return Int(floor(localSeconds / Double(clamped * 60)))
+    }
+
+    private func slotBoundaryDate(from now: Date, step: Int, intervalMinutes: Int) -> Date {
+        let clamped = min(max(intervalMinutes, 15), 1440)
+        let cal = Calendar.current
+        let dayStart = cal.startOfDay(for: now)
+        if clamped >= 1440 {
+            return cal.date(byAdding: .day, value: step, to: dayStart) ?? now.addingTimeInterval(Double(step) * 86400)
+        }
+        let minutesSinceMidnight = max(0, Int(now.timeIntervalSince(dayStart) / 60))
+        let currentDaySlot = minutesSinceMidnight / clamped
+        let targetMinutes = (currentDaySlot + step) * clamped
+        return cal.date(byAdding: .minute, value: targetMinutes, to: dayStart)
+            ?? now.addingTimeInterval(Double(step * clamped * 60))
     }
 }
 
@@ -232,7 +267,7 @@ struct StillPoetsWidget: Widget {
             StillPoetsWidgetView(entry: entry)
         }
         .configurationDisplayName("StillPoets 诗笺")
-        .description("按小时轮播你的诗集与散页；点击诗句直达原诗并高亮原行。")
+        .description("按设定间隔轮播你的诗集与散页；点击诗句直达原诗并高亮原行。")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }

@@ -7,7 +7,7 @@ type PresetID string
 
 const (
 	PresetArtbook     PresetID = "artbook"      // 画册风（默认）：近白 + 鼠尾草绿 + 赤陶 + 墨蓝
-	PresetEditorial   PresetID = "editorial"    // 刊物风：暖纸白 + 克莱因刊物蓝 + 酒红 + 橄榄绿
+	PresetEditorial   PresetID = "editorial"    // 刊物风：清亮纸白 + 克莱因刊物蓝 + 酒红 + 橄榄绿
 	PresetDarkMinimal PresetID = "dark_minimal" // 暗夜极简：深炭黑 + 柔赤陶
 )
 
@@ -137,39 +137,42 @@ func Artbook() Palette {
 	}
 }
 
-// Editorial 返回第二内置主题「刊物风」（参考 stillpoets-v3-editorial.png）。
+// Editorial 返回第二内置主题「刊物风」（参考 stillpoets-v3-editorial.png，中性清亮纸白底，无偏黄感）。
 func Editorial() Palette {
+	const paperHex = "#FFFFFF"
+	paper := ui.Hex(paperHex)
+	border := ui.Hex("#E5E5E5")
 	return Palette{
 		ID:            PresetEditorial,
 		Name:          "刊物风",
-		Subtitle:      "暖纸白 · 刊物蓝 · 酒红",
+		Subtitle:      "纸白 · 刊物蓝 · 酒红",
 		HeroStyle:     HeroOpenPaper,
-		Background:    ui.Hex("#F7F5F0"),
-		ReaderPaper:   ui.Hex("#FAF8F3"),
-		Surface:       ui.Hex("#FCFBF8"),
-		SurfaceMuted:  ui.Hex("#ECEAE2"),
-		Border:        ui.Hex("#E2DFD7"),
+		Background:    paper,
+		ReaderPaper:   paper,
+		Surface:       paper,
+		SurfaceMuted:  ui.Hex("#F2F2F2"),
+		Border:        border,
 		TextPrimary:   ui.Hex("#181818"),
-		TextSecondary: ui.Hex("#4A4944"),
-		TextMuted:     ui.Hex("#7B7971"),
+		TextSecondary: ui.Hex("#4A4946"),
+		TextMuted:     ui.Hex("#7B7A74"),
 		Accent:        ui.Hex("#2345B5"),
 		AccentText:    ui.Hex("#FFFFFF"),
-		HeroBg:        ui.Hex("#F7F5F0"),
+		HeroBg:        paper,
 		HeroCorner:    ui.Hex("#2345B5"),
-		HighlightBg:   ui.Hex("#E6ECF8"),
+		HighlightBg:   ui.Hex("#E8EEF9"),
 		QuoteSwatches: []CardSwatch{
-			{Bg: ui.Hex("#FAF8F3"), Accent: ui.Hex("#2345B5"), Text: ui.Hex("#181818"), Muted: ui.Hex("#6F6D66"), Border: ui.Hex("#DDDAD0"), IsFilled: false},
+			{Bg: paper, Accent: ui.Hex("#2345B5"), Text: ui.Hex("#181818"), Muted: ui.Hex("#6F6E69"), Border: border, IsFilled: false},
 			{Bg: ui.Hex("#752B36"), Accent: ui.Hex("#F3E5E7"), Text: ui.Hex("#FAF6F3"), Muted: ui.Hex("#E3C8CC"), Border: ui.Hex("#66242E"), IsFilled: true},
 			{Bg: ui.Hex("#2345B5"), Accent: ui.Hex("#E3E9FA"), Text: ui.Hex("#F8FAFF"), Muted: ui.Hex("#C5D2F5"), Border: ui.Hex("#1C3A9E"), IsFilled: true},
-			{Bg: ui.Hex("#FCFBF8"), Accent: ui.Hex("#2345B5"), Text: ui.Hex("#181818"), Muted: ui.Hex("#7B7971"), Border: ui.Hex("#DDDAD0"), IsFilled: false},
+			{Bg: ui.Hex("#FCFCFC"), Accent: ui.Hex("#2345B5"), Text: ui.Hex("#181818"), Muted: ui.Hex("#7B7A74"), Border: border, IsFilled: false},
 		},
 		CoverSwatches: []CardSwatch{
-			{Bg: ui.Hex("#2345B5"), Accent: ui.Hex("#EFECE3"), Text: ui.Hex("#FAF9F5"), Muted: ui.Hex("#CBD6F6"), Border: ui.Hex("#1D3999"), IsFilled: true},
-			{Bg: ui.Hex("#752B36"), Accent: ui.Hex("#EFEAE0"), Text: ui.Hex("#FAF6F2"), Muted: ui.Hex("#E4C9CD"), Border: ui.Hex("#63222C"), IsFilled: true},
-			{Bg: ui.Hex("#5B664E"), Accent: ui.Hex("#EFECE3"), Text: ui.Hex("#F8F7F2"), Muted: ui.Hex("#D4DACD"), Border: ui.Hex("#4D5742"), IsFilled: true},
-			{Bg: ui.Hex("#2C323B"), Accent: ui.Hex("#E9E6DC"), Text: ui.Hex("#F5F4EF"), Muted: ui.Hex("#C2C7CF"), Border: ui.Hex("#22272F"), IsFilled: true},
+			{Bg: ui.Hex("#2345B5"), Accent: ui.Hex("#F2F1EC"), Text: ui.Hex("#FAFAF8"), Muted: ui.Hex("#CBD6F6"), Border: ui.Hex("#1D3999"), IsFilled: true},
+			{Bg: ui.Hex("#752B36"), Accent: ui.Hex("#F2EFEA"), Text: ui.Hex("#FAF7F5"), Muted: ui.Hex("#E4C9CD"), Border: ui.Hex("#63222C"), IsFilled: true},
+			{Bg: ui.Hex("#5B664E"), Accent: ui.Hex("#F2F1EC"), Text: ui.Hex("#F9F9F6"), Muted: ui.Hex("#D4DACD"), Border: ui.Hex("#4D5742"), IsFilled: true},
+			{Bg: ui.Hex("#2C323B"), Accent: ui.Hex("#EFEFE9"), Text: ui.Hex("#F7F7F4"), Muted: ui.Hex("#C2C7CF"), Border: ui.Hex("#22272F"), IsFilled: true},
 		},
-		BgHex:     "#F7F5F0",
+		BgHex:     paperHex,
 		TextHex:   "#181818",
 		AccentHex: "#2345B5",
 	}

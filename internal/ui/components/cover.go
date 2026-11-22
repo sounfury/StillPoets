@@ -15,8 +15,20 @@ func coverSeed(bookID string) uint32 {
 	return h.Sum32()
 }
 
-// BookCoverThumbnail 渲染「继续阅读」里的迷你抽象几何缩略封（44x44）。
-func BookCoverThumbnail(c *ui.Context, key, bookID string, pal theme.Palette) {
+// BookCoverThumbnail 渲染「继续阅读」与「统计」里的迷你书封缩略图（44x44）。
+// 若传入了原书封面图 coverImg 则优先展示原书封面，否则渲染抽象几何色块封。
+func BookCoverThumbnail(c *ui.Context, key, bookID string, coverImg ui.ImageSource, pal theme.Palette) {
+	if coverImg != nil {
+		ui.Box(c.Key(key)).
+			Width(44).Height(44).
+			Radius(4).
+			Clip().
+			Border(1, pal.Border).
+			Children(func() {
+				ui.Image(c, coverImg).Fill().Fit(ui.Cover)
+			})
+		return
+	}
 	sw := pal.CoverSwatches[int(coverSeed(bookID))%len(pal.CoverSwatches)]
 	ui.Box(c.Key(key)).Width(44).Height(44).Radius(4).Clip().
 		Draw(func(p *ui.Painter, r ui.Rect) {
@@ -30,8 +42,9 @@ func BookCoverThumbnail(c *ui.Context, key, bookID string, pal theme.Palette) {
 		})
 }
 
-// BookCoverCard 渲染现代独立出版风格的抽象几何书封（支持平板选中框与云端未下载角标）。
-func BookCoverCard(c *ui.Context, key, bookID, title, author string, pal theme.Palette, selected, isRemote bool) bool {
+// BookCoverCard 渲染诗集封面卡：开启原书封面且有图时展示 EPUB 原封面，否则呈现抽象几何色块封面。
+// forceCaptionBelow 为 true 时，无论是否命中原书封面均在封面下方统一排布书名/作者，保证网格行高整齐。
+func BookCoverCard(c *ui.Context, key, bookID, title, author string, coverImg ui.ImageSource, pal theme.Palette, selected, isRemote, forceCaptionBelow bool) bool {
 	seed := coverSeed(bookID)
 	sw := pal.CoverSwatches[int(seed)%len(pal.CoverSwatches)]
 	pattern := int(seed/7) % 4
@@ -39,36 +52,64 @@ func BookCoverCard(c *ui.Context, key, bookID, title, author string, pal theme.P
 	outer := ui.Column(c.Key(key)).Gap(6).Cursor(ui.CursorPointer)
 	theme.ApplyPressScale(outer, 0.965)
 	outer.Children(func() {
-		cover := ui.Box(c.Key("art")).
-			FillWidth().
-			AspectRatio(0.74).
-			Radius(4).
-			Clip().
-			Draw(func(p *ui.Painter, r ui.Rect) {
-				p.Fill(r, sw.Bg, 4)
-				drawGeometricMotif(p, r, pattern, sw, pal)
+		if coverImg != nil {
+			cover := ui.Box(c.Key("art-img")).
+				FillWidth().
+				AspectRatio(0.74).
+				Radius(4).
+				Clip().
+				Background(pal.SurfaceMuted)
+			if selected {
+				cover.Border(2, pal.Accent)
+			} else {
+				cover.Border(1, pal.Border)
+			}
+			cover.Children(func() {
+				ui.Image(c, coverImg).Fill().Fit(ui.Cover)
+				if isRemote {
+					ui.Box(c.Key("remote-badge")).
+						Absolute().
+						Top(6).Right(6).
+						Padding(4).
+						Radius(999).
+						Background(ui.RGBA(0, 0, 0, 0.45)).
+						Children(func() {
+							ui.Icon(c, IconCloud).Width(12).Height(12).TextColor(ui.RGB(255, 255, 255))
+						})
+				}
 			})
-		if selected {
-			cover.Border(2, pal.Accent)
-		}
-		cover.Children(func() {
-			ui.Column(c).Fill().Padding(11, 10).Children(func() {
-				ui.Row(c).AlignItems(ui.Start).Children(func() {
-					ui.Column(c).Grow(1).Gap(3).Children(func() {
-						ui.Text(c, title).FontSize(14).Bold().TextColor(sw.Text).MaxLines(2)
-						if author != "" {
-							ui.Text(c, author).FontSize(11).TextColor(sw.Muted).MaxLines(1)
+		} else {
+			cover := ui.Box(c.Key("art")).
+				FillWidth().
+				AspectRatio(0.74).
+				Radius(4).
+				Clip().
+				Draw(func(p *ui.Painter, r ui.Rect) {
+					p.Fill(r, sw.Bg, 4)
+					drawGeometricMotif(p, r, pattern, sw, pal)
+				})
+			if selected {
+				cover.Border(2, pal.Accent)
+			}
+			cover.Children(func() {
+				ui.Column(c).Fill().Padding(11, 10).Children(func() {
+					ui.Row(c).AlignItems(ui.Start).Children(func() {
+						ui.Column(c).Grow(1).Gap(3).Children(func() {
+							ui.Text(c, title).FontSize(14).Bold().TextColor(sw.Text).MaxLines(2)
+							if author != "" {
+								ui.Text(c, author).FontSize(11).TextColor(sw.Muted).MaxLines(1)
+							}
+						})
+						if isRemote {
+							ui.Icon(c, IconCloud).Width(14).Height(14).TextColor(sw.Muted)
 						}
 					})
-					if isRemote {
-						ui.Icon(c, IconCloud).Width(14).Height(14).TextColor(sw.Muted)
-					}
 				})
 			})
-		})
+		}
 
-		// 刊物风在封面下方额外保留极简书名/作者落款，画册风仅在封面内排版
-		if pal.HeroStyle == theme.HeroOpenPaper {
+		// 刊物风或开启原书封面模式时，在封面下方统一排布极简书名/作者落款
+		if pal.HeroStyle == theme.HeroOpenPaper || forceCaptionBelow || coverImg != nil {
 			ui.Column(c).Gap(2).Children(func() {
 				ui.Text(c, title).FontSize(13).Bold().TextColor(pal.TextPrimary).MaxLines(1)
 				if author != "" {

@@ -366,13 +366,14 @@ erDiagram
 1. 每当用户修改收藏/精选池、切换小组件配置、或后台任务唤醒时，Go 引擎生成一份轻量的 `widget_timeline.json`（通常 < 50KB），包含未来 24 小时按策略抽选好的多条条目：
    ```json
    {
-     "generatedAt": 1763654400,
+     "generatedAt": 1763654400000,
+     "refreshIntervalMinutes": 60,
      "theme": {
-       "preset": "xuan_paper",
+       "preset": "editorial",
        "fontFamily": "Songti",
-       "bgColor": "#F7F3E9",
-       "textColor": "#2C2824",
-       "accentColor": "#8C3B2B"
+       "bgColor": "#FFFFFF",
+       "textColor": "#181818",
+       "accentColor": "#2345B5"
      },
      "entries": [
        {

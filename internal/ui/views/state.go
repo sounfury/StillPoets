@@ -3,6 +3,9 @@ package views
 import (
 	"context"
 	"fmt"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"slices"
 	"strings"
@@ -24,6 +27,11 @@ import (
 // PickFileFunc 抽象原生文件选择框（EPUB 或字体导入），便于解耦 mygo.Dialog。
 type PickFileFunc func(title string, extensions []string) (string, error)
 
+type coverCacheEntry struct {
+	hash string
+	img  ui.ImageSource
+}
+
 // horizontalPagerState 保存横向手势翻页轨道的瞬时拖拽与同步状态。
 type horizontalPagerState struct {
 	scopeKey   string
@@ -36,11 +44,13 @@ type horizontalPagerState struct {
 
 // AppUI 持有 StillPoets V3 界面的全部视图状态与交互调度。
 type AppUI struct {
-	svc        *app.Service
-	pickFile   PickFileFunc
-	repaintFn  func()
-	uiDispatch func(func())
-	registerFn func(data []byte, family string) error
+	svc             *app.Service
+	pickFile        PickFileFunc
+	repaintFn       func()
+	uiDispatch      func(func())
+	windowBgFn      func(string)
+	lastWindowBgHex string
+	registerFn      func(data []byte, family string) error
 
 	mu          sync.Mutex // 保护回调指针、防重标记与请求序号等轻量控制状态
 	uiThreadMu  sync.Mutex // 无窗口无头测试模式下串行化 Render 与 dispatchUI
@@ -139,6 +149,10 @@ type AppUI struct {
 	// 排版滑块中间值（float64 适配 ui.Slider）
 	fontSizeSlider   float64
 	lineHeightSlider float64
+
+	// 原书封面异步解码内存缓存（仅在开启「使用原书封面」时按需填充）
+	coverCache    map[string]coverCacheEntry
+	coverFetching map[string]bool
 }
 
 // NewAppUI 创建绑定到核心 Service 的 V3 界面控制器。
@@ -152,6 +166,8 @@ func NewAppUI(svc *app.Service, pickFile PickFileFunc, repaint func()) *AppUI {
 		activeFavorites:  map[string]domain.FavoritePoem{},
 		selectedLines:    map[int]bool{},
 		downloadingBooks: map[string]bool{},
+		coverCache:       map[string]coverCacheEntry{},
+		coverFetching:    map[string]bool{},
 		davFolder:        webdav.DefaultAppFolder,
 	}
 
@@ -540,6 +556,7 @@ func (a *AppUI) Render(c *ui.Context) {
 	pal := a.palette()
 	c.SetTheme(pal.UITheme())
 	c.Root().Background(pal.Background)
+	a.syncNativeWindowBg(pal.BgHex)
 
 	isTablet := layout.IsTablet(c)
 
@@ -594,32 +611,51 @@ func (a *AppUI) renderTabletShell(c *ui.Context, pal theme.Palette) {
 	})
 }
 
+func (a *AppUI) useFloatingBottomNav() bool {
+	if a.settings.FloatingBottomBar != nil {
+		return *a.settings.FloatingBottomBar
+	}
+	return components.DefaultFloatingBottomNav()
+}
+
 func (a *AppUI) renderPhoneShell(c *ui.Context, pal theme.Palette) {
-	ui.Box(c.Key("phone-stage")).Fill().Clip().Children(func() {
-		ui.Column(c.Key("phone-root")).Fill().Children(func() {
-			ui.Box(c.Key("phone-body")).Grow(1).FillWidth().Clip().Children(func() {
-				tabKey := fmt.Sprintf("phone-tab-%d", a.activeTab)
-				ui.Box(c.Key(tabKey)).
-					Absolute().
-					Fill().
-					Background(pal.Background).
-					Transition(theme.TabPageTransition()).
-					Children(func() {
-						switch a.activeTab {
-						case components.TabShelf:
-							a.renderShelfPane(c, pal, false)
-						case components.TabStats:
-							a.renderStatsPage(c, pal, false)
-						case components.TabProfile:
-							a.renderProfilePage(c, pal, false)
-						}
-					})
+	floatingNav := a.useFloatingBottomNav()
+	renderBody := func() {
+		tabKey := fmt.Sprintf("phone-tab-%d", a.activeTab)
+		ui.Box(c.Key(tabKey)).
+			Absolute().
+			Fill().
+			Background(pal.Background).
+			Transition(theme.TabPageTransition()).
+			Children(func() {
+				switch a.activeTab {
+				case components.TabShelf:
+					a.renderShelfPane(c, pal, false)
+				case components.TabStats:
+					a.renderStatsPage(c, pal, false)
+				case components.TabProfile:
+					a.renderProfilePage(c, pal, false)
+				}
 			})
-			components.BottomNavBar(c, pal, a.activeTab, func(tab components.NavTab) {
+	}
+
+	ui.Box(c.Key("phone-stage")).Fill().Clip().Children(func() {
+		if floatingNav {
+			// iOS 液态玻璃悬浮底栏：正文全屏铺底以便滚动内容从胶囊下方透出折射
+			ui.Box(c.Key("phone-body")).Fill().Clip().Children(renderBody)
+			components.FloatingBottomNavBar(c, pal, a.activeTab, func(tab components.NavTab) {
 				a.activeTab = tab
 				a.readerMobile = false
 			})
-		})
+		} else {
+			ui.Column(c.Key("phone-root")).Fill().Children(func() {
+				ui.Box(c.Key("phone-body")).Grow(1).FillWidth().Clip().Children(renderBody)
+				components.BottomNavBar(c, pal, a.activeTab, func(tab components.NavTab) {
+					a.activeTab = tab
+					a.readerMobile = false
+				})
+			})
+		}
 
 		// 手机端全屏阅读器以右侧推入转场叠在书架之上，返回时保留书架滚动位置
 		if a.readerMobile && a.activeBookID != "" {
@@ -646,11 +682,15 @@ func (a *AppUI) renderSyncToastOverlay(c *ui.Context, pal theme.Palette, isTable
 	if w <= 0 || h <= 0 {
 		return
 	}
-	bottom := float32(76)
+	_, _, safeBottom, _ := c.SafeArea()
+	bottom := float32(76) + safeBottom
+	if a.useFloatingBottomNav() {
+		bottom = 84 + safeBottom
+	}
 	left := float32(0)
 	width := w
 	if isTablet {
-		bottom = 20
+		bottom = 20 + safeBottom
 		left = layout.NavRailWidthDIP
 		width = layout.MasterPaneWidthDIP
 	}
@@ -672,6 +712,69 @@ func (a *AppUI) renderSyncToastOverlay(c *ui.Context, pal theme.Palette, isTable
 
 func (a *AppUI) palette() theme.Palette {
 	return theme.ByID(theme.PresetID(a.settings.ThemePreset))
+}
+
+// SetWindowBgFunc 注册原生窗口背景色同步回调，确保切换主题时状态栏/安全区底色同步更新。
+func (a *AppUI) SetWindowBgFunc(fn func(hex string)) {
+	a.mu.Lock()
+	a.windowBgFn = fn
+	a.lastWindowBgHex = ""
+	a.mu.Unlock()
+}
+
+func (a *AppUI) syncNativeWindowBg(bgHex string) {
+	if bgHex == "" {
+		return
+	}
+	a.mu.Lock()
+	fn := a.windowBgFn
+	if fn == nil || a.lastWindowBgHex == bgHex {
+		a.mu.Unlock()
+		return
+	}
+	a.lastWindowBgHex = bgHex
+	a.mu.Unlock()
+	fn(bgHex)
+}
+
+// coverImageFor 按需返回诗集原书封面的已解码图像；未开启原书封面、无封面或尚未加载完成时返回 nil（自动回退几何色块封面）。
+func (a *AppUI) coverImageFor(book domain.Book) ui.ImageSource {
+	if !a.settings.UseOriginalCover || book.ID == "" || book.CoverHash == "" {
+		return nil
+	}
+	if entry, ok := a.coverCache[book.ID]; ok && entry.hash == book.CoverHash {
+		return entry.img
+	}
+	if a.coverFetching[book.ID] {
+		return nil
+	}
+	a.coverFetching[book.ID] = true
+
+	bookID := book.ID
+	coverHash := book.CoverHash
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		var decoded ui.ImageSource
+		path, err := a.svc.EnsureBookCover(ctx, bookID)
+		if err == nil && path != "" {
+			if raw, readErr := os.ReadFile(path); readErr == nil && len(raw) > 0 {
+				if img, decErr := ui.DecodeImage(raw); decErr == nil {
+					decoded = img
+				}
+			}
+		}
+
+		a.dispatchUI(func() {
+			delete(a.coverFetching, bookID)
+			a.coverCache[bookID] = coverCacheEntry{
+				hash: coverHash,
+				img:  decoded,
+			}
+		})
+	}()
+	return nil
 }
 
 func (a *AppUI) handleSyncToast(st app.SyncToastState) {

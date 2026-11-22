@@ -359,9 +359,32 @@ const (
 	WidgetModeQuotesRandom   WidgetSourceMode = "quotes_random"   // 散页池随机（诗歌节选跳回原诗，独立散句不跳原诗）
 )
 
+const (
+	// DefaultWidgetRefreshMinutes 是桌面小组件默认的自动换诗间隔（分钟）。
+	DefaultWidgetRefreshMinutes = 60
+	// MinWidgetRefreshMinutes 兼容 iOS WidgetKit 与 Android 省电策略的最小自动切换间隔。
+	MinWidgetRefreshMinutes = 15
+	// MaxWidgetRefreshMinutes 为桌面小组件允许的最大自动切换间隔（每天一次）。
+	MaxWidgetRefreshMinutes = 1440
+)
+
+// NormalizeWidgetRefreshMinutes 将用户配置的小组件切换间隔归一化至 [15, 1440] 分钟，未配置时回退默认 60 分钟。
+func NormalizeWidgetRefreshMinutes(minutes int) int {
+	if minutes <= 0 {
+		return DefaultWidgetRefreshMinutes
+	}
+	if minutes < MinWidgetRefreshMinutes {
+		return MinWidgetRefreshMinutes
+	}
+	if minutes > MaxWidgetRefreshMinutes {
+		return MaxWidgetRefreshMinutes
+	}
+	return minutes
+}
+
 // WidgetThemeConfig 定义小组件视觉主题，与原生 WidgetKit / Glance 共享。
 type WidgetThemeConfig struct {
-	Preset      string `json:"preset"`               // xuan_paper | dark_minimal | frosted_glass
+	Preset      string `json:"preset"`               // artbook | editorial | dark_minimal
 	FontFamily  string `json:"fontFamily,omitempty"` // 内置或已注册的自定义字体名
 	FontFile    string `json:"fontFile,omitempty"`   // 本地字体文件名
 	BgColor     string `json:"bgColor"`
@@ -371,21 +394,25 @@ type WidgetThemeConfig struct {
 
 // Settings 保存本机应用外观与小组件偏好（V1.0 仅本机存储，不跨端同步；严禁包含 WebDAV 密码）。
 type Settings struct {
-	ThemePreset  string            `json:"themePreset"`
-	FontFamily   string            `json:"fontFamily"`
-	FontSize     float32           `json:"fontSize"`
-	LineHeight   float32           `json:"lineHeight"`
-	WidgetMode   WidgetSourceMode  `json:"widgetMode"`
-	WidgetBookID string            `json:"widgetBookId,omitempty"`
-	WidgetTheme  WidgetThemeConfig `json:"widgetTheme"`
-	UpdatedAt    int64             `json:"updatedAt"`
+	ThemePreset          string            `json:"themePreset"`
+	UseOriginalCover     bool              `json:"useOriginalCover,omitempty"`
+	FloatingBottomBar    *bool             `json:"floatingBottomBar,omitempty"` // nil 表示跟随平台默认（iOS 开启、其他平台关闭）
+	FontFamily           string            `json:"fontFamily"`
+	FontSize             float32           `json:"fontSize"`
+	LineHeight           float32           `json:"lineHeight"`
+	WidgetMode           WidgetSourceMode  `json:"widgetMode"`
+	WidgetBookID         string            `json:"widgetBookId,omitempty"`
+	WidgetRefreshMinutes int               `json:"widgetRefreshMinutes,omitempty"`
+	WidgetTheme          WidgetThemeConfig `json:"widgetTheme"`
+	UpdatedAt            int64             `json:"updatedAt"`
 }
 
 // WidgetTimeline 是主 App 预编译写入共享容器、供原生小组件直接消费的快照协议。
 type WidgetTimeline struct {
-	GeneratedAt int64             `json:"generatedAt"`
-	Theme       WidgetThemeConfig `json:"theme"`
-	Entries     []WidgetEntry     `json:"entries"`
+	GeneratedAt            int64             `json:"generatedAt"`
+	RefreshIntervalMinutes int               `json:"refreshIntervalMinutes,omitempty"`
+	Theme                  WidgetThemeConfig `json:"theme"`
+	Entries                []WidgetEntry     `json:"entries"`
 }
 
 // WidgetEntry 表示单条小组件展示条目。

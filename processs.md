@@ -70,5 +70,8 @@
 - [x] 进入 Phase 2（Android）：实现 Android 原生桌面小组件（`modules/widgetbridge` + `StillPoetsWidgetProvider`）、App 内实时预览与一键添加桌面引导，以及点击小组件经 `stillpoets://` 冷/热启动唤起 App 高亮原诗或展开散页。
 - [x] 进入 Phase 2（iOS）：实现 iOS WidgetKit Extension（`native/ios/StillPoetsWidget/`）、Swift `widgetbridge` 双通道共享与 GitHub Actions `macos-latest` 打包工作流（支持默认 `unsigned` 免证书未签名真机 `.ipa` 及 `signed` 云端直签模式），已完成云端构建并在 iPhone 真机自签安装与小组件实测通过。
 - [x] 完成 `gpt-6.2-sol` 全仓深度 CR 并清零全部 P0 及核心 P1/P2 隐患（UI 主线程 `win.Update` 状态收口、单调请求代次防串书与乱序覆盖、导书+待传单事务原子化与同快照阻断幽灵书目、退役强覆盖校验、WebDAV 跨域 HTTPS 无凭据直链与写后 404 退避、可取消同步锁与优雅退出、小组件唯一临时文件原子写等），全仓测试通过并已重装平板。
+- [x] Phase 3 前体验细节打磨：桌面小组件自动换诗频率设置（15 分钟 ~ 每天，iOS WidgetKit 与 Android AppWidget 同步本地时区槽位调度）、iOS 液态玻璃悬浮胶囊底栏与设置页开关（iOS 默认开启，可切换经典贴底栏）、刊物风清亮纸白背景（`#FFFFFF`）及原生窗口底色实时联动、设置页「使用原书封面」统一开关（支持 EPUB 原书封面按需加载与无封面自动回退色块）。
 - [ ] 完成 iPhone + OPPO Pad Mini 双端 WebDAV（AList / 坚果云）同步闭环联调（书目、阅读进度、收藏、散页双向合并与正文按需拉取）。
+- [ ] 黑夜模式下自动切换到黑夜主题
+- [ ] 解决进度追踪问题，从小组件点过来跳转到的某首诗，使得进度跳跃，无法跳回顺序阅读时的进度
 - [ ] 推进 Phase 3（V1.1 扩展功能）：单诗微批注与长书评、完整统计看板（完读墙/热力图/作者云）、高清分享卡片导出、古诗词竖排阅读。

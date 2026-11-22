@@ -479,9 +479,55 @@ func (s *Service) EnsureBookContent(ctx context.Context, bookID string) error {
 	if err := s.store.SaveBookContent(ctx, book.ID, book.ContentHash, sp); err != nil {
 		return err
 	}
+	if book.CoverHash != "" {
+		_, _ = s.EnsureBookCover(ctx, book.ID)
+	}
 	_, _ = s.RebuildWidgetTimeline(ctx)
 	s.notifyDataChanged()
 	return nil
+}
+
+// BookCoverPath 返回某本诗集原书封面在本地缓存中的路径。
+func (s *Service) BookCoverPath(bookID string) string {
+	return filepath.Join(s.dataDir, "cache", "covers", bookID+".img")
+}
+
+// EnsureBookCover 返回本地缓存的原书封面路径；若本地缺失且云端存在对应封面则按需拉取并校验哈希。
+func (s *Service) EnsureBookCover(ctx context.Context, bookID string) (string, error) {
+	if strings.TrimSpace(bookID) == "" {
+		return "", nil
+	}
+	localPath := s.BookCoverPath(bookID)
+	if info, err := os.Stat(localPath); err == nil && info.Size() > 0 {
+		return localPath, nil
+	}
+	book, err := s.store.GetBook(ctx, bookID)
+	if err != nil {
+		return "", err
+	}
+	if book.CoverHash == "" {
+		return "", nil
+	}
+	client, err := s.newWebDAVClient()
+	if err != nil {
+		return "", err
+	}
+	const maxCoverBytes = 8 << 20
+	raw, _, err := client.GetWithLimit(ctx, booksync.BookCoverPath(book.ID), maxCoverBytes)
+	if err != nil || len(raw) == 0 {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	if hex.EncodeToString(sum[:]) != book.CoverHash {
+		return "", errors.New("app: remote cover hash mismatch")
+	}
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(localPath, raw, 0o600); err != nil {
+		return "", err
+	}
+	return localPath, nil
 }
 
 func (s *Service) ClearBookCache(ctx context.Context, bookID string) error {

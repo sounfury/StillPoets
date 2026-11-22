@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/mobile"
 
 	"stillpoets/internal/app"
 	"stillpoets/internal/domain"
@@ -21,10 +22,14 @@ func (a *AppUI) renderProfilePage(c *ui.Context, pal theme.Palette, isTablet boo
 	ui.Column(c.Key("profile-page")).Fill().Children(func() {
 		components.BrandHeader(c, pal, "我的", false, nil, nil)
 
+		bottomPad := float32(96)
+		if !isTablet && a.useFloatingBottomNav() {
+			bottomPad = 112
+		}
 		ui.Scroll(c.Key("profile-scroll")).Grow(1).FillWidth().Children(func() {
-			ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(12, 20, 96, 20).Children(func() {
+			ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(12, 20, bottomPad, 20).Children(func() {
 				ui.Column(c).FillWidth().MaxWidth(layout.ReadingMaxWidthDIP + 80).Gap(20).Children(func() {
-					a.renderThemeAndFontSection(c, pal)
+					a.renderThemeAndFontSection(c, pal, isTablet)
 					a.renderWebDAVSection(c, pal)
 					a.renderWidgetSection(c, pal)
 					a.renderCacheSection(c, pal)
@@ -34,7 +39,7 @@ func (a *AppUI) renderProfilePage(c *ui.Context, pal theme.Palette, isTablet boo
 	})
 }
 
-func (a *AppUI) renderThemeAndFontSection(c *ui.Context, pal theme.Palette) {
+func (a *AppUI) renderThemeAndFontSection(c *ui.Context, pal theme.Palette, isTablet bool) {
 	ui.Column(c.Key("sec-theme")).
 		FillWidth().
 		Padding(18).
@@ -77,6 +82,56 @@ func (a *AppUI) renderThemeAndFontSection(c *ui.Context, pal theme.Palette) {
 					}
 				}
 			})
+
+			// 书架封面展示样式开关：原书封面 vs 几何色块封面
+			ui.Row(c.Key("cover-style-row")).
+				FillWidth().
+				Padding(10, 12).
+				Gap(12).
+				Radius(8).
+				Background(pal.Background).
+				Border(1, pal.Border).
+				AlignItems(ui.Center).
+				Children(func() {
+					ui.Column(c).Grow(1).Gap(2).Children(func() {
+						ui.Text(c, "使用原书封面").FontSize(13).Bold().TextColor(pal.TextPrimary)
+						desc := "当前为抽象色块封面；开启后优先展示 EPUB 自带封面，无封面自动回退色块"
+						if a.settings.UseOriginalCover {
+							desc = "已开启原书封面；无封面的诗集自动回退为抽象色块封面"
+						}
+						ui.Text(c, desc).FontSize(11).LineHeight(1.45).TextColor(pal.TextMuted)
+					})
+					useOriginal := a.settings.UseOriginalCover
+					if mobile.Switch(c.Key("sw-original-cover"), &useOriginal).Changed() {
+						a.toggleUseOriginalCover(useOriginal)
+					}
+				})
+
+			// 手机端悬浮液态玻璃底栏开关（平板使用左侧导航轨，无需展示）
+			if !isTablet {
+				ui.Row(c.Key("floating-nav-row")).
+					FillWidth().
+					Padding(10, 12).
+					Gap(12).
+					Radius(8).
+					Background(pal.Background).
+					Border(1, pal.Border).
+					AlignItems(ui.Center).
+					Children(func() {
+						floatingOn := a.useFloatingBottomNav()
+						ui.Column(c).Grow(1).Gap(2).Children(func() {
+							ui.Text(c, "液态玻璃悬浮底栏").FontSize(13).Bold().TextColor(pal.TextPrimary)
+							desc := "当前为经典贴底导航栏；开启后切换为液态玻璃悬浮胶囊底栏"
+							if floatingOn {
+								desc = "当前为液态玻璃悬浮胶囊底栏；关闭后切换为经典贴底导航栏"
+							}
+							ui.Text(c, desc).FontSize(11).LineHeight(1.45).TextColor(pal.TextMuted)
+						})
+						if mobile.Switch(c.Key("sw-floating-nav"), &floatingOn).Changed() {
+							a.toggleFloatingBottomBar(floatingOn)
+						}
+					})
+			}
 
 			// 字号与行距滑块
 			ui.Row(c).FillWidth().Gap(16).AlignItems(ui.Center).Children(func() {
@@ -317,10 +372,53 @@ func (a *AppUI) renderWidgetSection(c *ui.Context, pal theme.Palette) {
 				})
 			}
 
+			// 自动换诗间隔选择器
+			curInterval := domain.NormalizeWidgetRefreshMinutes(a.settings.WidgetRefreshMinutes)
+			ui.Column(c.Key("widget-interval-sec")).FillWidth().Gap(8).Children(func() {
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "自动换诗频率").FontSize(12).Bold().TextColor(pal.TextSecondary).Grow(1)
+					ui.Text(c, formatWidgetIntervalLabel(curInterval)).FontSize(11).TextColor(pal.Accent)
+				})
+				intervals := []struct {
+					minutes int
+					label   string
+				}{
+					{15, "15 分钟"},
+					{30, "30 分钟"},
+					{60, "1 小时"},
+					{180, "3 小时"},
+					{360, "6 小时"},
+					{720, "12 小时"},
+					{1440, "每天"},
+				}
+				ui.Row(c.Key("widget-intervals")).Gap(8).Wrap().Children(func() {
+					for _, opt := range intervals {
+						active := curInterval == opt.minutes
+						bg, fg, bd := pal.Background, pal.TextSecondary, pal.Border
+						if active {
+							bg, fg, bd = pal.Accent, pal.AccentText, pal.Accent
+						}
+						chip := ui.Box(c.Key(fmt.Sprintf("wi-%d", opt.minutes))).
+							Padding(5, 11).
+							Radius(999).
+							Background(bg).
+							Border(1, bd).
+							Cursor(ui.CursorPointer)
+						theme.ApplyPressScale(chip, 0.96)
+						chip.Children(func() {
+							ui.Text(c, opt.label).FontSize(12).TextColor(fg)
+						})
+						if chip.Clicked() && !active {
+							a.updateWidgetRefreshInterval(opt.minutes)
+						}
+					}
+				})
+			})
+
 			ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Wrap().Children(func() {
 				info := "尚未生成候选诗句，请先导入诗集或记一张散页"
 				if wCount > 0 {
-					info = fmt.Sprintf("已预编译 %d 条候选内容 · 支持桌面右上角一键换诗", wCount)
+					info = fmt.Sprintf("已预编译 %d 条候选内容 · %s自动换诗 · 支持桌面一键换诗", wCount, formatWidgetIntervalLabel(curInterval))
 				}
 				ui.Text(c, info).FontSize(11).TextColor(pal.TextMuted).Grow(1).MaxLines(2)
 				if ui.PrimaryButton(c, "添加到桌面").Clicked() {
@@ -425,6 +523,7 @@ func (a *AppUI) applyThemePreset(preset theme.Palette) {
 	a.settings.WidgetTheme.BgColor = preset.BgHex
 	a.settings.WidgetTheme.TextColor = preset.TextHex
 	a.settings.WidgetTheme.AccentColor = preset.AccentHex
+	a.syncNativeWindowBg(preset.BgHex)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -435,6 +534,75 @@ func (a *AppUI) applyThemePreset(preset theme.Palette) {
 			st.WidgetTheme.TextColor = preset.TextHex
 			st.WidgetTheme.AccentColor = preset.AccentHex
 		})
+	}()
+}
+
+func (a *AppUI) toggleUseOriginalCover(useOriginal bool) {
+	a.settings.UseOriginalCover = useOriginal
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = a.svc.UpdateSettings(ctx, func(st *domain.Settings) {
+			st.UseOriginalCover = useOriginal
+		})
+		if useOriginal {
+			a.showTransientToast("已切换为原书封面（无封面自动回退色块）")
+		} else {
+			a.showTransientToast("已切换为统一色块封面")
+		}
+	}()
+}
+
+func (a *AppUI) toggleFloatingBottomBar(enabled bool) {
+	v := enabled
+	a.settings.FloatingBottomBar = &v
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = a.svc.UpdateSettings(ctx, func(st *domain.Settings) {
+			vv := enabled
+			st.FloatingBottomBar = &vv
+		})
+		if enabled {
+			a.showTransientToast("已开启液态玻璃悬浮底栏")
+		} else {
+			a.showTransientToast("已切换为经典贴底导航栏")
+		}
+	}()
+}
+
+func formatWidgetIntervalLabel(minutes int) string {
+	m := domain.NormalizeWidgetRefreshMinutes(minutes)
+	switch {
+	case m >= 1440:
+		return "每天"
+	case m%60 == 0:
+		return fmt.Sprintf("每 %d 小时", m/60)
+	default:
+		return fmt.Sprintf("每 %d 分钟", m)
+	}
+}
+
+func (a *AppUI) updateWidgetRefreshInterval(minutes int) {
+	normalized := domain.NormalizeWidgetRefreshMinutes(minutes)
+	a.settings.WidgetRefreshMinutes = normalized
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := a.svc.UpdateSettings(ctx, func(st *domain.Settings) {
+			st.WidgetRefreshMinutes = normalized
+		}); err == nil {
+			if tl, err := a.svc.ReadWidgetTimeline(); err == nil {
+				cp := tl
+				activeCnt := widgetbridge.ActiveWidgetCount()
+				a.dispatchUI(func() {
+					a.widgetPreview = &cp
+					a.widgetCount = len(tl.Entries)
+					a.activeWidgetCount = activeCnt
+				})
+				a.showTransientToast(fmt.Sprintf("小组件已设为%s自动换诗", formatWidgetIntervalLabel(normalized)))
+			}
+		}
 	}()
 }
 

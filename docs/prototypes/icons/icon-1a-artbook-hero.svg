@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>StillPoets Icon 1A - 画册风折页诗行</title>
+  <defs>
+    <clipPath id="canvas-clip">
+      <rect width="1024" height="1024"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#canvas-clip)">
+    <!-- 鼠尾草绿画册底色（源自 Artbook HeroBg） -->
+    <rect width="1024" height="1024" fill="#CFD8C6"/>
+
+    <!-- 右上角赤陶四分之一圆弧角标（呼应「今日重读」卡片） -->
+    <path d="M 544 0 L 1024 0 L 1024 480 A 480 480 0 0 1 544 0 Z" fill="#BC5B46"/>
+
+    <!-- 现代诗错落三行与停顿句点（均位于 Android 66% 圆形安全区内） -->
+    <rect x="216" y="408" width="404" height="58" rx="29" fill="#1A1A1A"/>
+    <rect x="216" y="524" width="548" height="58" rx="29" fill="#1A1A1A"/>
+    <rect x="216" y="640" width="292" height="58" rx="29" fill="#1A1A1A"/>
+
+    <!-- 诗节收束的赤陶停顿圆点（呼应 Still 与右上角标） -->
+    <circle cx="572" cy="669" r="30" fill="#BC5B46"/>
+  </g>
+</svg>

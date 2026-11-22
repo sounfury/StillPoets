@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>StillPoets Icon 1B - 墨蓝底暖纸折角诗页</title>
+  <!-- 墨蓝实色底（浅色壁纸下边界利落） -->
+  <rect width="1024" height="1024" fill="#334C68"/>
+
+  <!-- 居中暖纸白诗页（右上 164px 折角切面） -->
+  <path
+    d="M 278 184
+       L 614 184
+       L 780 350
+       L 780 804
+       A 36 36 0 0 1 744 840
+       L 278 840
+       A 36 36 0 0 1 242 804
+       L 242 220
+       A 36 36 0 0 1 278 184 Z"
+    fill="#F4F4EF"
+  />
+
+  <!-- 折角下方柔和折影 -->
+  <path
+    d="M 636 350 L 780 350 L 780 390 Z"
+    fill="#DFDDD5"
+  />
+
+  <!-- 右上赤陶几何折角 -->
+  <path
+    d="M 614 184
+       L 780 350
+       L 642 350
+       A 28 28 0 0 1 614 322 Z"
+    fill="#BC5B46"
+  />
+
+  <!-- 诗题眉标（鼠尾草深绿） -->
+  <rect x="318" y="284" width="144" height="26" rx="13" fill="#90A484"/>
+
+  <!-- 错落现代诗三行 -->
+  <rect x="318" y="440" width="376" height="44" rx="22" fill="#1A1A1A"/>
+  <rect x="318" y="528" width="302" height="44" rx="22" fill="#1A1A1A"/>
+  <rect x="318" y="616" width="204" height="44" rx="22" fill="#1A1A1A"/>
+
+  <!-- 右下赤陶停顿句点 -->
+  <circle cx="684" cy="738" r="24" fill="#BC5B46"/>
+</svg>

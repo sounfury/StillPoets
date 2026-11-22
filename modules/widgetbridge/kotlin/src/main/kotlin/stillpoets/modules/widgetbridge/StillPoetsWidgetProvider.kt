@@ -1,5 +1,6 @@
 package stillpoets.modules.widgetbridge
 
+import android.app.AlarmManager
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
@@ -22,7 +23,10 @@ import android.util.TypedValue
 import android.view.View
 import android.widget.RemoteViews
 import java.io.File
+import java.util.Calendar
+import java.util.TimeZone
 import org.json.JSONObject
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -39,6 +43,12 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
         for (appWidgetId in appWidgetIds) {
             updateSingleWidget(context, appWidgetManager, appWidgetId)
         }
+        scheduleNextRefresh(context)
+    }
+
+    override fun onDisabled(context: Context) {
+        super.onDisabled(context)
+        cancelScheduledRefresh(context)
     }
 
     override fun onAppWidgetOptionsChanged(
@@ -62,15 +72,20 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
 
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
-        if (intent.action == ACTION_NEXT_ENTRY) {
-            val manager = AppWidgetManager.getInstance(context) ?: return
-            val appWidgetId = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
-            if (appWidgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
-                val p = prefs(context)
-                val next = p.getInt(KEY_OFFSET_PREFIX + appWidgetId, 0) + 1
-                p.edit().putInt(KEY_OFFSET_PREFIX + appWidgetId, next).apply()
-                updateSingleWidget(context, manager, appWidgetId)
-            } else {
+        when (intent.action) {
+            ACTION_NEXT_ENTRY -> {
+                val manager = AppWidgetManager.getInstance(context) ?: return
+                val appWidgetId = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
+                if (appWidgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
+                    val p = prefs(context)
+                    val next = p.getInt(KEY_OFFSET_PREFIX + appWidgetId, 0) + 1
+                    p.edit().putInt(KEY_OFFSET_PREFIX + appWidgetId, next).apply()
+                    updateSingleWidget(context, manager, appWidgetId)
+                } else {
+                    updateAllWidgets(context)
+                }
+            }
+            ACTION_TIMED_REFRESH -> {
                 updateAllWidgets(context)
             }
         }
@@ -78,6 +93,12 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
 
     companion object {
         const val ACTION_NEXT_ENTRY = "stillpoets.modules.widgetbridge.ACTION_NEXT_ENTRY"
+        const val ACTION_TIMED_REFRESH = "stillpoets.modules.widgetbridge.ACTION_TIMED_REFRESH"
+
+        private const val REQUEST_CODE_TIMED_REFRESH = 9001
+        private const val DEFAULT_INTERVAL_MINUTES = 60
+        private const val MIN_INTERVAL_MINUTES = 15
+        private const val MAX_INTERVAL_MINUTES = 1440
 
         private const val PREFS_NAME = "stillpoets_widget_prefs"
         private const val KEY_TIMELINE_PATH = "timeline_path"
@@ -116,10 +137,14 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
             val appCtx = context.applicationContext
             val manager = AppWidgetManager.getInstance(appCtx) ?: return
             val ids = manager.getAppWidgetIds(ComponentName(appCtx, StillPoetsWidgetProvider::class.java))
-            if (ids.isEmpty()) return
+            if (ids.isEmpty()) {
+                cancelScheduledRefresh(appCtx)
+                return
+            }
             for (id in ids) {
                 updateSingleWidget(appCtx, manager, id)
             }
+            scheduleNextRefresh(appCtx)
         }
 
         private fun updateSingleWidget(context: Context, manager: AppWidgetManager, appWidgetId: Int) {
@@ -152,12 +177,13 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
             views.setTextColor(R.id.widget_meta_text, secondaryColor)
             views.setTextColor(R.id.widget_hint_text, accentColor)
 
-            // 3. 按当前小时槽位 + 实例手动偏移挑出展示条目
+            // 3. 按用户配置的切换间隔槽位（对齐本地时区） + 实例手动偏移挑出展示条目
             val entries = timeline?.entries.orEmpty()
+            val intervalMinutes = normalizeIntervalMinutes(timeline?.refreshIntervalMinutes ?: DEFAULT_INTERVAL_MINUTES)
             val entry = if (entries.isNotEmpty()) {
-                val hourBucket = (System.currentTimeMillis() / 3_600_000L).toInt()
+                val slot = currentSlot(System.currentTimeMillis(), intervalMinutes)
                 val manualOffset = prefs(context).getInt(KEY_OFFSET_PREFIX + appWidgetId, 0)
-                val idx = ((hourBucket + manualOffset) % entries.size + entries.size) % entries.size
+                val idx = ((slot + manualOffset) % entries.size + entries.size) % entries.size
                 entries[idx]
             } else {
                 null
@@ -328,11 +354,85 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
                 }
                 WidgetTimeline(
                     generatedAt = root.optLong("generatedAt", 0L),
+                    refreshIntervalMinutes = normalizeIntervalMinutes(root.optInt("refreshIntervalMinutes", DEFAULT_INTERVAL_MINUTES)),
                     theme = theme,
                     entries = entries,
                 )
             } catch (_: Throwable) {
                 null
+            }
+        }
+
+        private fun normalizeIntervalMinutes(raw: Int): Int {
+            if (raw <= 0) return DEFAULT_INTERVAL_MINUTES
+            return raw.coerceIn(MIN_INTERVAL_MINUTES, MAX_INTERVAL_MINUTES)
+        }
+
+        private fun currentSlot(nowMs: Long, intervalMinutes: Int): Int {
+            val clamped = normalizeIntervalMinutes(intervalMinutes)
+            val tzOffsetMs = TimeZone.getDefault().getOffset(nowMs).toLong()
+            val localSec = (nowMs + tzOffsetMs).toDouble() / 1000.0
+            return floor(localSec / (clamped * 60.0)).toInt()
+        }
+
+        private fun nextBoundaryMillis(nowMs: Long, intervalMinutes: Int): Long {
+            val clamped = normalizeIntervalMinutes(intervalMinutes)
+            val cal = Calendar.getInstance().apply {
+                timeInMillis = nowMs
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+            if (clamped >= MAX_INTERVAL_MINUTES) {
+                cal.set(Calendar.HOUR_OF_DAY, 0)
+                cal.set(Calendar.MINUTE, 0)
+                cal.add(Calendar.DAY_OF_YEAR, 1)
+            } else {
+                val minutesSinceMidnight = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+                val nextMinutes = ((minutesSinceMidnight / clamped) + 1) * clamped
+                cal.set(Calendar.HOUR_OF_DAY, 0)
+                cal.set(Calendar.MINUTE, 0)
+                cal.add(Calendar.MINUTE, nextMinutes)
+            }
+            val target = cal.timeInMillis
+            return if (target <= nowMs + 5_000L) nowMs + clamped.toLong() * 60_000L else target
+        }
+
+        private fun timedRefreshPendingIntent(context: Context): PendingIntent {
+            val intent = Intent(context, StillPoetsWidgetProvider::class.java).apply {
+                action = ACTION_TIMED_REFRESH
+            }
+            return PendingIntent.getBroadcast(
+                context,
+                REQUEST_CODE_TIMED_REFRESH,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        }
+
+        private fun scheduleNextRefresh(context: Context) {
+            try {
+                val appCtx = context.applicationContext
+                val manager = AppWidgetManager.getInstance(appCtx) ?: return
+                val ids = manager.getAppWidgetIds(ComponentName(appCtx, StillPoetsWidgetProvider::class.java))
+                if (ids.isEmpty()) {
+                    cancelScheduledRefresh(appCtx)
+                    return
+                }
+                val timeline = loadTimeline(appCtx, null)
+                val intervalMinutes = normalizeIntervalMinutes(timeline?.refreshIntervalMinutes ?: DEFAULT_INTERVAL_MINUTES)
+                val alarmManager = appCtx.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+                val triggerAt = nextBoundaryMillis(System.currentTimeMillis(), intervalMinutes)
+                alarmManager.set(AlarmManager.RTC, triggerAt, timedRefreshPendingIntent(appCtx))
+            } catch (_: Throwable) {
+                // 忽略个别定制 ROM 的后台闹钟限制，由 appwidget-provider updatePeriodMillis 兜底刷新
+            }
+        }
+
+        private fun cancelScheduledRefresh(context: Context) {
+            try {
+                val alarmManager = context.applicationContext.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+                alarmManager.cancel(timedRefreshPendingIntent(context.applicationContext))
+            } catch (_: Throwable) {
             }
         }
 
@@ -474,6 +574,7 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
 
     private data class WidgetTimeline(
         val generatedAt: Long,
+        val refreshIntervalMinutes: Int,
         val theme: WidgetTheme,
         val entries: List<WidgetEntry>,
     )

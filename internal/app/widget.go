@@ -33,17 +33,22 @@ func (s *Service) RebuildWidgetTimeline(ctx context.Context) (domain.WidgetTimel
 	}
 	pal := theme.ByID(theme.PresetID(settings.ThemePreset))
 	wTheme := settings.WidgetTheme
-	if wTheme.Preset == "" {
+	if wTheme.Preset == "" || wTheme.Preset == string(pal.ID) {
+		// 内置预设色板升级时（例如刊物风纸白微调），自动同步最新主题色值到小组件快照
 		wTheme.Preset = string(pal.ID)
-	}
-	if wTheme.BgColor == "" {
 		wTheme.BgColor = pal.BgHex
-	}
-	if wTheme.TextColor == "" {
 		wTheme.TextColor = pal.TextHex
-	}
-	if wTheme.AccentColor == "" {
 		wTheme.AccentColor = pal.AccentHex
+	} else {
+		if wTheme.BgColor == "" {
+			wTheme.BgColor = pal.BgHex
+		}
+		if wTheme.TextColor == "" {
+			wTheme.TextColor = pal.TextHex
+		}
+		if wTheme.AccentColor == "" {
+			wTheme.AccentColor = pal.AccentHex
+		}
 	}
 	if wTheme.FontFamily == "" {
 		wTheme.FontFamily = settings.FontFamily
@@ -55,9 +60,10 @@ func (s *Service) RebuildWidgetTimeline(ctx context.Context) (domain.WidgetTimel
 	}
 
 	timeline := domain.WidgetTimeline{
-		GeneratedAt: domain.NowMillis(),
-		Theme:       wTheme,
-		Entries:     entries,
+		GeneratedAt:            domain.NowMillis(),
+		RefreshIntervalMinutes: domain.NormalizeWidgetRefreshMinutes(settings.WidgetRefreshMinutes),
+		Theme:                  wTheme,
+		Entries:                entries,
 	}
 
 	timelinePath := filepath.Join(s.dataDir, widgetTimelineFilename)

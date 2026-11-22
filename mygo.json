@@ -13,6 +13,6 @@
   },
   "android": {
     "minSdk": 26,
-    "splash": "#F7F3E9"
+    "splash": "#F4F4EF"
   }
 }

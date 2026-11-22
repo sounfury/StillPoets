@@ -7,7 +7,7 @@
 | 原型文件 | 覆盖范围 | 说明 |
 | --- | --- | --- |
 | [stillpoets-v3-shelf-fragments.png](./stillpoets-v3-shelf-fragments.png) | 手机双屏 · **画册风（Artbook）** | 默认主题：近白 `#F4F4EF`、鼠尾草绿 `#CFD8C6`、赤陶 `#BC5B46`、墨蓝 `#334C68` |
-| [stillpoets-v3-editorial.png](./stillpoets-v3-editorial.png) | 手机双屏 · **刊物风（Editorial）** | 第二内置主题：暖纸白 `#F7F5F0`、克莱因刊物蓝 `#2345B5`、酒红 `#752B36`、橄榄绿 `#5B664E` |
+| [stillpoets-v3-editorial.png](./stillpoets-v3-editorial.png) | 手机双屏 · **刊物风（Editorial）** | 第二内置主题：清亮纸白 `#FFFFFF`、克莱因刊物蓝 `#2345B5`、酒红 `#752B36`、橄榄绿 `#5B664E` |
 | [stillpoets-v3-tablet.png](./stillpoets-v3-tablet.png) | Android 平板横屏 · **三栏工作区** | 左侧窄导航轨 + 书架/分组主栏 + 右侧沉浸式整诗阅读栏（含高亮相册节选与诗末内联注释） |
 
 ## 2. 信息架构与交互红线
@@ -27,5 +27,6 @@
 4. **瞬态云同步提示**：
    - 不保留常驻底部同步状态条；同步时在底栏上方浮出轻胶囊（`同步中…` → `☁ 云同步成功` / `部分同步`），成功约 2 秒后自动淡出，恢复干净常态。
 5. **现代诗歌出版美学**：
+   - 刊物风的页面留白、顶栏与安全区、阅读纸面、白色卡片和小组件快照共用 `#FFFFFF`。白卡以 `#E5E5E5` 细边和留白分隔，次级控件底色使用中性灰 `#F2F2F2`。
    - 面向现代诗与世界诗歌阅读，拒绝水墨、印章、山水等古风装饰；
    - 无封面诗集按 `bookId` 确定性生成抽象几何书封，与整体色彩体系浑然一体。

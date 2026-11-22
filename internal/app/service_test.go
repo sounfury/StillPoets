@@ -250,6 +250,56 @@ func TestClearBookCacheProtectsPendingUpload(t *testing.T) {
 	}
 }
 
+func TestWidgetRefreshIntervalAndEditorialPaperTheme(t *testing.T) {
+	ctx := t.Context()
+	epubPath := findTestEPUB(t)
+	svc, err := Open(ctx, t.TempDir(), NewMemorySecretStore())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer svc.Close()
+
+	imp, err := svc.ImportEPUB(ctx, epubPath, "")
+	if err != nil {
+		t.Fatalf("ImportEPUB: %v", err)
+	}
+
+	// 验证原书封面文件在导入后本地可直接定位（若有封面）
+	coverPath, err := svc.EnsureBookCover(ctx, imp.Book.ID)
+	if err != nil {
+		t.Fatalf("EnsureBookCover: %v", err)
+	}
+	if imp.Book.CoverHash != "" && coverPath == "" {
+		t.Fatalf("expected local cover path for book with coverHash %s", imp.Book.CoverHash)
+	}
+
+	// 验证小组件切换间隔持久化 + 刊物风纸白主题自动同步至 widget_timeline.json + 原书封面开关持久化
+	st, err := svc.UpdateSettings(ctx, func(s *domain.Settings) {
+		s.ThemePreset = "editorial"
+		s.UseOriginalCover = true
+		s.WidgetRefreshMinutes = 180
+		s.WidgetTheme.Preset = "editorial"
+		s.WidgetTheme.BgColor = "#FAFAF8" // 模拟老版本缓存的偏黄背景色
+	})
+	if err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+	if !st.UseOriginalCover || st.WidgetRefreshMinutes != 180 {
+		t.Fatalf("unexpected saved settings: %+v", st)
+	}
+
+	tl, err := svc.ReadWidgetTimeline()
+	if err != nil {
+		t.Fatalf("ReadWidgetTimeline: %v", err)
+	}
+	if tl.RefreshIntervalMinutes != 180 {
+		t.Fatalf("timeline RefreshIntervalMinutes = %d, want 180", tl.RefreshIntervalMinutes)
+	}
+	if tl.Theme.BgColor != "#FFFFFF" {
+		t.Fatalf("expected Editorial paper white #FFFFFF in widget timeline, got %s", tl.Theme.BgColor)
+	}
+}
+
 func findTestEPUB(t *testing.T) string {
 	t.Helper()
 	matches, err := filepath.Glob(filepath.Join("..", "..", "test-books", "*.epub"))

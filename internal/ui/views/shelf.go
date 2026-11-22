@@ -204,7 +204,11 @@ func (a *AppUI) renderShelfPane(c *ui.Context, pal theme.Palette, isTablet bool)
 }
 
 func (a *AppUI) renderBooksSubTab(c *ui.Context, pal theme.Palette, isTablet bool) {
-	ui.Column(c.Key("books-subtab")).Padding(14, 18, 88, 18).Gap(18).FillWidth().Children(func() {
+	bottomPad := float32(88)
+	if !isTablet && a.useFloatingBottomNav() {
+		bottomPad = 108
+	}
+	ui.Column(c.Key("books-subtab")).Padding(14, 18, bottomPad, 18).Gap(18).FillWidth().Children(func() {
 		// 手机单栏在首屏展示「今日重读」画册/刊物主视觉卡；平板左主栏聚焦继续阅读 + 书架网格（右栏已是实时整诗阅读区）
 		if !isTablet {
 			a.renderTodayRereadHero(c, pal)
@@ -383,7 +387,7 @@ func (a *AppUI) renderContinueReading(c *ui.Context, pal theme.Palette, item *st
 			Cursor(ui.CursorPointer)
 		theme.ApplyPressScale(card, 0.98)
 		card.Children(func() {
-			components.BookCoverThumbnail(c, "cont-thumb", item.Book.ID, pal)
+			components.BookCoverThumbnail(c, "cont-thumb", item.Book.ID, a.coverImageFor(item.Book), pal)
 			ui.Column(c).Grow(1).Gap(5).Children(func() {
 				ui.Text(c, item.Book.Title).FontSize(15).Bold().TextColor(pal.TextPrimary).MaxLines(1)
 				ui.Text(c, subtitle).FontSize(12).TextColor(pal.TextMuted).MaxLines(1)
@@ -472,7 +476,7 @@ func (a *AppUI) renderMyBooksSection(c *ui.Context, pal theme.Palette, isTablet 
 			for _, b := range books {
 				selected := isTablet && b.ID == a.activeBookID
 				isRemote := b.LocalState != domain.LocalStateDownloaded
-				if components.BookCoverCard(c, "bk-"+b.ID, b.ID, b.Title, b.Author, pal, selected, isRemote) {
+				if components.BookCoverCard(c, "bk-"+b.ID, b.ID, b.Title, b.Author, a.coverImageFor(b), pal, selected, isRemote, a.settings.UseOriginalCover) {
 					a.openBook(b.ID, "", nil, !isTablet)
 				}
 			}
@@ -483,7 +487,11 @@ func (a *AppUI) renderMyBooksSection(c *ui.Context, pal theme.Palette, isTablet 
 // --- 散页子标签页 ---
 
 func (a *AppUI) renderQuotesSubTab(c *ui.Context, pal theme.Palette, isTablet bool) {
-	ui.Column(c.Key("quotes-subtab")).Padding(14, 18, 88, 18).Gap(14).FillWidth().Children(func() {
+	bottomPad := float32(88)
+	if !isTablet && a.useFloatingBottomNav() {
+		bottomPad = 108
+	}
+	ui.Column(c.Key("quotes-subtab")).Padding(14, 18, bottomPad, 18).Gap(14).FillWidth().Children(func() {
 		// 顶部标题与副标题
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 			ui.Column(c).Grow(1).Gap(4).Children(func() {

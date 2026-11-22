@@ -1,7 +1,7 @@
 # StillPoets 开发进展记录
 
 > 最后更新：2026-11-22  
-> 当前阶段：**Phase 2 双端桌面小组件代码全部就绪（Android 已装机验证；iOS WidgetKit 扩展 + Swift 桥接 + GitHub Actions 企业证书云端打包工作流已落地），待推送触发云端打包实机验证**
+> 当前阶段：**Phase 2 双端（Android + iOS）原生桌面小组件全部真机验证通过；进入 Android + iOS 双端 WebDAV 跨设备同步联调与 Phase 3（V1.1）规划阶段**
 
 ---
 
@@ -13,7 +13,7 @@
 | **Phase 1：V1.0 核心引擎与 V3 原生 UI** | ✅ 已提交（`622121d`） | EPUB 解析、SQLite+FTS5、WebDAV 多端同步引擎、应用编排层、V3 手机/平板自适应原生 UI、全仓单元测试与无头渲染测试通过 |
 | **Android 真机首包验证（OPPO Pad Mini）** | ✅ 已装机运行 | 成功产出 `android/arm64` APK（17.2 MB）并通过 ADB 安装启动 |
 | **Phase 1 真机体验打磨与联调** | 🚧 进行中 | 已开始真机实测并收集交互/动画问题；待完成实机 WebDAV 联调 |
-| **Phase 2：双端原生桌面小组件联动** | 🚧 代码已完成，待 iOS 云端实测 | Android 原生 AppWidget + `widgetbridge` 已装机验证；iOS WidgetKit Extension（小/中/大号 + iOS 17 原地换诗）+ Swift Keychain/AppGroup 双通道桥接 + GitHub Actions `macos-latest` 企业签名打包流程已就绪 |
+| **Phase 2：双端原生桌面小组件联动** | ✅ 已完成并真机验证（`0d7d66d`） | Android 原生 AppWidget + `widgetbridge` 已在 OPPO Pad Mini 验证；iOS WidgetKit（小/中/大号 + iOS 17 原地换诗）+ Swift Keychain/AppGroup 桥接已通过 GitHub Actions `macos-latest` 产出未签名 `.ipa`（6.5 MB）并在 iPhone 自签安装、小组件运行成功 |
 | **Phase 3：V1.1 扩展功能** | ⏳ 规划中 | 单诗微批注与长书评、完整统计看板（完读墙/热力图/作者云）、高清卡片导出、古诗词竖排 |
 
 ---
@@ -34,8 +34,12 @@
    - 自适应双形态布局：手机底栏三导航 + 全屏阅读；平板（≥ 760 DIP）左侧窄导航轨 + 左书架 / 右阅读分栏工作区。
    - 内置 3 套主题（画册风 / 刊物风 / 暗夜极简），支持 `.ttf` / `.otf` 自定义字体导入。
    - 诗集/散页双入口、沉浸阅读器（整诗收藏、逐行划句留散页或设为本诗金句、目录抽屉、`Aa` 排版调节）、轻量统计页与「我的」设置页。
-4. **测试与真机构建**
-   - `go vet ./...`、`mygo vet .` 与 7 个 Go 测试包全部通过。
+4. **双端桌面小组件与云端构建（`modules/widgetbridge/`、`native/ios/`、`.github/workflows/ios-build.yml`）**
+   - **Android 侧**：`modules/widgetbridge/kotlin/` 实现原生 `StillPoetsWidgetProvider`（4×2 诗笺自由缩放、3 套主题与自定义 `.ttf/.otf` 渲染、桌面右上角换诗、`stillpoets://` 冷/热启动直达高亮原诗），已在 OPPO Pad Mini 装机验证。
+   - **iOS 侧**：`modules/widgetbridge/swift/` + `native/ios/StillPoetsWidget/` 实现小/中/大号 WidgetKit 扩展与 iOS 17 `NextPoemIntent` 原地换诗，采用 App Group 优先 + 自动探测证书前缀的 Keychain Access Group 共享通道，零配置兼容企业通配符证书。
+   - **GitHub Actions 云端打包**：`.github/workflows/ios-build.yml`（`macos-latest`）支持 `unsigned`（默认免 Secrets 产出真机未签名 `.ipa`，供全能签/轻松签自签）、`signed`（云端直签）与 `simulator` 三模式；实测一次构建成功（1 分 41 秒，6.5 MB），iPhone 实机安装及桌面小组件均已验证通过。
+5. **测试与真机构建**
+   - `go vet ./...`、`mygo vet .`、`mygo native check modules/widgetbridge` 与 7 个 Go 测试包全部通过。
    - 已通过 Gradle init script（`D:\dev-environments\gradle-user-home\init.d\fix-mygo-sqlitecore-cmake.gradle`）绕过 Windows 下 MyGo `sqlite` 插件的 CMake 反斜杠路径兼容性问题，成功打包并安装到 **OPPO Pad Mini（`arm64-v8a`）**。
 
 ---
@@ -64,5 +68,6 @@
 - [x] 打磨 App 过渡与交互动画。
 - [x] 在 OPPO Pad Mini 上完成真实 EPUB 导入验证。
 - [x] 进入 Phase 2（Android）：实现 Android 原生桌面小组件（`modules/widgetbridge` + `StillPoetsWidgetProvider`）、App 内实时预览与一键添加桌面引导，以及点击小组件经 `stillpoets://` 冷/热启动唤起 App 高亮原诗或展开散页。
-- [x] 进入 Phase 2（iOS）：实现 iOS WidgetKit Extension（`native/ios/StillPoetsWidget/`，支持小/中/大号、3 套主题、小时轮播、iOS 17 原地换诗、`stillpoets://` 高亮直达）、Swift `widgetbridge` 双通道共享（App Group 优先 + 企业通配符证书 Keychain Access Group 互通）与 GitHub Actions `macos-latest` 自动签名打包工作流（`.github/workflows/ios-build.yml`）。
-- [ ] 在 GitHub 仓库配置企业证书 Secrets 并触发 `Build iOS IPA` 工作流，在 iPhone 上实测安装 `.ipa` 及桌面小组件联动；并在 OPPO Pad Mini 上完成 WebDAV（AList / 坚果云）多端同步闭环验证。
+- [x] 进入 Phase 2（iOS）：实现 iOS WidgetKit Extension（`native/ios/StillPoetsWidget/`）、Swift `widgetbridge` 双通道共享与 GitHub Actions `macos-latest` 打包工作流（支持默认 `unsigned` 免证书未签名真机 `.ipa` 及 `signed` 云端直签模式），已完成云端构建并在 iPhone 真机自签安装与小组件实测通过。
+- [ ] 完成 iPhone + OPPO Pad Mini 双端 WebDAV（AList / 坚果云）同步闭环联调（书目、阅读进度、收藏、散页双向合并与正文按需拉取）。
+- [ ] 推进 Phase 3（V1.1 扩展功能）：单诗微批注与长书评、完整统计看板（完读墙/热力图/作者云）、高清分享卡片导出、古诗词竖排阅读。

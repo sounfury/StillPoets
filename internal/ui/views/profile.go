@@ -540,30 +540,47 @@ func (a *AppUI) verifyAndSaveWebDAV() {
 	a.requestRepaint()
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-		defer cancel()
-		res, err := a.svc.TestWebDAVConnection(ctx, input)
+		testCtx, testCancel := context.WithTimeout(context.Background(), 25*time.Second)
+		res, err := a.svc.TestWebDAVConnection(testCtx, input)
+		testCancel()
+
 		msg := ""
 		if err != nil {
 			msg = "连接失败：" + err.Error()
 		} else {
-			if err := a.svc.SaveWebDAVConfig(ctx, input); err != nil {
-				msg = "保存凭据失败：" + err.Error()
+			saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			saveErr := a.svc.SaveWebDAVConfig(saveCtx, input)
+			saveCancel()
+			if saveErr != nil {
+				msg = "保存凭据失败：" + saveErr.Error()
 			} else {
 				a.mu.Lock()
 				a.davPass = "" // 清空界面表单中的明文密码
-				a.mu.Unlock()
 				if res.ExistingRemote {
-					msg = fmt.Sprintf("连接并保存成功！检测到远端已有 %d 台设备快照，正在同步…", res.DeviceCount)
+					a.davStatus = fmt.Sprintf("连接并保存成功！检测到远端已有 %d 台设备快照，正在首次同步…", res.DeviceCount)
 				} else if res.LegacyWorkspace {
-					msg = "连接并保存成功！检测到旧版 manifest.json，建议更换目录名以隔离新协议。"
+					a.davStatus = "连接并保存成功！检测到旧版 manifest.json，正在首次同步…"
 				} else {
-					msg = "连接并保存成功！已自动创建专属目录，正在首次同步…"
+					a.davStatus = "连接并保存成功！已自动创建专属目录，正在首次同步…"
 				}
-				_, _ = a.svc.SyncNow(ctx, true)
+				a.mu.Unlock()
+				a.reloadSync(nil)
+				a.requestRepaint()
+
+				// 首次同步可能包含多本 EPUB 上传与回读校验（尤其是 AList/115），使用独立长超时上下文
+				syncCtx, syncCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+				syncRes, syncErr := a.svc.SyncNow(syncCtx, true)
+				syncCancel()
+				if syncErr != nil {
+					msg = "配置已保存，但首次同步失败：" + syncErr.Error()
+				} else if syncRes.PartialSync {
+					msg = fmt.Sprintf("首次同步部分完成（%d 条远端警告或待补传资产，可点击「立即同步」重试）", len(syncRes.Warnings))
+				} else {
+					msg = fmt.Sprintf("连接并首次同步成功！（远端设备 %d 台）", len(syncRes.RemoteDevices))
+				}
 			}
 		}
-		a.reloadSync(ctx)
+		a.reloadSync(nil)
 		a.mu.Lock()
 		a.davBusy = false
 		a.davStatus = msg
@@ -580,7 +597,7 @@ func (a *AppUI) triggerManualSync() {
 	a.requestRepaint()
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		res, err := a.svc.SyncNow(ctx, false)
 		msg := ""
@@ -591,7 +608,7 @@ func (a *AppUI) triggerManualSync() {
 		} else {
 			msg = fmt.Sprintf("云同步成功（远端设备 %d 台）", len(res.RemoteDevices))
 		}
-		a.reloadSync(ctx)
+		a.reloadSync(nil)
 		a.mu.Lock()
 		a.davBusy = false
 		a.davStatus = msg
@@ -603,9 +620,7 @@ func (a *AppUI) triggerManualSync() {
 func (a *AppUI) disconnectWebDAV() {
 	go func() {
 		_ = a.svc.ClearWebDAVConfig()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		a.reloadSync(ctx)
+		a.reloadSync(nil)
 		a.mu.Lock()
 		a.davPass = ""
 		a.davStatus = "已断开 WebDAV 并清除密钥链密码"
@@ -622,14 +637,14 @@ func (a *AppUI) triggerRetireDevice(devID string) {
 	a.requestRepaint()
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		err := a.svc.RetireRemoteDevice(ctx, devID)
 		msg := fmt.Sprintf("已安全退役设备 %s", devID)
 		if err != nil {
 			msg = "退役失败：" + err.Error()
 		}
-		a.reloadSync(ctx)
+		a.reloadSync(nil)
 		a.mu.Lock()
 		a.davBusy = false
 		a.davStatus = msg

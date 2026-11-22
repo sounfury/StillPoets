@@ -1082,7 +1082,7 @@ func (s *Service) newWebDAVClient() (*webdav.Client, error) {
 		Password:     string(passBytes),
 		AppFolder:    p.AppFolder,
 		AtomicUpload: p.AtomicUpload,
-		Timeout:      25 * time.Second,
+		Timeout:      60 * time.Second,
 	})
 }
 
@@ -1111,7 +1111,7 @@ func (s *Service) scheduleDebouncedSync() {
 		s.debounceTimer.Stop()
 	}
 	s.debounceTimer = time.AfterFunc(delay, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		_, _ = s.SyncNow(ctx, false)
 	})

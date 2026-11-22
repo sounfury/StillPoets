@@ -1,6 +1,7 @@
 package views
 
 import (
+	"context"
 	"image"
 	"image/png"
 	"os"
@@ -458,4 +459,33 @@ func TestWidgetDeeplinkNavigation(t *testing.T) {
 		t.Fatalf("quote deeplink did not open quote detail modal")
 	}
 	tt.Frame()
+}
+
+func TestReloadSyncSurvivesExpiredContext(t *testing.T) {
+	appUI := newGestureTestAppUI(t)
+	if len(appUI.books) == 0 || appUI.syncOverview.InstallID == "" {
+		t.Fatalf("expected seeded books and installId, got books=%d installId=%q", len(appUI.books), appUI.syncOverview.InstallID)
+	}
+
+	// 模拟上游网络同步超时后的已过期 context：reloadSync 必须自动切换新鲜本地上下文且绝不清空书架或安装 ID
+	expiredCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	appUI.reloadSync(expiredCtx)
+
+	appUI.mu.Lock()
+	gotBooks := len(appUI.books)
+	gotQuotes := len(appUI.quotes)
+	gotInstallID := appUI.syncOverview.InstallID
+	appUI.mu.Unlock()
+
+	if gotBooks == 0 {
+		t.Fatalf("expected books to remain loaded when reloadSync receives expired context")
+	}
+	if gotQuotes == 0 {
+		t.Fatalf("expected quotes to remain loaded when reloadSync receives expired context")
+	}
+	if gotInstallID == "" {
+		t.Fatalf("expected installId to remain loaded when reloadSync receives expired context")
+	}
 }

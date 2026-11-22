@@ -195,25 +195,34 @@ func (a *AppUI) ReloadAsync() {
 }
 
 func (a *AppUI) reloadSync(ctx context.Context) {
-	settings, err := a.svc.LoadSettings(ctx)
-	if err != nil {
-		settings = domain.Settings{ThemePreset: string(theme.PresetArtbook), FontSize: 18, LineHeight: 1.85}
+	// 始终确保本地 SQLite 刷新使用未过期的独立上下文，防止上游网络同步超时后把本机书架/状态冲刷为空。
+	if ctx == nil || ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 	}
-	if settings.FontSize <= 0 {
-		settings.FontSize = 18
+
+	settings, settingsErr := a.svc.LoadSettings(ctx)
+	if settingsErr == nil {
+		if settings.FontSize <= 0 {
+			settings.FontSize = 18
+		}
+		if settings.LineHeight <= 0 {
+			settings.LineHeight = 1.85
+		}
 	}
-	if settings.LineHeight <= 0 {
-		settings.LineHeight = 1.85
+	groups, groupsErr := a.svc.ListGroups(ctx)
+	books, booksErr := a.svc.ListBooks(ctx, "")
+	progressList, progressErr := a.svc.ListProgress(ctx)
+	var pMap map[string]domain.ReadingProgress
+	if progressErr == nil {
+		pMap = make(map[string]domain.ReadingProgress, len(progressList))
+		for _, p := range progressList {
+			pMap[p.BookID] = p
+		}
 	}
-	groups, _ := a.svc.ListGroups(ctx)
-	books, _ := a.svc.ListBooks(ctx, "")
-	progressList, _ := a.svc.ListProgress(ctx)
-	pMap := make(map[string]domain.ReadingProgress, len(progressList))
-	for _, p := range progressList {
-		pMap[p.BookID] = p
-	}
-	cont, _ := a.svc.GetContinueReading(ctx)
-	today, _ := a.svc.PickTodayReread(ctx)
+	cont, contErr := a.svc.GetContinueReading(ctx)
+	today, todayErr := a.svc.PickTodayReread(ctx)
 
 	a.mu.Lock()
 	qFilter := storage.QuoteFilter{
@@ -224,19 +233,26 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 	curBookID := a.activeBookID
 	a.mu.Unlock()
 
-	quotes, _ := a.svc.ListQuotes(ctx, qFilter)
-	facets, _ := a.svc.ListQuoteFacets(ctx)
-	stats, _ := a.svc.GetStatsOverview(ctx)
-	syncOv, _ := a.svc.GetSyncOverview(ctx)
+	quotes, quotesErr := a.svc.ListQuotes(ctx, qFilter)
+	facets, facetsErr := a.svc.ListQuoteFacets(ctx)
+	stats, statsErr := a.svc.GetStatsOverview(ctx)
+	syncOv, syncOvErr := a.svc.GetSyncOverview(ctx)
 	localFonts := a.svc.ListLocalFonts()
 	widgetTL, widgetErr := a.svc.ReadWidgetTimeline()
 	activeWidgets := widgetbridge.ActiveWidgetCount()
 
-	var poems []domain.Poem
-	favMap := map[string]domain.FavoritePoem{}
+	var (
+		poems    []domain.Poem
+		poemsErr error
+		favMap   map[string]domain.FavoritePoem
+		favsErr  error
+	)
 	if curBookID != "" {
-		poems, _ = a.svc.ListPoems(ctx, curBookID)
-		if favs, err := a.svc.ListFavorites(ctx, curBookID); err == nil {
+		poems, poemsErr = a.svc.ListPoems(ctx, curBookID)
+		var favs []domain.FavoritePoem
+		favs, favsErr = a.svc.ListFavorites(ctx, curBookID)
+		if favsErr == nil {
+			favMap = make(map[string]domain.FavoritePoem, len(favs))
 			for _, f := range favs {
 				favMap[f.PoemID] = f
 			}
@@ -244,18 +260,42 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 	}
 
 	a.mu.Lock()
-	a.settings = settings
-	a.fontSizeSlider = float64(settings.FontSize)
-	a.lineHeightSlider = float64(settings.LineHeight)
-	a.groups = groups
-	a.books = books
-	a.progressMap = pMap
-	a.continueItem = cont
-	a.todayReread = today
-	a.quotes = quotes
-	a.quoteFacets = facets
-	a.stats = stats
-	a.syncOverview = syncOv
+	if settingsErr == nil {
+		a.settings = settings
+		a.fontSizeSlider = float64(settings.FontSize)
+		a.lineHeightSlider = float64(settings.LineHeight)
+	} else if a.settings.FontSize <= 0 {
+		a.settings = domain.Settings{ThemePreset: string(theme.PresetArtbook), FontSize: 18, LineHeight: 1.85}
+		a.fontSizeSlider = 18
+		a.lineHeightSlider = 1.85
+	}
+	if groupsErr == nil {
+		a.groups = groups
+	}
+	if booksErr == nil {
+		a.books = books
+	}
+	if progressErr == nil {
+		a.progressMap = pMap
+	}
+	if contErr == nil {
+		a.continueItem = cont
+	}
+	if todayErr == nil {
+		a.todayReread = today
+	}
+	if quotesErr == nil {
+		a.quotes = quotes
+	}
+	if facetsErr == nil {
+		a.quoteFacets = facets
+	}
+	if statsErr == nil {
+		a.stats = stats
+	}
+	if syncOvErr == nil {
+		a.syncOverview = syncOv
+	}
 	a.localFonts = localFonts
 	a.activeWidgetCount = activeWidgets
 	if widgetErr == nil {
@@ -265,10 +305,14 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 	}
 	a.davHasSecret = a.svc.HasWebDAVPassword()
 	if curBookID != "" {
-		a.activePoems = poems
-		a.activeFavorites = favMap
-		if a.activePoemIdx >= len(poems) {
-			a.activePoemIdx = max(0, len(poems)-1)
+		if poemsErr == nil {
+			a.activePoems = poems
+			if a.activePoemIdx >= len(poems) {
+				a.activePoemIdx = max(0, len(poems)-1)
+			}
+		}
+		if favsErr == nil {
+			a.activeFavorites = favMap
 		}
 	}
 	a.mu.Unlock()
@@ -358,7 +402,7 @@ func (a *AppUI) TriggerStartupSync() {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		_, _ = a.svc.SyncNow(ctx, false)
 	}()
@@ -636,7 +680,7 @@ func (a *AppUI) downloadBookAsync(bookID, poemID string, highlightRanges []app.L
 	a.requestRepaint()
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		err := a.svc.EnsureBookContent(ctx, bookID)
 		a.mu.Lock()
@@ -645,7 +689,7 @@ func (a *AppUI) downloadBookAsync(bookID, poemID string, highlightRanges []app.L
 			a.readerError = err.Error()
 		}
 		a.mu.Unlock()
-		a.reloadSync(ctx)
+		a.reloadSync(nil)
 		if err == nil {
 			a.openBook(bookID, poemID, highlightRanges, a.readerMobile)
 		} else {

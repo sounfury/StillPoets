@@ -329,3 +329,50 @@ func TestListDirMultiPropstatStatusAndExcludesSelf(t *testing.T) {
 		t.Fatalf("unexpected entry: %+v", entries[0])
 	}
 }
+
+func TestNewClientRejectsEmbeddedCredentials(t *testing.T) {
+	if _, err := NewClient(Config{BaseURL: "https://user:pass@dav.example.com/dav/"}); err == nil {
+		t.Fatalf("expected NewClient to reject embedded userinfo in BaseURL")
+	}
+}
+
+func TestCrossOriginHTTPSGetRedirectStripsCredentials(t *testing.T) {
+	var cdnGotAuth string
+	cdnSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cdnGotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("poem-payload"))
+	}))
+	defer cdnSrv.Close()
+
+	davSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "cdn.gz") {
+			http.Redirect(w, r, cdnSrv.URL+"/dl/cdn.gz", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer davSrv.Close()
+
+	client, err := NewClient(Config{
+		BaseURL:                     davSrv.URL + "/dav/",
+		Username:                    "u",
+		Password:                    "secret",
+		AllowCrossOriginGetRedirect: true,
+		AllowInsecureTLS:            true,
+		RetryBaseDelay:              time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	got, err := client.Get(context.Background(), "books/cdn.gz")
+	if err != nil {
+		t.Fatalf("cross-origin HTTPS GET failed: %v", err)
+	}
+	if string(got) != "poem-payload" {
+		t.Fatalf("unexpected payload: %q", string(got))
+	}
+	if cdnGotAuth != "" {
+		t.Fatalf("Authorization leaked to cross-origin CDN: %q", cdnGotAuth)
+	}
+}

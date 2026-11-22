@@ -320,3 +320,56 @@ func TestParseSnapshotFilenameStrict(t *testing.T) {
 		}
 	}
 }
+
+func TestRetireDeviceCoveredAbortsOnNewerRev(t *testing.T) {
+	mock := newMockWebDAV()
+	srv := mock.server()
+	defer srv.Close()
+
+	client, err := webdav.NewClient(webdav.Config{
+		BaseURL:        srv.URL + "/dav/",
+		RetryBaseDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	ctx := context.Background()
+	engine := NewEngine(client)
+
+	// 设备 A 发布 rev=1，设备 B 发布 rev=1
+	if _, err := engine.Sync(ctx, SyncRequest{InstallID: "dev-a", ForcePush: true}); err != nil {
+		t.Fatalf("sync A: %v", err)
+	}
+	resB, err := engine.Sync(ctx, SyncRequest{InstallID: "dev-b", ForcePush: true})
+	if err != nil || resB.SyncedDeviceRevs["dev-a"] != 1 {
+		t.Fatalf("sync B: err=%v synced=%+v", err, resB.SyncedDeviceRevs)
+	}
+
+	// 在退役前，设备 A 又偷偷发布了 rev=2
+	if _, err := engine.Sync(ctx, SyncRequest{InstallID: "dev-a", LocalRev: 1, ForcePush: true}); err != nil {
+		t.Fatalf("sync A rev2: %v", err)
+	}
+
+	// 设备 B 拿着只覆盖到 rev=1 的证明尝试退役 A，必须被拒绝，且 A 的 rev=2 必须保留
+	if err := engine.RetireDeviceCovered(ctx, "dev-b", resB.PublishedRev, "dev-a", 1); err == nil {
+		t.Fatalf("expected RetireDeviceCovered to abort when target has rev 2 > covered 1")
+	}
+	if _, err := client.Get(ctx, "state/device_dev-a_2.json.gz"); err != nil {
+		t.Fatalf("target newer rev 2 should still exist, err=%v", err)
+	}
+}
+
+func TestDecodeSnapshotRejectsOversizedLamportCounter(t *testing.T) {
+	raw, err := EncodeSnapshot(&DeviceSnapshot{
+		SchemaVersion: ProtocolSchemaVersion,
+		InstallID:     "dev-bad",
+		Rev:           1,
+		MaxCounter:    ^uint64(0),
+	})
+	if err != nil {
+		t.Fatalf("EncodeSnapshot: %v", err)
+	}
+	if _, err := DecodeSnapshot(raw, "dev-bad", 1); err == nil {
+		t.Fatalf("expected DecodeSnapshot to reject MaxCounter > MaxInt64")
+	}
+}

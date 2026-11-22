@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 
@@ -247,6 +248,13 @@ func DecodeSnapshot(compressed []byte, expectedInstallID string, expectedRev uin
 	}
 	if expectedRev > 0 && snap.Rev != expectedRev {
 		return nil, fmt.Errorf("sync: snapshot rev mismatch: got %d, want %d", snap.Rev, expectedRev)
+	}
+	// 拒绝超出 SQLite int64 上限的异常 Lamport 计数，防止单个坏快照污染本地逻辑时钟（P1-13）
+	if snap.MaxCounter > math.MaxInt64 {
+		return nil, fmt.Errorf("sync: snapshot maxCounter %d exceeds int64 limit", snap.MaxCounter)
+	}
+	if dataMax := MaxCounterInData(0, snap.Data); dataMax > math.MaxInt64 {
+		return nil, fmt.Errorf("sync: snapshot data lamport counter %d exceeds int64 limit", dataMax)
 	}
 	if snap.Rev == 0 {
 		return nil, errors.New("sync: snapshot rev is 0")

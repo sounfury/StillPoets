@@ -101,11 +101,7 @@ func main() {
 			StateKey:        "stillpoets-main",
 			Content:         ui.View(uiInst.Render),
 		})
-		uiInst.SetRepaint(func() {
-			if win != nil {
-				win.Update(func() {})
-			}
-		})
+		uiInst.SetUIDispatch(win.Update)
 
 		mu.Lock()
 		appUI = uiInst

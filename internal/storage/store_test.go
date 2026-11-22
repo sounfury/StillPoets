@@ -577,3 +577,63 @@ func TestStoreOpenCanceled(t *testing.T) {
 		t.Fatalf("Open with canceled context: %v", err)
 	}
 }
+
+func TestRecordPoemReadRejectsCrossBookPoemID(t *testing.T) {
+	s, ctx := openTestStore(t), t.Context()
+	sp := &domain.SPBook{
+		BookID: "b1",
+		Title:  "诗集一",
+		Poems: []domain.Poem{
+			{ID: "p1", BookID: "b1", OrderIndex: 0, Kind: domain.EntryKindPoem, Title: "第一首"},
+		},
+	}
+	must(t, s.UpsertImportedBook(ctx, domain.Book{
+		ID: "b1", Title: "诗集一", ContentHash: "h1", RawFilename: "b1.epub", PoemCount: 1,
+	}, sp))
+
+	if _, err := s.RecordPoemRead(ctx, "b1", "foreign-poem-id", 0.2, 1); err == nil {
+		t.Fatalf("expected cross-book poemID to be rejected")
+	}
+	if _, err := s.RecordPoemRead(ctx, "b1", "p1", 0.5, 1); err != nil {
+		t.Fatalf("valid poemID failed: %v", err)
+	}
+}
+
+func TestSaveBookContentRejectsStaleHash(t *testing.T) {
+	s, ctx := openTestStore(t), t.Context()
+	sp := &domain.SPBook{
+		BookID: "b1",
+		Title:  "诗集一",
+		Poems:  []domain.Poem{{ID: "p1", BookID: "b1", Title: "第一首"}},
+	}
+	must(t, s.UpsertImportedBook(ctx, domain.Book{
+		ID: "b1", Title: "诗集一", ContentHash: "hash-new", RawFilename: "b1.epub", PoemCount: 1,
+	}, sp))
+	if err := s.SaveBookContent(ctx, "b1", "hash-old", sp); err == nil {
+		t.Fatalf("expected stale content hash to be rejected")
+	}
+}
+
+func TestUpdateSettingsPatchAndKeepDirtyAndMaxCounterGuard(t *testing.T) {
+	s, ctx := openTestStore(t), t.Context()
+	_, err := s.UpdateSettings(ctx, func(st *domain.Settings) { st.ThemePreset = "journal" })
+	must(t, err)
+	st, err := s.UpdateSettings(ctx, func(st *domain.Settings) { st.FontSize = 22 })
+	must(t, err)
+	if st.ThemePreset != "journal" || st.FontSize != 22 {
+		t.Fatalf("patch clobbered previous field: %+v", st)
+	}
+
+	// 验证 keepDirty=true 在 published=true 时保留 dirty=1，且拒绝超大 Lamport 计数
+	data, meta, err := s.ExportSnapshot(ctx)
+	must(t, err)
+	if err := s.ApplyMergedSnapshotEx(ctx, data, meta.DirtySeq, ^uint64(0), 1, true, false); err == nil {
+		t.Fatalf("expected oversized lamport counter to fail")
+	}
+	must(t, s.ApplyMergedSnapshotEx(ctx, data, meta.DirtySeq, meta.LamportCounter, 1, true, true))
+	after, err := s.GetSyncMeta(ctx)
+	must(t, err)
+	if !after.Dirty || after.LocalRev != 1 {
+		t.Fatalf("expected dirty=true and local_rev=1 with keepDirty, got %+v", after)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"time"
 
 	"stillpoets/internal/domain"
 	"stillpoets/internal/sync/webdav"
@@ -33,13 +34,15 @@ type SyncRequest struct {
 
 // SyncResult 返回单次同步的合并结果、推进后的逻辑时钟与发布状态。
 type SyncResult struct {
-	MergedData    SnapshotData
-	MaxCounter    uint64
-	Published     bool
-	PublishedRev  uint64
-	PartialSync   bool
-	Warnings      []DeviceWarning
-	RemoteDevices []string // 本轮成功读取到有效快照的远端 installId 列表
+	MergedData        SnapshotData
+	MaxCounter        uint64
+	Published         bool
+	PublishedRev      uint64
+	PartialSync       bool
+	Warnings          []DeviceWarning
+	RemoteDevices     []string          // 本轮成功读取到有效快照的远端 installId 列表
+	SyncedDeviceRevs  map[string]uint64 // 本轮已完整读取其最新代次并合并的远端 installId -> rev（用于安全退役）
+	IncompleteDevices map[string]bool   // 本轮最新代次读取失败或发生降级回退的远端设备集合
 }
 
 // Engine 负责单个 WebDAV 工作区的串行同步调度（防抖任务与手动同步共用同一串行锁）。
@@ -103,8 +106,10 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 	slices.Sort(deviceIDs)
 
 	res := &SyncResult{
-		MergedData: MergeSnapshotData(SnapshotData{}, req.LocalData),
-		MaxCounter: MaxCounterInData(req.LocalCounter, req.LocalData),
+		MergedData:        MergeSnapshotData(SnapshotData{}, req.LocalData),
+		MaxCounter:        MaxCounterInData(req.LocalCounter, req.LocalData),
+		SyncedDeviceRevs:  make(map[string]uint64),
+		IncompleteDevices: make(map[string]bool),
 	}
 
 	var ownRemoteMaxRev uint64
@@ -116,9 +121,9 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 			if len(revs) > 0 {
 				ownRemoteMaxRev = revs[0]
 			}
-			// 仅在本地尚未发布过（如首次恢复）或远端存在比本地记录更高的代次时读取自身远端快照
+			// 仅在本地尚未发布过（如首次恢复）或远端存在比本地记录更高的代次时读取自身远端快照；
+			// 注意此处不把未验证的目录项直接当成 ownValidRevs，回收阶段会单独验证保留代次（P1-11）。
 			if req.LocalRev > 0 && ownRemoteMaxRev <= req.LocalRev {
-				ownValidRevs = revs
 				continue
 			}
 		}
@@ -127,14 +132,23 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 		if len(warnings) > 0 {
 			res.PartialSync = true
 			res.Warnings = append(res.Warnings, warnings...)
+			if devID != req.InstallID {
+				res.IncompleteDevices[devID] = true
+			}
 		}
 		if loadedSnap == nil {
+			if devID != req.InstallID {
+				res.IncompleteDevices[devID] = true
+			}
 			continue
 		}
 		if devID == req.InstallID {
 			ownValidRevs = append(ownValidRevs, validRev)
 		} else {
 			res.RemoteDevices = append(res.RemoteDevices, devID)
+			if len(warnings) == 0 && len(revs) > 0 && validRev == revs[0] {
+				res.SyncedDeviceRevs[devID] = validRev
+			}
 		}
 
 		res.MergedData = MergeSnapshotData(res.MergedData, loadedSnap.Data)
@@ -177,8 +191,8 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 		return nil, fmt.Errorf("sync: put snapshot %s: %w", targetPath, err)
 	}
 
-	// 2. 回读确认新代次可读且内容完全一致后，才确认本轮提交成功
-	verifyBytes, _, err := e.client.GetWithLimit(ctx, targetPath, MaxSnapshotCompressedBytes)
+	// 2. 回读确认新代次可读且内容完全一致后，才确认本轮提交成功（兼容网盘写后短暂 404）
+	verifyBytes, err := e.readBackWithRetry(ctx, targetPath, MaxSnapshotCompressedBytes)
 	if err != nil {
 		return nil, fmt.Errorf("sync: verify uploaded snapshot %s: %w", targetPath, err)
 	}
@@ -192,10 +206,34 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 	res.Published = true
 	res.PublishedRev = nextRev
 
-	// 3. 提交确认后再清理本设备更早的旧代次，严格保留最近 KeepSnapshotGenerations (2) 份有效代次
+	// 3. 提交确认后再清理本设备更早的旧代次，严格保留最近 KeepSnapshotGenerations (2) 份已校验有效的代次
 	e.cleanupOwnOldRevisions(ctx, req.InstallID, nextRev, byDevice[req.InstallID], ownValidRevs)
 
 	return res, nil
+}
+
+// readBackWithRetry 在 PUT 完成后做有界 404 退避回读，兼容 AList/115 等挂载点的写后最终一致性延迟（P1-8）。
+func (e *Engine) readBackWithRetry(ctx context.Context, relPath string, maxBytes int64) ([]byte, error) {
+	delays := []time.Duration{300 * time.Millisecond, 700 * time.Millisecond, 1500 * time.Millisecond}
+	var lastErr error
+	for attempt := 0; attempt <= len(delays); attempt++ {
+		raw, _, err := e.client.GetWithLimit(ctx, relPath, maxBytes)
+		if err == nil {
+			return raw, nil
+		}
+		lastErr = err
+		if !errors.Is(err, webdav.ErrNotFound) || attempt == len(delays) {
+			break
+		}
+		timer := time.NewTimer(delays[attempt])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
 }
 
 // loadLatestValidSnapshot 从最新代次向旧代次回退，直到找到一份完整通过 gzip+JSON+协议校验的快照。
@@ -221,21 +259,48 @@ func (e *Engine) loadLatestValidSnapshot(ctx context.Context, installID string, 
 	return nil, 0, warnings
 }
 
-// cleanupOwnOldRevisions 仅清理当前安装 ID 名下的过期代次，保留最新提交的 nextRev 以及上一份有效代次。
+// cleanupOwnOldRevisions 仅清理当前安装 ID 名下的过期代次，保留最新提交的 nextRev 以及上一份经真实可读校验的代次（P1-11）。
 func (e *Engine) cleanupOwnOldRevisions(ctx context.Context, installID string, nextRev uint64, allRemoteDesc, knownValidDesc []uint64) {
-	keep := map[uint64]struct{}{nextRev: {}}
-	// 优先保留上一份已验证或次新的代次，保证远端至少留存 KeepSnapshotGenerations 份
-	candidates := knownValidDesc
-	if len(candidates) == 0 {
-		candidates = allRemoteDesc
+	if len(allRemoteDesc) < KeepSnapshotGenerations {
+		return
 	}
-	for _, rev := range candidates {
+	keep := map[uint64]struct{}{nextRev: {}}
+	for _, rev := range knownValidDesc {
 		if len(keep) >= KeepSnapshotGenerations {
 			break
 		}
 		if rev < nextRev {
 			keep[rev] = struct{}{}
 		}
+	}
+
+	// 若尚未确认到足够的有效旧代次，先按降序回读校验，确认至少留住 1 份真实完好的旧快照后再删除更早代次
+	for _, rev := range allRemoteDesc {
+		if len(keep) >= KeepSnapshotGenerations {
+			break
+		}
+		if rev >= nextRev {
+			continue
+		}
+		relPath, err := SnapshotPath(installID, rev)
+		if err != nil {
+			continue
+		}
+		raw, _, err := e.client.GetWithLimit(ctx, relPath, MaxSnapshotCompressedBytes)
+		if err != nil {
+			// 网络或瞬时错误时直接延后清理，避免误删唯一完好旧代次
+			if !errors.Is(err, webdav.ErrNotFound) {
+				return
+			}
+			continue
+		}
+		if _, err := DecodeSnapshot(raw, installID, rev); err == nil {
+			keep[rev] = struct{}{}
+		}
+	}
+
+	if len(keep) < KeepSnapshotGenerations {
+		return
 	}
 
 	for _, rev := range allRemoteDesc {
@@ -246,7 +311,6 @@ func (e *Engine) cleanupOwnOldRevisions(ctx context.Context, installID string, n
 		if err != nil {
 			continue
 		}
-		// 清理失败不影响已确认的同步结果，下次发布继续回收
 		_ = e.client.Delete(ctx, relPath)
 	}
 }
@@ -285,12 +349,12 @@ func (e *Engine) UploadBookAssets(
 		return nil, fmt.Errorf("sync: ensure book dir %s: %w", bookDir, err)
 	}
 
-	// 1. 上传解析包并回读校验 SHA-256 + 解压可读性 + BookID 一致
+	// 1. 上传解析包并回读校验 SHA-256 + 解压可读性 + BookID 一致（带写后短暂 404 退避）
 	parsedPath := BookParsedPath(book.ID)
 	if _, err := e.client.Put(ctx, parsedPath, spbookCompressed, ContentTypeGzip); err != nil {
 		return nil, fmt.Errorf("sync: put parsed spbook %s: %w", parsedPath, err)
 	}
-	readBackParsed, _, err := e.client.GetWithLimit(ctx, parsedPath, MaxSPBookCompressedBytes)
+	readBackParsed, err := e.readBackWithRetry(ctx, parsedPath, MaxSPBookCompressedBytes)
 	if err != nil {
 		return nil, fmt.Errorf("sync: verify parsed spbook %s: %w", parsedPath, err)
 	}
@@ -305,7 +369,7 @@ func (e *Engine) UploadBookAssets(
 	if _, err := e.client.Put(ctx, rawPath, rawOriginal, "application/octet-stream"); err != nil {
 		return nil, fmt.Errorf("sync: put raw file %s: %w", rawPath, err)
 	}
-	readBackRaw, _, err := e.client.GetWithLimit(ctx, rawPath, int64(len(rawOriginal))+1024)
+	readBackRaw, err := e.readBackWithRetry(ctx, rawPath, int64(len(rawOriginal))+1024)
 	if err != nil {
 		return nil, fmt.Errorf("sync: verify raw file %s: %w", rawPath, err)
 	}
@@ -328,6 +392,12 @@ func (e *Engine) UploadBookAssets(
 // RetireDevice 手动退役旧安装设备（例如重装 App 或更换手机后）。
 // 安全护栏：仅在确认现役设备 activeInstallID 的最新远端快照可读有效后，才删除 retiredInstallID 的快照文件。
 func (e *Engine) RetireDevice(ctx context.Context, activeInstallID string, activeRev uint64, retiredInstallID string) error {
+	return e.RetireDeviceCovered(ctx, activeInstallID, activeRev, retiredInstallID, 0)
+}
+
+// RetireDeviceCovered 带已覆盖代次上界的退役接口（P0-4）：
+// 当 maxCoveredRev > 0 时，若远端发现目标设备存在 rev > maxCoveredRev 的更新代次，拒绝退役以防删除尚未合并的新数据。
+func (e *Engine) RetireDeviceCovered(ctx context.Context, activeInstallID string, activeRev uint64, retiredInstallID string, maxCoveredRev uint64) error {
 	if !IsValidInstallID(activeInstallID) || !IsValidInstallID(retiredInstallID) {
 		return errors.New("sync: invalid installId for retire")
 	}
@@ -358,6 +428,7 @@ func (e *Engine) RetireDevice(ctx context.Context, activeInstallID string, activ
 	if err != nil {
 		return fmt.Errorf("sync: list state dir for retire: %w", err)
 	}
+	var toDelete []uint64
 	for _, entry := range entries {
 		if entry.IsDir {
 			continue
@@ -366,7 +437,13 @@ func (e *Engine) RetireDevice(ctx context.Context, activeInstallID string, activ
 		if !ok || id != retiredInstallID {
 			continue
 		}
-		relPath, err := SnapshotPath(id, rev)
+		if maxCoveredRev > 0 && rev > maxCoveredRev {
+			return fmt.Errorf("sync: target device %s published newer rev %d (> covered %d), aborting retire", retiredInstallID, rev, maxCoveredRev)
+		}
+		toDelete = append(toDelete, rev)
+	}
+	for _, rev := range toDelete {
+		relPath, err := SnapshotPath(retiredInstallID, rev)
 		if err != nil {
 			continue
 		}

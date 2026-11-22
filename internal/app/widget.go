@@ -24,6 +24,9 @@ const (
 // RebuildWidgetTimeline 根据本机设置与本地缓存数据，预编译供 iOS WidgetKit / Android Glance
 // 直接消费的 widget_timeline.json 快照（原子写入，避免小组件读到半截文件）。
 func (s *Service) RebuildWidgetTimeline(ctx context.Context) (domain.WidgetTimeline, error) {
+	s.widgetMu.Lock()
+	defer s.widgetMu.Unlock()
+
 	settings, err := s.store.LoadSettings(ctx)
 	if err != nil {
 		return domain.WidgetTimeline{}, err
@@ -318,12 +321,28 @@ func writeJSONAtomic(target string, v any) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	// 使用唯一临时文件避免并发写入同一 .tmp 互相覆盖或重命名失败（P1-5）
+	f, err := os.CreateTemp(dir, filepath.Base(target)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, target); err != nil {
-		_ = os.Remove(tmp)
+	tmpPath := f.Name()
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if _, err := f.Write(raw); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, target); err != nil {
+		_ = os.Remove(tmpPath)
 		return err
 	}
 	return nil

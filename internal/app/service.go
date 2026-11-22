@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -152,13 +153,19 @@ type Service struct {
 	store   *storage.Store
 	secrets SecretStore
 
-	mu            sync.Mutex
-	syncMu        sync.Mutex
-	profile       WebDAVProfile
-	remoteDevices []string
-	debounceDelay time.Duration
-	debounceTimer *time.Timer
-	closed        bool
+	mu             sync.Mutex
+	widgetMu       sync.Mutex
+	syncSem        chan struct{}
+	syncWG         sync.WaitGroup
+	lifeCtx        context.Context
+	lifeCancel     context.CancelFunc
+	profile        WebDAVProfile
+	workspaceEpoch uint64
+	remoteDevices  []string
+	debounceDelay  time.Duration
+	debounceTimer  *time.Timer
+	debounceGen    uint64
+	closed         bool
 
 	onSyncToast     func(SyncToastState)
 	onDataChanged   func()
@@ -184,10 +191,14 @@ func Open(ctx context.Context, dataDir string, secrets SecretStore) (*Service, e
 		return nil, err
 	}
 
+	lifeCtx, lifeCancel := context.WithCancel(context.Background())
 	svc := &Service{
 		dataDir:       dataDir,
 		store:         store,
 		secrets:       secrets,
+		syncSem:       make(chan struct{}, 1),
+		lifeCtx:       lifeCtx,
+		lifeCancel:    lifeCancel,
 		debounceDelay: defaultSyncDebounce,
 		profile: WebDAVProfile{
 			AppFolder: webdav.DefaultAppFolder,
@@ -197,15 +208,26 @@ func Open(ctx context.Context, dataDir string, secrets SecretStore) (*Service, e
 	return svc, nil
 }
 
-// Close 停止后台防抖计时器并关闭数据库。
+// Close 停止后台防抖计时器、取消并等待所有在途同步退出，最后再安全关闭数据库（P1-3）。
 func (s *Service) Close() error {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
 	s.closed = true
+	s.debounceGen++
 	if s.debounceTimer != nil {
 		s.debounceTimer.Stop()
 		s.debounceTimer = nil
 	}
+	s.onSyncToast = nil
+	s.onDataChanged = nil
+	s.onWidgetUpdated = nil
 	s.mu.Unlock()
+
+	s.lifeCancel()
+	s.syncWG.Wait()
 	return s.store.Close()
 }
 
@@ -254,6 +276,17 @@ func (s *Service) SaveSettings(ctx context.Context, settings domain.Settings) er
 	_, _ = s.RebuildWidgetTimeline(ctx)
 	s.notifyDataChanged()
 	return nil
+}
+
+// UpdateSettings 原子应用局部设置补丁，避免并发修改主题/字号/字体时旧快照覆盖最新意图（P1-4）。
+func (s *Service) UpdateSettings(ctx context.Context, patch func(*domain.Settings)) (domain.Settings, error) {
+	st, err := s.store.UpdateSettings(ctx, patch)
+	if err != nil {
+		return domain.Settings{}, err
+	}
+	_, _ = s.RebuildWidgetTimeline(ctx)
+	s.notifyDataChanged()
+	return st, nil
 }
 
 // ImportFont 将外部 .ttf/.otf 字体复制到私有目录，返回字体元数据与字节内容供 UI 注册。
@@ -373,17 +406,7 @@ func (s *Service) ImportEPUB(ctx context.Context, filePath, groupID string) (Imp
 		GroupID:     groupID,
 	}
 
-	if err := s.store.UpsertImportedBook(ctx, book, parsed.Book); err != nil {
-		_ = os.Remove(localRawPath)
-		_ = os.Remove(localSPPath)
-		if localCoverPath != "" {
-			_ = os.Remove(localCoverPath)
-		}
-		return ImportBookResult{}, err
-	}
-
-	// 始终先记入待上传队列；即使此时尚未配置 WebDAV，配置后也会自动补传并验证资产。
-	_ = s.store.UpsertPendingUpload(ctx, storage.PendingUpload{
+	pendingUpload := storage.PendingUpload{
 		BookID:          bookID,
 		RawFilename:     rawFilename,
 		LocalRawPath:    localRawPath,
@@ -391,7 +414,16 @@ func (s *Service) ImportEPUB(ctx context.Context, filePath, groupID string) (Imp
 		LocalCoverPath:  localCoverPath,
 		ContentHash:     contentHash,
 		State:           storage.UploadPending,
-	})
+	}
+	// 在同一 SQLite 事务内写入诗集元数据、正文与待上传资产记录，消除导书与并发同步间的幽灵书目窗口（P0-3）。
+	if err := s.store.UpsertImportedBookWithUpload(ctx, book, parsed.Book, &pendingUpload); err != nil {
+		_ = os.Remove(localRawPath)
+		_ = os.Remove(localSPPath)
+		if localCoverPath != "" {
+			_ = os.Remove(localCoverPath)
+		}
+		return ImportBookResult{}, err
+	}
 
 	storedBook, err := s.store.GetBook(ctx, bookID)
 	if err == nil {
@@ -407,7 +439,7 @@ func (s *Service) ImportEPUB(ctx context.Context, filePath, groupID string) (Imp
 	}, nil
 }
 
-// EnsureBookContent 按需从 WebDAV 下载诗集 .spbook.json.gz 正文包并写入本地 SQLite 缓存。
+// EnsureBookContent 按需恢复或从 WebDAV 下载诗集 .spbook.json.gz 正文包并写入本地 SQLite 缓存。
 func (s *Service) EnsureBookContent(ctx context.Context, bookID string) error {
 	book, err := s.store.GetBook(ctx, bookID)
 	if err != nil {
@@ -415,6 +447,18 @@ func (s *Service) EnsureBookContent(ctx context.Context, bookID string) error {
 	}
 	if book.LocalState == domain.LocalStateDownloaded {
 		return nil
+	}
+
+	// 若本机 cache/spbook 下仍保留匹配当前 ContentHash 的解析包，直接从本地瞬时恢复（P1-15）
+	localSPPath := filepath.Join(s.dataDir, "cache", "spbook", book.ID+".spbook.json.gz")
+	if raw, readErr := os.ReadFile(localSPPath); readErr == nil && len(raw) > 0 {
+		if sp, decErr := booksync.DecodeSPBook(raw, book.ContentHash, book.ID); decErr == nil {
+			if saveErr := s.store.SaveBookContent(ctx, book.ID, book.ContentHash, sp); saveErr == nil {
+				_, _ = s.RebuildWidgetTimeline(ctx)
+				s.notifyDataChanged()
+				return nil
+			}
+		}
 	}
 
 	client, err := s.newWebDAVClient()
@@ -441,6 +485,14 @@ func (s *Service) EnsureBookContent(ctx context.Context, bookID string) error {
 }
 
 func (s *Service) ClearBookCache(ctx context.Context, bookID string) error {
+	// 与批量清理保持一致：拒绝清理尚未完成云端上传的新导诗集正文（P1-15）
+	isPending, err := s.store.HasPendingUpload(ctx, bookID)
+	if err != nil {
+		return err
+	}
+	if isPending {
+		return errors.New("该诗集尚未完成云端上传，暂不可清理本地正文")
+	}
 	if err := s.store.ClearBookCache(ctx, bookID); err != nil {
 		return err
 	}
@@ -601,16 +653,17 @@ func (s *Service) ToggleFavoritePoem(ctx context.Context, book domain.Book, poem
 	return fav, err
 }
 
-// SetFavoriteCustomExcerpt 将用户手动划选的诗行设为该诗的小组件金句（自动确保该诗已加入精选池）。
+// SetFavoriteCustomExcerpt 将用户手动划选的诗行设为该诗的小组件金句（单事务原子激活收藏并写入节选，P1-5）。
 func (s *Service) SetFavoriteCustomExcerpt(ctx context.Context, book domain.Book, poem domain.Poem, excerpt, highlightLines string) error {
 	excerpt = strings.TrimSpace(excerpt)
 	if excerpt == "" {
 		return errors.New("请先选择要设为金句的诗行")
 	}
-	if _, err := s.ToggleFavoritePoem(ctx, book, poem, true); err != nil {
-		return err
+	author := poem.Author
+	if author == "" {
+		author = book.Author
 	}
-	if err := s.store.UpdateFavoriteExcerpt(ctx, book.ID, poem.ID, excerpt, highlightLines, true); err != nil {
+	if _, err := s.store.SetFavoriteCustomExcerpt(ctx, book.ID, poem.ID, poem.Title, author, excerpt, highlightLines); err != nil {
 		return err
 	}
 	_, _ = s.RebuildWidgetTimeline(ctx)
@@ -842,12 +895,13 @@ func (s *Service) TestWebDAVConnection(ctx context.Context, input WebDAVConfigIn
 		}
 	}
 	client, err := webdav.NewClient(webdav.Config{
-		BaseURL:      strings.TrimSpace(input.BaseURL),
-		Username:     strings.TrimSpace(input.Username),
-		Password:     pass,
-		AppFolder:    strings.TrimSpace(input.AppFolder),
-		AtomicUpload: input.AtomicUpload,
-		Timeout:      20 * time.Second,
+		BaseURL:                     strings.TrimSpace(input.BaseURL),
+		Username:                    strings.TrimSpace(input.Username),
+		Password:                    pass,
+		AppFolder:                   strings.TrimSpace(input.AppFolder),
+		AtomicUpload:                input.AtomicUpload,
+		AllowCrossOriginGetRedirect: true,
+		Timeout:                     25 * time.Second,
 	})
 	if err != nil {
 		return nil, err
@@ -856,18 +910,34 @@ func (s *Service) TestWebDAVConnection(ctx context.Context, input WebDAVConfigIn
 }
 
 // SaveWebDAVConfig 保存 WebDAV 非敏感配置到本地 JSON，密码仅写入系统级安全存储。
+// 若切换到新的远端工作区（BaseURL 或 AppFolder 变更），自动重置本地发布代次并重新入队本机仍保留缓存文件的诗集（P1-2）。
 func (s *Service) SaveWebDAVConfig(ctx context.Context, input WebDAVConfigInput) error {
+	baseURL := strings.TrimSpace(input.BaseURL)
+	if parsed, err := url.Parse(baseURL); err != nil {
+		return fmt.Errorf("WebDAV 地址无效：%w", err)
+	} else if parsed.User != nil {
+		return errors.New("WebDAV 地址中不可内嵌账号密码，请在下方账号密码框中单独填写")
+	}
+
 	folder := strings.TrimSpace(input.AppFolder)
 	if folder == "" {
 		folder = webdav.DefaultAppFolder
 	}
 	profile := WebDAVProfile{
 		Enabled:      input.Enabled,
-		BaseURL:      strings.TrimSpace(input.BaseURL),
+		BaseURL:      baseURL,
 		Username:     strings.TrimSpace(input.Username),
 		AppFolder:    folder,
 		AtomicUpload: input.AtomicUpload,
 	}
+
+	s.mu.Lock()
+	prev := s.profile
+	s.mu.Unlock()
+	workspaceChanged := prev.Enabled &&
+		(strings.TrimRight(prev.BaseURL, "/") != strings.TrimRight(profile.BaseURL, "/") ||
+			strings.Trim(prev.AppFolder, "/") != strings.Trim(profile.AppFolder, "/"))
+
 	if input.Password != "" {
 		if err := s.secrets.Set(webdavPasswordKey, []byte(input.Password)); err != nil {
 			return fmt.Errorf("保存 WebDAV 密码到系统安全存储失败：%w", err)
@@ -876,31 +946,75 @@ func (s *Service) SaveWebDAVConfig(ctx context.Context, input WebDAVConfigInput)
 	if err := writeJSONAtomic(filepath.Join(s.dataDir, webdavProfileFilename), profile); err != nil {
 		return err
 	}
+
+	if workspaceChanged {
+		_ = s.store.ResetWorkspaceSyncState(ctx)
+		s.requeueLocalCachedBooksForWorkspace(ctx)
+	}
+
 	s.mu.Lock()
 	s.profile = profile
+	s.workspaceEpoch++
+	if workspaceChanged {
+		s.remoteDevices = nil
+	}
 	s.mu.Unlock()
 	s.notifyDataChanged()
 	return nil
 }
 
+func (s *Service) requeueLocalCachedBooksForWorkspace(ctx context.Context) {
+	books, err := s.store.ListBooks(ctx, "")
+	if err != nil {
+		return
+	}
+	for _, b := range books {
+		spPath := filepath.Join(s.dataDir, "cache", "spbook", b.ID+".spbook.json.gz")
+		rawPath := filepath.Join(s.dataDir, "cache", "raw", b.ID+"_"+b.RawFilename)
+		if _, err1 := os.Stat(spPath); err1 != nil {
+			continue
+		}
+		if _, err2 := os.Stat(rawPath); err2 != nil {
+			continue
+		}
+		coverPath := filepath.Join(s.dataDir, "cache", "covers", b.ID+".img")
+		if _, err := os.Stat(coverPath); err != nil {
+			coverPath = ""
+		}
+		_ = s.store.UpsertPendingUpload(ctx, storage.PendingUpload{
+			BookID:          b.ID,
+			RawFilename:     b.RawFilename,
+			LocalRawPath:    rawPath,
+			LocalSPBookPath: spPath,
+			LocalCoverPath:  coverPath,
+			ContentHash:     b.ContentHash,
+			State:           storage.UploadPending,
+		})
+	}
+}
+
 // ClearWebDAVConfig 断开 WebDAV 并删除系统安全存储中的密码。
 func (s *Service) ClearWebDAVConfig() error {
-	_ = s.secrets.Delete(webdavPasswordKey)
+	var secretErr error
+	if err := s.secrets.Delete(webdavPasswordKey); err != nil && !errors.Is(err, os.ErrNotExist) {
+		secretErr = fmt.Errorf("清除系统安全存储中的密码失败：%w", err)
+	}
 	profile := WebDAVProfile{AppFolder: webdav.DefaultAppFolder}
 	if err := writeJSONAtomic(filepath.Join(s.dataDir, webdavProfileFilename), profile); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	s.profile = profile
+	s.workspaceEpoch++
 	s.remoteDevices = nil
 	s.mu.Unlock()
 	s.notifyDataChanged()
-	return nil
+	return secretErr
 }
 
-// GetSyncOverview 返回本机同步状态、待上传数量和最近发现的远端设备列表。
+// GetSyncOverview 返回本机同步状态、待上传数量和最近发现的远端设备列表（轻量查元表，不导出 5 张全库表，P2-1）。
 func (s *Service) GetSyncOverview(ctx context.Context) (SyncOverview, error) {
-	_, meta, err := s.store.ExportSnapshot(ctx)
+	meta, err := s.store.GetSyncMeta(ctx)
 	if err != nil {
 		return SyncOverview{}, err
 	}
@@ -923,34 +1037,72 @@ func (s *Service) GetSyncOverview(ctx context.Context) (SyncOverview, error) {
 	}, nil
 }
 
-// SyncNow 执行一次完整串行同步：先上传待发布导书资产并回读确认，再拉取合并并按需发布新代次快照。
+func (s *Service) beginSyncOp(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, nil, errors.New("app: service closed")
+	}
+	s.syncWG.Add(1)
+	s.mu.Unlock()
+
+	select {
+	case s.syncSem <- struct{}{}:
+	case <-ctx.Done():
+		s.syncWG.Done()
+		return nil, nil, ctx.Err()
+	case <-s.lifeCtx.Done():
+		s.syncWG.Done()
+		return nil, nil, errors.New("app: service closed")
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	stopWatch := context.AfterFunc(s.lifeCtx, cancel)
+	release := func() {
+		stopWatch()
+		cancel()
+		<-s.syncSem
+		s.syncWG.Done()
+	}
+	return runCtx, release, nil
+}
+
+// SyncNow 执行一次完整串行同步：先上传待发布导书资产并回读确认，再原子导出快照并合并发布。
 func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncResult, error) {
-	client, err := s.newWebDAVClient()
+	runCtx, release, err := s.beginSyncOp(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	s.syncMu.Lock()
-	defer s.syncMu.Unlock()
+	client, startEpoch, err := s.newWebDAVClientWithEpoch()
+	if err != nil {
+		release()
+		return nil, err
+	}
 
 	s.emitSyncToast(SyncToastState{Phase: SyncToastSyncing, Message: "同步中…"})
 
 	engine := booksync.NewEngine(client)
 
 	// 1. 先处理 pending_uploads（遵守「先传资产、回读确认、再发布书目元数据」铁律）
-	unverifiedBooks, uploadedAny, uploadFailed := s.flushPendingUploads(ctx, engine)
+	uploadedAny, uploadFailed := s.flushPendingUploads(runCtx, engine)
 
-	// 2. 导出本机快照（剔除资产尚未回读通过的新导诗集，防止远端出现幽灵书目）
-	localData, meta, err := s.store.ExportSnapshot(ctx)
+	// 2. 在同一 Store.mu 快照内同时读取元数据与最新待上传队列，彻底消除导书夹塞导致的幽灵书目（P0-3）
+	localData, meta, remainingPending, err := s.store.ExportSnapshotWithPending(runCtx)
 	if err != nil {
+		release()
 		s.emitSyncToast(SyncToastState{Phase: SyncToastError, Message: "同步失败"})
 		return nil, err
 	}
+	blockedBooks := make(map[string]struct{}, len(remainingPending))
+	for _, p := range remainingPending {
+		blockedBooks[p.BookID] = struct{}{}
+	}
 	outgoingData := localData
-	if len(unverifiedBooks) > 0 {
+	if len(blockedBooks) > 0 {
 		filtered := make([]domain.Book, 0, len(localData.Books))
 		for _, b := range localData.Books {
-			if _, blocked := unverifiedBooks[b.ID]; blocked {
+			if _, blocked := blockedBooks[b.ID]; blocked {
 				continue
 			}
 			filtered = append(filtered, b)
@@ -958,7 +1110,7 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 		outgoingData.Books = filtered
 	}
 
-	res, err := engine.Sync(ctx, booksync.SyncRequest{
+	res, err := engine.Sync(runCtx, booksync.SyncRequest{
 		InstallID:    meta.InstallID,
 		LocalRev:     meta.LocalRev,
 		LocalCounter: meta.LamportCounter,
@@ -967,16 +1119,27 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 		ForcePush:    forcePush || meta.LocalRev == 0,
 	})
 	if err != nil {
+		release()
 		s.emitSyncToast(SyncToastState{Phase: SyncToastError, Message: "云同步失败"})
 		return nil, err
 	}
 
-	// 若存在未能上传资产的本地新书，合并结果落盘时仍保留其 dirty 标记，等待下轮继续补传。
-	applyPublished := res.Published
-	if uploadFailed {
+	// 若同步期间用户切换或断开了 WebDAV 工作区，放弃回写旧工作区结果（P1-2）
+	s.mu.Lock()
+	epochMatch := s.workspaceEpoch == startEpoch
+	s.mu.Unlock()
+	if !epochMatch {
+		release()
+		return nil, errors.New("同步期间 WebDAV 工作区已变更，已中止旧工作区提交")
+	}
+
+	// 若存在未上传完成的本地新书，保留 dirty=1 确保下轮不会跳过发布（P1-1）
+	keepDirty := uploadFailed || len(remainingPending) > 0
+	if keepDirty {
 		res.PartialSync = true
 	}
-	if err := s.store.ApplyMergedSnapshot(ctx, res.MergedData, meta.DirtySeq, res.MaxCounter, res.PublishedRev, applyPublished); err != nil {
+	if err := s.store.ApplyMergedSnapshotEx(runCtx, res.MergedData, meta.DirtySeq, res.MaxCounter, res.PublishedRev, res.Published, keepDirty); err != nil {
+		release()
 		s.emitSyncToast(SyncToastState{Phase: SyncToastError, Message: "同步写库失败"})
 		return nil, err
 	}
@@ -985,7 +1148,10 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 	s.remoteDevices = slices.Clone(res.RemoteDevices)
 	s.mu.Unlock()
 
-	_, _ = s.RebuildWidgetTimeline(ctx)
+	// 先释放同步串行锁，再派发小组件重建与 UI 回调，避免外部回调重入同步锁（P2-2）
+	release()
+
+	_, _ = s.RebuildWidgetTimeline(context.Background())
 	s.notifyDataChanged()
 
 	if res.PartialSync {
@@ -996,40 +1162,60 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 	return res, nil
 }
 
-// RetireRemoteDevice 先确保本机已发布最新合并快照，再安全退役指定旧 installId。
+// RetireRemoteDevice 先确保完整拉取并合并目标设备的最新代次且发布现役快照，再仅删除已覆盖的旧代次（P0-4）。
 func (s *Service) RetireRemoteDevice(ctx context.Context, targetInstallID string) error {
-	if _, err := s.SyncNow(ctx, true); err != nil {
+	syncRes, err := s.SyncNow(ctx, true)
+	if err != nil {
 		return fmt.Errorf("退役前发布合并快照失败：%w", err)
 	}
-	client, err := s.newWebDAVClient()
-	if err != nil {
-		return err
+	if !syncRes.Published || syncRes.PublishedRev == 0 {
+		return errors.New("退役前未能确认现役设备已发布新代次快照，已中止退役")
 	}
-	_, meta, err := s.store.ExportSnapshot(ctx)
-	if err != nil {
-		return err
+	if syncRes.IncompleteDevices[targetInstallID] {
+		return fmt.Errorf("设备 %s 的最新远端快照在本轮读取失败或已损坏，为防止数据丢失已拒绝退役", targetInstallID)
+	}
+	coveredRev, ok := syncRes.SyncedDeviceRevs[targetInstallID]
+	if !ok || coveredRev == 0 {
+		return fmt.Errorf("未确认设备 %s 的最新远端代次已完整合并，已拒绝退役", targetInstallID)
 	}
 
-	s.syncMu.Lock()
-	defer s.syncMu.Unlock()
+	runCtx, release, err := s.beginSyncOp(ctx)
+	if err != nil {
+		return err
+	}
+	client, _, err := s.newWebDAVClientWithEpoch()
+	if err != nil {
+		release()
+		return err
+	}
+	meta, err := s.store.GetSyncMeta(runCtx)
+	if err != nil {
+		release()
+		return err
+	}
 
 	engine := booksync.NewEngine(client)
-	if err := engine.RetireDevice(ctx, meta.InstallID, meta.LocalRev, targetInstallID); err != nil {
+	err = engine.RetireDeviceCovered(runCtx, meta.InstallID, syncRes.PublishedRev, targetInstallID, coveredRev)
+	if err != nil {
+		release()
 		return err
 	}
 	s.mu.Lock()
 	s.remoteDevices = slices.DeleteFunc(s.remoteDevices, func(id string) bool { return id == targetInstallID })
 	s.mu.Unlock()
+	release()
 	s.notifyDataChanged()
 	return nil
 }
 
-func (s *Service) flushPendingUploads(ctx context.Context, engine *booksync.Engine) (map[string]struct{}, bool, bool) {
+func (s *Service) flushPendingUploads(ctx context.Context, engine *booksync.Engine) (bool, bool) {
 	pending, err := s.store.ListPendingUploads(ctx)
-	if err != nil || len(pending) == 0 {
-		return nil, false, false
+	if err != nil {
+		return false, true
 	}
-	unverified := make(map[string]struct{})
+	if len(pending) == 0 {
+		return false, false
+	}
 	uploadedAny := false
 	anyFailed := false
 
@@ -1040,7 +1226,6 @@ func (s *Service) flushPendingUploads(ctx context.Context, engine *booksync.Engi
 			continue
 		}
 		if err != nil {
-			unverified[item.BookID] = struct{}{}
 			anyFailed = true
 			continue
 		}
@@ -1048,7 +1233,6 @@ func (s *Service) flushPendingUploads(ctx context.Context, engine *booksync.Engi
 		rawBytes, err2 := os.ReadFile(item.LocalRawPath)
 		if err1 != nil || err2 != nil {
 			_ = s.store.UpdatePendingUploadState(ctx, item.BookID, storage.UploadFailed, "本地待上传文件缺失")
-			unverified[item.BookID] = struct{}{}
 			anyFailed = true
 			continue
 		}
@@ -1058,32 +1242,39 @@ func (s *Service) flushPendingUploads(ctx context.Context, engine *booksync.Engi
 		}
 		if _, err := engine.UploadBookAssets(ctx, book, spBytes, rawBytes, coverBytes); err != nil {
 			_ = s.store.UpdatePendingUploadState(ctx, item.BookID, storage.UploadFailed, err.Error())
-			unverified[item.BookID] = struct{}{}
 			anyFailed = true
 			continue
 		}
 		_ = s.store.DeletePendingUpload(ctx, item.BookID)
 		uploadedAny = true
 	}
-	return unverified, uploadedAny, anyFailed
+	return uploadedAny, anyFailed
 }
 
 func (s *Service) newWebDAVClient() (*webdav.Client, error) {
+	c, _, err := s.newWebDAVClientWithEpoch()
+	return c, err
+}
+
+func (s *Service) newWebDAVClientWithEpoch() (*webdav.Client, uint64, error) {
 	s.mu.Lock()
 	p := s.profile
+	epoch := s.workspaceEpoch
 	s.mu.Unlock()
 	if !p.Enabled || strings.TrimSpace(p.BaseURL) == "" {
-		return nil, errors.New("尚未配置并启用 WebDAV 同步")
+		return nil, epoch, errors.New("尚未配置并启用 WebDAV 同步")
 	}
 	passBytes, _ := s.secrets.Get(webdavPasswordKey)
-	return webdav.NewClient(webdav.Config{
-		BaseURL:      p.BaseURL,
-		Username:     p.Username,
-		Password:     string(passBytes),
-		AppFolder:    p.AppFolder,
-		AtomicUpload: p.AtomicUpload,
-		Timeout:      60 * time.Second,
+	c, err := webdav.NewClient(webdav.Config{
+		BaseURL:                     p.BaseURL,
+		Username:                    p.Username,
+		Password:                    string(passBytes),
+		AppFolder:                   p.AppFolder,
+		AtomicUpload:                p.AtomicUpload,
+		AllowCrossOriginGetRedirect: true,
+		Timeout:                     60 * time.Second,
 	})
+	return c, epoch, err
 }
 
 func (s *Service) loadWebDAVProfileFromDisk() {
@@ -1107,11 +1298,19 @@ func (s *Service) scheduleDebouncedSync() {
 		return
 	}
 	delay := s.debounceDelay
+	s.debounceGen++
+	gen := s.debounceGen
 	if s.debounceTimer != nil {
 		s.debounceTimer.Stop()
 	}
 	s.debounceTimer = time.AfterFunc(delay, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		s.mu.Lock()
+		stale := s.closed || s.debounceGen != gen
+		s.mu.Unlock()
+		if stale {
+			return
+		}
+		ctx, cancel := context.WithTimeout(s.lifeCtx, 3*time.Minute)
 		defer cancel()
 		_, _ = s.SyncNow(ctx, false)
 	})

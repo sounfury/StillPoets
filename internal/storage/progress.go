@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 
 	"github.com/egoist/mygo/plugins/sqlite"
@@ -77,6 +78,14 @@ func (s *Store) RecordPoemRead(ctx context.Context, bookID, poemID string, scrol
 		progress, err = s.GetProgress(ctx, bookID)
 		if err != nil {
 			return nil, err
+		}
+		// 若该书正文已离线缓存，校验 poemID 确实属于该书，杜绝跨书脏进度污染同步数据（P0-2）。
+		if poemID != "" {
+			if r, err := s.firstRow(ctx, `SELECT local_content_hash FROM books WHERE id = ? AND deleted = 0`, bookID); err == nil && r.text(0) != "" {
+				if _, err := s.firstRow(ctx, `SELECT id FROM poems WHERE book_id = ? AND id = ?`, bookID, poemID); err != nil {
+					return nil, fmt.Errorf("storage: poem %q does not belong to book %q", poemID, bookID)
+				}
+			}
 		}
 		progress.LastPoemID, progress.PositionVer, progress.LocalScrollRatio = poemID, v, scrollRatio
 		if poemID != "" {

@@ -232,6 +232,24 @@ func TestTwoDeviceWebDAVSyncAndOnDemandDownload(t *testing.T) {
 	}
 }
 
+func TestClearBookCacheProtectsPendingUpload(t *testing.T) {
+	ctx := t.Context()
+	epubPath := findTestEPUB(t)
+	svc, err := Open(ctx, t.TempDir(), NewMemorySecretStore())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer svc.Close()
+
+	imp, err := svc.ImportEPUB(ctx, epubPath, "")
+	if err != nil {
+		t.Fatalf("ImportEPUB: %v", err)
+	}
+	if err := svc.ClearBookCache(ctx, imp.Book.ID); err == nil {
+		t.Fatalf("expected ClearBookCache to reject book with pending upload")
+	}
+}
+
 func findTestEPUB(t *testing.T) string {
 	t.Helper()
 	matches, err := filepath.Glob(filepath.Join("..", "..", "test-books", "*.epub"))

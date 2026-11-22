@@ -40,17 +40,20 @@ var (
 	ErrResponseTooLarge = errors.New("webdav: response body exceeds limit")
 	// ErrUnsafeRedirect 表示遇到不安全或会改写 DAV 方法的 HTTP 重定向。
 	ErrUnsafeRedirect = errors.New("webdav: unsafe redirect blocked")
+	// ErrRateLimited 表示服务端通过 Retry-After 要求长退避，超过本轮最大重试等待上限。
+	ErrRateLimited = errors.New("webdav: server rate limited")
 )
 
 // Config 描述 WebDAV 连接与兼容策略配置。
 type Config struct {
-	BaseURL          string // 用户输入的 WebDAV 地址，例如 https://dav.jianguoyun.com/dav/
-	Username         string
-	Password         string
-	AppFolder        string        // 默认在 BaseURL 下创建的专属目录，留空则使用 StillPoets
-	UserAgent        string        // 可自定义以适配特定网盘限制
-	AtomicUpload     bool          // 是否先 PUT 临时文件再 MOVE 覆盖（AList/115 如不兼容可关闭）
-	AllowInsecureTLS bool          // 仅允许局域网自签名 NAS 时显式开启
+	BaseURL                     string // 用户输入的 WebDAV 地址，例如 https://dav.jianguoyun.com/dav/
+	Username                    string
+	Password                    string
+	AppFolder                   string        // 默认在 BaseURL 下创建的专属目录，留空则使用 StillPoets
+	UserAgent                   string        // 可自定义以适配特定网盘限制
+	AtomicUpload                bool          // 是否先 PUT 临时文件再 MOVE 覆盖（AList/115 如不兼容可关闭）
+	AllowCrossOriginGetRedirect bool          // 允许 GET 跟随跨域 HTTPS 直链重定向（如 OpenList/115 302），并剥离凭据头
+	AllowInsecureTLS            bool          // 仅允许局域网自签名 NAS 时显式开启
 	MaxConcurrency   int           // 默认 2，避免触发坚果云/115 429 频控
 	MaxRetries       int           // 遇 429/502/503/504/临时网络错误的最大重试次数
 	Timeout          time.Duration // 单次请求超时
@@ -100,6 +103,9 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 	if parsed.Host == "" {
 		return nil, errors.New("webdav: base URL host is empty")
+	}
+	if parsed.User != nil {
+		return nil, errors.New("webdav: base URL must not embed credentials")
 	}
 	// 保留原始已转义路径，同时确保以 "/" 结尾
 	if parsed.RawPath != "" {
@@ -161,20 +167,30 @@ func NewClient(cfg Config) (*Client, error) {
 }
 
 // checkRedirect 仅允许同源且不改写 DAV 方法的重定向，防止 PUT 301/302 变 GET 误报成功或泄露 Basic Auth。
+// 当启用 AllowCrossOriginGetRedirect 时，仅允许 GET 跳转到 https:// 目标，且强制剥离 Authorization/Cookie/Referer。
 func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= 5 {
 		return fmt.Errorf("%w: too many redirects", ErrUnsafeRedirect)
 	}
 	prev := via[len(via)-1]
 
-	// 严格限制同源（scheme + host 一致），绝不跨域携带 WebDAV 凭据
-	if !strings.EqualFold(req.URL.Scheme, c.baseURL.Scheme) || !strings.EqualFold(req.URL.Host, c.baseURL.Host) {
-		return fmt.Errorf("%w: cross-origin redirect to %s://%s", ErrUnsafeRedirect, req.URL.Scheme, req.URL.Host)
-	}
-
 	// 禁止重定向改写 HTTP 方法（例如 PUT/PROPFIND/MKCOL 遇到 301/302/303 被降级为 GET）
 	if req.Method != prev.Method {
 		return fmt.Errorf("%w: method changed from %s to %s", ErrUnsafeRedirect, prev.Method, req.Method)
+	}
+
+	sameOrigin := strings.EqualFold(req.URL.Scheme, c.baseURL.Scheme) && strings.EqualFold(req.URL.Host, c.baseURL.Host)
+	if !sameOrigin {
+		// 仅允许显式开启时的 GET -> HTTPS 跨域直链（OpenList/115 302），且剥离所有敏感请求头
+		if c.cfg.AllowCrossOriginGetRedirect && prev.Method == http.MethodGet && strings.EqualFold(req.URL.Scheme, "https") {
+			req.Header.Del("Authorization")
+			req.Header.Del("Cookie")
+			req.Header.Del("Referer")
+			req.Header.Set("Accept-Encoding", "identity")
+			req.Header.Set("User-Agent", c.cfg.UserAgent)
+			return nil
+		}
+		return fmt.Errorf("%w: cross-origin redirect to %s://%s", ErrUnsafeRedirect, req.URL.Scheme, req.URL.Host)
 	}
 
 	// 对非只读方法，只允许 307/308（规范保证保留方法与请求体）
@@ -442,6 +458,10 @@ func (c *Client) Put(ctx context.Context, relPath string, data []byte, contentTy
 		"Overwrite":   "T",
 	}, maxControlBodySize)
 	if err != nil {
+		// 若 MOVE 因响应丢失产生歧义，先回读目标核验是否已实际提交成功（P1-9）
+		if got, etag, getErr := c.GetWithLimit(ctx, relPath, int64(len(data))+1024); getErr == nil && bytes.Equal(got, data) {
+			return etag, nil
+		}
 		_ = c.Delete(ctx, tmpRel)
 		return "", fmt.Errorf("webdav: atomic upload move: %w", err)
 	}
@@ -449,6 +469,13 @@ func (c *Client) Put(ctx context.Context, relPath string, data []byte, contentTy
 	switch res.StatusCode {
 	case http.StatusCreated, http.StatusNoContent, http.StatusOK:
 		return res.Header.Get("ETag"), nil
+	case http.StatusNotFound:
+		// 若前一次 MOVE 实际已在服务端成功、重试因临时文件已移走返回 404，则回读正式目标确认
+		if got, etag, getErr := c.GetWithLimit(ctx, relPath, int64(len(data))+1024); getErr == nil && bytes.Equal(got, data) {
+			return etag, nil
+		}
+		_ = c.Delete(ctx, tmpRel)
+		return "", fmt.Errorf("webdav: atomic move %s unexpected status %d", relPath, res.StatusCode)
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return "", ErrUnauthorized
 	default:
@@ -728,6 +755,15 @@ func (c *Client) do(ctx context.Context, method, targetURL string, body []byte, 
 				retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 				resp.Body.Close()
+				// 若服务端显式要求的 Retry-After 超过剩余上下文预算或生产级上限（60s），不截短提前撞限流，直接上报限流错误（P1-9）
+				if retryAfter > 0 {
+					if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < retryAfter {
+						return nil, fmt.Errorf("%w: retry after %s exceeds context budget on %s %s", ErrRateLimited, retryAfter.Round(time.Second), method, targetURL)
+					}
+					if retryAfter > DefaultMaxRetryDelay && c.cfg.MaxRetryDelay >= DefaultMaxRetryDelay {
+						return nil, fmt.Errorf("%w: retry after %s on %s %s", ErrRateLimited, retryAfter.Round(time.Second), method, targetURL)
+					}
+				}
 				lastErr = fmt.Errorf("webdav: status %d on %s %s", resp.StatusCode, method, targetURL)
 
 				delay := c.computeBackoff(attempt, retryAfter)

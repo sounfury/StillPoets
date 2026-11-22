@@ -425,22 +425,29 @@ func (a *AppUI) applyThemePreset(preset theme.Palette) {
 	a.settings.WidgetTheme.BgColor = preset.BgHex
 	a.settings.WidgetTheme.TextColor = preset.TextHex
 	a.settings.WidgetTheme.AccentColor = preset.AccentHex
-	st := a.settings
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = a.svc.SaveSettings(ctx, st)
+		_, _ = a.svc.UpdateSettings(ctx, func(st *domain.Settings) {
+			st.ThemePreset = string(preset.ID)
+			st.WidgetTheme.Preset = string(preset.ID)
+			st.WidgetTheme.BgColor = preset.BgHex
+			st.WidgetTheme.TextColor = preset.TextHex
+			st.WidgetTheme.AccentColor = preset.AccentHex
+		})
 	}()
 }
 
 func (a *AppUI) saveTypography(fontSize, lineHeight float32) {
 	a.settings.FontSize = fontSize
 	a.settings.LineHeight = lineHeight
-	st := a.settings
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = a.svc.SaveSettings(ctx, st)
+		_, _ = a.svc.UpdateSettings(ctx, func(st *domain.Settings) {
+			st.FontSize = fontSize
+			st.LineHeight = lineHeight
+		})
 	}()
 }
 
@@ -457,29 +464,35 @@ func (a *AppUI) applyFontFamily(family string) {
 		}
 	}
 	a.settings.WidgetTheme.FontFile = fontFile
-	st := a.settings
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = a.svc.SaveSettings(ctx, st)
+		_, _ = a.svc.UpdateSettings(ctx, func(st *domain.Settings) {
+			st.FontFamily = family
+			st.WidgetTheme.FontFamily = family
+			st.WidgetTheme.FontFile = fontFile
+		})
 	}()
 }
 
 func (a *AppUI) updateWidgetMode(mode domain.WidgetSourceMode, bookID string) {
 	a.settings.WidgetMode = mode
 	a.settings.WidgetBookID = bookID
-	st := a.settings
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := a.svc.SaveSettings(ctx, st); err == nil {
-			if tl, err := a.svc.RebuildWidgetTimeline(ctx); err == nil {
+		if _, err := a.svc.UpdateSettings(ctx, func(st *domain.Settings) {
+			st.WidgetMode = mode
+			st.WidgetBookID = bookID
+		}); err == nil {
+			if tl, err := a.svc.ReadWidgetTimeline(); err == nil {
 				cp := tl
-				a.mu.Lock()
-				a.widgetPreview = &cp
-				a.widgetCount = len(tl.Entries)
-				a.activeWidgetCount = widgetbridge.ActiveWidgetCount()
-				a.mu.Unlock()
+				activeCnt := widgetbridge.ActiveWidgetCount()
+				a.dispatchUI(func() {
+					a.widgetPreview = &cp
+					a.widgetCount = len(tl.Entries)
+					a.activeWidgetCount = activeCnt
+				})
 				a.showTransientToast(fmt.Sprintf("小组件已同步更新（%d 条）", len(tl.Entries)))
 			}
 		}
@@ -496,11 +509,12 @@ func (a *AppUI) refreshWidgetSnapshot() {
 			return
 		}
 		cp := tl
-		a.mu.Lock()
-		a.widgetPreview = &cp
-		a.widgetCount = len(tl.Entries)
-		a.activeWidgetCount = widgetbridge.ActiveWidgetCount()
-		a.mu.Unlock()
+		activeCnt := widgetbridge.ActiveWidgetCount()
+		a.dispatchUI(func() {
+			a.widgetPreview = &cp
+			a.widgetCount = len(tl.Entries)
+			a.activeWidgetCount = activeCnt
+		})
 		a.showTransientToast(fmt.Sprintf("桌面小组件已刷新（%d 条）", len(tl.Entries)))
 	}()
 }
@@ -525,6 +539,9 @@ func (a *AppUI) pinWidgetToHomeScreen() {
 }
 
 func (a *AppUI) verifyAndSaveWebDAV() {
+	if a.davBusy {
+		return
+	}
 	input := app.WebDAVConfigInput{
 		BaseURL:      strings.TrimSpace(a.davURL),
 		Username:     strings.TrimSpace(a.davUser),
@@ -533,11 +550,8 @@ func (a *AppUI) verifyAndSaveWebDAV() {
 		AtomicUpload: a.davAtomic,
 		Enabled:      true,
 	}
-	a.mu.Lock()
 	a.davBusy = true
 	a.davStatus = "正在验证 WebDAV 连接并初始化专属目录…"
-	a.mu.Unlock()
-	a.requestRepaint()
 
 	go func() {
 		testCtx, testCancel := context.WithTimeout(context.Background(), 25*time.Second)
@@ -554,18 +568,19 @@ func (a *AppUI) verifyAndSaveWebDAV() {
 			if saveErr != nil {
 				msg = "保存凭据失败：" + saveErr.Error()
 			} else {
-				a.mu.Lock()
-				a.davPass = "" // 清空界面表单中的明文密码
-				if res.ExistingRemote {
-					a.davStatus = fmt.Sprintf("连接并保存成功！检测到远端已有 %d 台设备快照，正在首次同步…", res.DeviceCount)
+				statusMsg := "连接并保存成功！已自动创建专属目录，正在首次同步…"
+				if res.LegacyWorkspace && res.ExistingRemote {
+					statusMsg = fmt.Sprintf("连接并保存成功！检测到 %d 台设备快照及旧版 manifest.json（建议核对目录），正在首次同步…", res.DeviceCount)
 				} else if res.LegacyWorkspace {
-					a.davStatus = "连接并保存成功！检测到旧版 manifest.json，正在首次同步…"
-				} else {
-					a.davStatus = "连接并保存成功！已自动创建专属目录，正在首次同步…"
+					statusMsg = "连接并保存成功！检测到旧版 manifest.json，建议更换目录名以隔离新协议，正在首次同步…"
+				} else if res.ExistingRemote {
+					statusMsg = fmt.Sprintf("连接并保存成功！检测到远端已有 %d 台设备快照，正在首次同步…", res.DeviceCount)
 				}
-				a.mu.Unlock()
+				a.dispatchUI(func() {
+					a.davPass = "" // 在 UI 线程安全清空表单明文密码（P0-1）
+					a.davStatus = statusMsg
+				})
 				a.reloadSync(nil)
-				a.requestRepaint()
 
 				// 首次同步可能包含多本 EPUB 上传与回读校验（尤其是 AList/115），使用独立长超时上下文
 				syncCtx, syncCancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -581,20 +596,19 @@ func (a *AppUI) verifyAndSaveWebDAV() {
 			}
 		}
 		a.reloadSync(nil)
-		a.mu.Lock()
-		a.davBusy = false
-		a.davStatus = msg
-		a.mu.Unlock()
-		a.requestRepaint()
+		a.dispatchUI(func() {
+			a.davBusy = false
+			a.davStatus = msg
+		})
 	}()
 }
 
 func (a *AppUI) triggerManualSync() {
-	a.mu.Lock()
+	if a.davBusy {
+		return
+	}
 	a.davBusy = true
 	a.davStatus = "正在同步…"
-	a.mu.Unlock()
-	a.requestRepaint()
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -609,32 +623,34 @@ func (a *AppUI) triggerManualSync() {
 			msg = fmt.Sprintf("云同步成功（远端设备 %d 台）", len(res.RemoteDevices))
 		}
 		a.reloadSync(nil)
-		a.mu.Lock()
-		a.davBusy = false
-		a.davStatus = msg
-		a.mu.Unlock()
-		a.requestRepaint()
+		a.dispatchUI(func() {
+			a.davBusy = false
+			a.davStatus = msg
+		})
 	}()
 }
 
 func (a *AppUI) disconnectWebDAV() {
 	go func() {
-		_ = a.svc.ClearWebDAVConfig()
+		err := a.svc.ClearWebDAVConfig()
 		a.reloadSync(nil)
-		a.mu.Lock()
-		a.davPass = ""
-		a.davStatus = "已断开 WebDAV 并清除密钥链密码"
-		a.mu.Unlock()
-		a.requestRepaint()
+		status := "已断开 WebDAV 并清除密钥链密码"
+		if err != nil {
+			status = "已断开同步配置，但清除密码时出现告警：" + err.Error()
+		}
+		a.dispatchUI(func() {
+			a.davPass = ""
+			a.davStatus = status
+		})
 	}()
 }
 
 func (a *AppUI) triggerRetireDevice(devID string) {
-	a.mu.Lock()
+	if a.davBusy {
+		return
+	}
 	a.davBusy = true
 	a.davStatus = fmt.Sprintf("正在安全退役旧设备 %s…", devID)
-	a.mu.Unlock()
-	a.requestRepaint()
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -645,11 +661,10 @@ func (a *AppUI) triggerRetireDevice(devID string) {
 			msg = "退役失败：" + err.Error()
 		}
 		a.reloadSync(nil)
-		a.mu.Lock()
-		a.davBusy = false
-		a.davStatus = msg
-		a.mu.Unlock()
-		a.requestRepaint()
+		a.dispatchUI(func() {
+			a.davBusy = false
+			a.davStatus = msg
+		})
 	}()
 }
 

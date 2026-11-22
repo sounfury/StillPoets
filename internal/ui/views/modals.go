@@ -199,8 +199,11 @@ func (a *AppUI) renderQuoteDetailModal(c *ui.Context, pal theme.Palette) {
 				go func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
-					_ = a.svc.DeleteQuote(ctx, id)
-					a.reloadSync(ctx)
+					if err := a.svc.DeleteQuote(ctx, id); err != nil {
+						a.showTransientToast("删除失败：" + err.Error())
+						return
+					}
+					a.reloadSync(nil)
 					a.showTransientToast("已删除散页")
 				}()
 			}
@@ -235,12 +238,12 @@ func (a *AppUI) renderGroupManagerModal(c *ui.Context, pal theme.Palette) {
 						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 						defer cancel()
 						if _, err := a.svc.CreateGroup(ctx, name); err != nil {
-							a.mu.Lock()
-							a.groupFormError = err.Error()
-							a.mu.Unlock()
+							errMsg := err.Error()
+							a.dispatchUI(func() {
+								a.groupFormError = errMsg
+							})
 						}
-						a.reloadSync(ctx)
-						a.requestRepaint()
+						a.reloadSync(nil)
 					}()
 				}
 			}
@@ -287,10 +290,10 @@ func (a *AppUI) renderGroupManagerModal(c *ui.Context, pal theme.Palette) {
 								ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
 									ui.Text(c, g.Name).FontSize(14).Bold().TextColor(pal.TextPrimary).Grow(1)
 									if i > 0 && ui.Button(c, "↑").Clicked() {
-										a.swapGroups(i, i-1)
+										a.moveGroupByID(g.ID, -1)
 									}
 									if i+1 < len(a.groups) && ui.Button(c, "↓").Clicked() {
-										a.swapGroups(i, i+1)
+										a.moveGroupByID(g.ID, +1)
 									}
 									if ui.Button(c, "重命名").Clicked() {
 										a.renamingGroupID = g.ID
@@ -317,18 +320,25 @@ func (a *AppUI) renderGroupManagerModal(c *ui.Context, pal theme.Palette) {
 	})
 }
 
-func (a *AppUI) swapGroups(i, j int) {
+func (a *AppUI) moveGroupByID(groupID string, delta int) {
 	ids := make([]string, len(a.groups))
+	pos := -1
 	for idx, g := range a.groups {
 		ids[idx] = g.ID
+		if g.ID == groupID {
+			pos = idx
+		}
 	}
-	ids[i], ids[j] = ids[j], ids[i]
+	target := pos + delta
+	if pos < 0 || target < 0 || target >= len(ids) {
+		return
+	}
+	ids[pos], ids[target] = ids[target], ids[pos]
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = a.svc.ReorderGroups(ctx, ids)
-		a.reloadSync(ctx)
-		a.requestRepaint()
+		a.reloadSync(nil)
 	}()
 }
 
@@ -346,6 +356,10 @@ func (a *AppUI) renderSearchModal(c *ui.Context, pal theme.Palette) {
 
 		if ui.SearchField(c.Key("global-search-input"), &a.searchQuery).Placeholder("搜已缓存诗句、诗题或散页…").Changed() {
 			q := a.searchQuery
+			a.mu.Lock()
+			a.searchSeq++
+			reqSeq := a.searchSeq
+			a.mu.Unlock()
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
@@ -353,10 +367,14 @@ func (a *AppUI) renderSearchModal(c *ui.Context, pal theme.Palette) {
 				if err != nil {
 					return
 				}
-				a.mu.Lock()
-				a.searchResults = res
-				a.mu.Unlock()
-				a.requestRepaint()
+				a.dispatchUI(func() {
+					a.mu.Lock()
+					match := a.searchSeq == reqSeq
+					a.mu.Unlock()
+					if match {
+						a.searchResults = res
+					}
+				})
 			}()
 		}
 
@@ -467,21 +485,30 @@ func (a *AppUI) renderTOCModal(c *ui.Context, pal theme.Palette) {
 				go func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
-					_ = a.svc.ClearBookCache(ctx, book.ID)
-					a.reloadSync(ctx)
+					if err := a.svc.ClearBookCache(ctx, book.ID); err != nil {
+						a.showTransientToast("无法清理：" + err.Error())
+						return
+					}
+					a.reloadSync(nil)
 					a.showTransientToast("已清理本书离线缓存")
 				}()
 			}
 			if ui.Button(c, "删除诗集").Clicked() {
 				a.showTOCModal = false
-				a.readerMobile = false
+				a.mu.Lock()
+				a.openSeq++
 				a.activeBookID = ""
+				a.mu.Unlock()
+				a.readerMobile = false
 				a.activePoems = nil
 				go func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
-					_ = a.svc.DeleteBook(ctx, book.ID)
-					a.reloadSync(ctx)
+					if err := a.svc.DeleteBook(ctx, book.ID); err != nil {
+						a.showTransientToast("删除诗集失败：" + err.Error())
+						return
+					}
+					a.reloadSync(nil)
 					a.showTransientToast("已删除诗集（相关诗歌节选已保留文字）")
 				}()
 			}

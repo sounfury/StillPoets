@@ -713,25 +713,35 @@ func (a *AppUI) renderQuoteCard(c *ui.Context, pal theme.Palette, qv storage.Quo
 }
 
 func (a *AppUI) reloadQuotesOnly() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	a.mu.Lock()
+	a.quoteFilterSeq++
+	reqSeq := a.quoteFilterSeq
 	f := storage.QuoteFilter{
 		Kind:       a.quoteKind,
 		SourceBook: a.quoteBook,
 		Author:     a.quoteAuthor,
 	}
 	a.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	quotes, err := a.svc.ListQuotes(ctx, f)
 	if err != nil {
 		return
 	}
-	facets, _ := a.svc.ListQuoteFacets(ctx)
-	a.mu.Lock()
-	a.quotes = quotes
-	a.quoteFacets = facets
-	a.mu.Unlock()
-	a.requestRepaint()
+	facets, facetsErr := a.svc.ListQuoteFacets(ctx)
+	a.dispatchUI(func() {
+		a.mu.Lock()
+		match := a.quoteFilterSeq == reqSeq
+		a.mu.Unlock()
+		if !match {
+			return
+		}
+		a.quotes = quotes
+		if facetsErr == nil {
+			a.quoteFacets = facets
+		}
+	})
 }
 
 func (a *AppUI) openNewQuoteModal() {

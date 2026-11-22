@@ -171,6 +171,12 @@ func putBook(b domain.Book) sqlite.Statement {
 }
 
 func (s *Store) UpsertImportedBook(ctx context.Context, book domain.Book, sp *domain.SPBook) error {
+	return s.UpsertImportedBookWithUpload(ctx, book, sp, nil)
+}
+
+// UpsertImportedBookWithUpload 在同一 SQLite 事务内写入诗集元数据、正文、FTS 与待上传资产任务，
+// 消除导书与并发同步导出之间的幽灵书目窗口（P0-3）。
+func (s *Store) UpsertImportedBookWithUpload(ctx context.Context, book domain.Book, sp *domain.SPBook, upload *PendingUpload) error {
 	content, err := replaceBookContent(book.ID, book.ContentHash, sp)
 	if err != nil {
 		return err
@@ -202,7 +208,19 @@ func (s *Store) UpsertImportedBook(ctx context.Context, book domain.Book, sp *do
 		}
 		book.ContentVer = v
 		book.Deleted, book.DeletedAt, book.DeletedVer = false, 0, domain.Version{}
-		return append([]sqlite.Statement{putBook(book)}, content...), nil
+		stmts := append([]sqlite.Statement{putBook(book)}, content...)
+		if upload != nil {
+			u := *upload
+			if u.CreatedAt == 0 {
+				u.CreatedAt = now
+			}
+			u.UpdatedAt = now
+			if u.State == "" {
+				u.State = UploadPending
+			}
+			stmts = append(stmts, putPendingUploadStmt(u))
+		}
+		return stmts, nil
 	})
 }
 
@@ -213,8 +231,12 @@ func (s *Store) SaveBookContent(ctx context.Context, bookID, contentHash string,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.requireActiveBook(ctx, bookID); err != nil {
+	r, err := s.firstRow(ctx, `SELECT content_hash FROM books WHERE id = ? AND deleted = 0`, bookID)
+	if err != nil {
 		return err
+	}
+	if curHash := r.text(0); curHash != "" && contentHash != "" && curHash != contentHash {
+		return fmt.Errorf("storage: stale content hash for book %q (want %s, got %s)", bookID, curHash, contentHash)
 	}
 	return s.transact(ctx, statements)
 }

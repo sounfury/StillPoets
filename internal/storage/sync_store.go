@@ -2,6 +2,9 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"math"
 	"strconv"
 
 	"github.com/egoist/mygo/plugins/sqlite"
@@ -19,6 +22,26 @@ func (s *Store) ExportSnapshot(ctx context.Context) (booksync.SnapshotData, Sync
 	}
 	data, err := s.snapshotData(ctx)
 	return data, meta, err
+}
+
+// ExportSnapshotWithPending 在同一 Store.mu 锁下原子导出元数据快照与待上传资产列表，
+// 保证同步不会把刚导入却尚未进入待传列表的新书误发到远端（P0-3）。
+func (s *Store) ExportSnapshotWithPending(ctx context.Context) (booksync.SnapshotData, SyncMeta, []PendingUpload, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	meta, err := s.syncMeta(ctx)
+	if err != nil {
+		return booksync.SnapshotData{}, SyncMeta{}, nil, err
+	}
+	data, err := s.snapshotData(ctx)
+	if err != nil {
+		return booksync.SnapshotData{}, SyncMeta{}, nil, err
+	}
+	pending, err := s.listPendingUploadsLocked(ctx)
+	if err != nil {
+		return booksync.SnapshotData{}, SyncMeta{}, nil, err
+	}
+	return data, meta, pending, nil
 }
 
 func (s *Store) snapshotData(ctx context.Context) (booksync.SnapshotData, error) {
@@ -49,6 +72,15 @@ func (s *Store) snapshotData(ctx context.Context) (booksync.SnapshotData, error)
 
 // ApplyMergedSnapshot receives the DirtySeq from the export used for this sync round.
 func (s *Store) ApplyMergedSnapshot(ctx context.Context, merged booksync.SnapshotData, exportedDirtySeq, maxCounter, publishedRev uint64, published bool) error {
+	return s.ApplyMergedSnapshotEx(ctx, merged, exportedDirtySeq, maxCounter, publishedRev, published, false)
+}
+
+// ApplyMergedSnapshotEx 允许在存在未验证资产（keepDirty=true）时推进 local_rev 但仍保留 dirty=1，
+// 防止部分发布后误清脏标记导致新书长期漏发（P1-1），并拒绝超过 MaxInt64 的异常 Lamport 计数（P1-13）。
+func (s *Store) ApplyMergedSnapshotEx(ctx context.Context, merged booksync.SnapshotData, exportedDirtySeq, maxCounter, publishedRev uint64, published, keepDirty bool) error {
+	if maxCounter > math.MaxInt64 {
+		return fmt.Errorf("storage: remote lamport counter %d exceeds int64 limit", maxCounter)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	meta, err := s.syncMeta(ctx)
@@ -64,6 +96,15 @@ func (s *Store) ApplyMergedSnapshot(ctx context.Context, merged booksync.Snapsho
 		merged = booksync.MergeSnapshotData(merged, current)
 	}
 
+	// 跨端读完收敛（P1-14）：若合并后的已读并集覆盖整本诗集全部有效诗篇，则自动推进为 finished。
+	bookPoemCounts := make(map[string]int, len(merged.Books))
+	for _, b := range merged.Books {
+		if !b.Deleted && b.PoemCount > 0 {
+			bookPoemCounts[b.ID] = b.PoemCount
+		}
+	}
+
+	now := domain.NowMillis()
 	statements := []sqlite.Statement{stmt(`DELETE FROM quotes_fts`)}
 	for _, group := range merged.Groups {
 		statements = append(statements, putGroup(group))
@@ -84,18 +125,27 @@ func (s *Store) ApplyMergedSnapshot(ctx context.Context, merged booksync.Snapsho
 		}
 	}
 	for _, progress := range merged.Progress {
+		if progress.Status != domain.ReadStatusFinished {
+			if total := bookPoemCounts[progress.BookID]; total > 0 && len(progress.ReadPoemIDs) >= total {
+				progress.Status = domain.ReadStatusFinished
+				if progress.FinishedAt == 0 {
+					progress.FinishedAt = now
+				}
+			}
+		}
 		statements = append(statements, putProgress(progress))
 	}
 
-	now := domain.NowMillis()
 	statements = append(statements,
 		setSyncState("lamport_counter", strconv.FormatUint(max(meta.LamportCounter, maxCounter), 10), now),
 		setSyncState("last_sync_at", strconv.FormatInt(now, 10), now),
 	)
 	if published {
 		statements = append(statements, setSyncState("local_rev", strconv.FormatUint(publishedRev, 10), now))
-		if !changedDuringSync {
+		if !changedDuringSync && !keepDirty {
 			statements = append(statements, setSyncState("dirty", "0", now))
+		} else if keepDirty {
+			statements = append(statements, setSyncState("dirty", "1", now))
 		}
 	}
 	return s.transact(ctx, statements)
@@ -123,7 +173,18 @@ type PendingUpload struct {
 const pendingUploadColumns = `book_id, raw_filename, local_raw_path, local_spbook_path, local_cover_path,
 	content_hash, state, last_error, created_at, updated_at`
 
+func putPendingUploadStmt(upload PendingUpload) sqlite.Statement {
+	return stmt(`INSERT INTO pending_uploads (`+pendingUploadColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(book_id) DO UPDATE SET raw_filename = excluded.raw_filename, local_raw_path = excluded.local_raw_path,
+		local_spbook_path = excluded.local_spbook_path, local_cover_path = excluded.local_cover_path,
+		content_hash = excluded.content_hash, state = excluded.state, last_error = excluded.last_error, updated_at = excluded.updated_at`,
+		upload.BookID, upload.RawFilename, upload.LocalRawPath, upload.LocalSPBookPath, upload.LocalCoverPath,
+		upload.ContentHash, upload.State, upload.LastError, upload.CreatedAt, upload.UpdatedAt)
+}
+
 func (s *Store) UpsertPendingUpload(ctx context.Context, upload PendingUpload) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	now := domain.NowMillis()
 	if upload.CreatedAt == 0 {
 		upload.CreatedAt = now
@@ -134,16 +195,14 @@ func (s *Store) UpsertPendingUpload(ctx context.Context, upload PendingUpload) e
 	if upload.State == "" {
 		upload.State = UploadPending
 	}
-	_, err := s.db.Execute(ctx, `INSERT INTO pending_uploads (`+pendingUploadColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(book_id) DO UPDATE SET raw_filename = excluded.raw_filename, local_raw_path = excluded.local_raw_path,
-		local_spbook_path = excluded.local_spbook_path, local_cover_path = excluded.local_cover_path,
-		content_hash = excluded.content_hash, state = excluded.state, last_error = excluded.last_error, updated_at = excluded.updated_at`,
-		upload.BookID, upload.RawFilename, upload.LocalRawPath, upload.LocalSPBookPath, upload.LocalCoverPath,
-		upload.ContentHash, upload.State, upload.LastError, upload.CreatedAt, upload.UpdatedAt)
+	st := putPendingUploadStmt(upload)
+	_, err := s.db.Execute(ctx, st.SQL, st.Args...)
 	return err
 }
 
 func (s *Store) UpdatePendingUploadState(ctx context.Context, bookID, state, lastError string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	result, err := s.db.Execute(ctx, `UPDATE pending_uploads SET state = ?, last_error = ?, updated_at = ? WHERE book_id = ?`,
 		state, lastError, domain.NowMillis(), bookID)
 	if err == nil && result.Changes == 0 {
@@ -160,11 +219,32 @@ func decodePendingUpload(r row) (PendingUpload, error) {
 	}, nil
 }
 
-func (s *Store) ListPendingUploads(ctx context.Context) ([]PendingUpload, error) {
+func (s *Store) listPendingUploadsLocked(ctx context.Context) ([]PendingUpload, error) {
 	return selectRows(ctx, s, decodePendingUpload, `SELECT `+pendingUploadColumns+` FROM pending_uploads ORDER BY created_at, book_id`)
 }
 
+func (s *Store) ListPendingUploads(ctx context.Context) ([]PendingUpload, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listPendingUploadsLocked(ctx)
+}
+
 func (s *Store) DeletePendingUpload(ctx context.Context, bookID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	_, err := s.db.Execute(ctx, `DELETE FROM pending_uploads WHERE book_id = ?`, bookID)
 	return err
+}
+
+func (s *Store) HasPendingUpload(ctx context.Context, bookID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.firstRow(ctx, `SELECT book_id FROM pending_uploads WHERE book_id = ?`, bookID)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }

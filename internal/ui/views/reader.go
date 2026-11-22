@@ -37,15 +37,31 @@ func (a *AppUI) renderReaderPane(c *ui.Context, pal theme.Palette, isTablet bool
 		}
 
 		poems := a.activePoems
+		idx := a.activePoemIdx
 		var current domain.Poem
-		hasPoem := len(poems) > 0 && a.activePoemIdx >= 0 && a.activePoemIdx < len(poems)
+		hasPoem := len(poems) > 0 && idx >= 0 && idx < len(poems)
 		if hasPoem {
-			current = poems[a.activePoemIdx]
+			current = poems[idx]
+		} else if len(poems) > 0 {
+			idx = max(0, min(idx, len(poems)-1))
+			a.activePoemIdx = idx
+			current = poems[idx]
+			hasPoem = true
 		}
 		_, isFav := a.activeFavorites[current.ID]
 
 		// 1. 阅读器顶部工具栏（对应 stillpoets-v3-tablet.png 右侧顶栏）
 		a.renderReaderHeader(c, pal, book, current, isFav, isTablet)
+
+		// 若加载本诗正文或切书出现错误，展示明确错误条并提供重试入口（P1-7）
+		if a.readerError != "" {
+			ui.Row(c.Key("reader-error-bar")).FillWidth().Padding(8, 20).Gap(10).AlignItems(ui.Center).Background(pal.HighlightBg).Children(func() {
+				ui.Text(c, a.readerError).FontSize(12).TextColor(pal.Accent).Grow(1)
+				if ui.Button(c, "重试").Clicked() {
+					a.openBook(book.ID, current.ID, a.highlightRanges, a.readerMobile)
+				}
+			})
+		}
 
 		// 2. 若处于「划选诗行」模式，展示平滑展开的轻量操作条（留作散页 / 设为本诗金句）
 		if a.selectingLines && hasPoem {
@@ -218,16 +234,23 @@ func (a *AppUI) renderRemoteBookState(c *ui.Context, pal theme.Palette, book dom
 				ui.Text(c, "书架").FontSize(14).TextColor(pal.TextPrimary)
 			})
 			if back.Clicked() {
+				a.mu.Lock()
+				a.openSeq++
+				a.mu.Unlock()
 				a.readerMobile = false
 			}
 		})
 	}
 
+	a.mu.Lock()
+	isDownloading := a.downloadingBooks[book.ID]
+	a.mu.Unlock()
+
 	ui.Column(c).Grow(1).FillWidth().Center().Gap(14).Padding(32).Children(func() {
 		ui.Icon(c, components.IconCloud).Width(36).Height(36).TextColor(pal.TextMuted)
 		ui.Text(c, book.Title).FontSize(22).Bold().TextColor(pal.TextPrimary)
 		ui.Textf(c, "%s · %d 首", book.Author, book.PoemCount).FontSize(13).TextColor(pal.TextMuted)
-		if a.downloadingBook == book.ID {
+		if isDownloading {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.Spinner(c)
 				ui.Text(c, "正在按需下载诗集正文…").FontSize(13).TextColor(pal.TextSecondary)
@@ -237,7 +260,11 @@ func (a *AppUI) renderRemoteBookState(c *ui.Context, pal theme.Palette, book dom
 				ui.Text(c, a.readerError).FontSize(12).TextColor(pal.Accent)
 			}
 			if ui.PrimaryButton(c, "按需下载并开始阅读").Clicked() {
-				a.downloadBookAsync(book.ID, "", a.highlightRanges)
+				a.mu.Lock()
+				a.openSeq++
+				reqSeq := a.openSeq
+				a.mu.Unlock()
+				a.downloadBookAsync(book.ID, "", a.highlightRanges, reqSeq)
 			}
 		}
 	})

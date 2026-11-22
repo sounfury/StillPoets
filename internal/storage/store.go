@@ -73,6 +73,12 @@ func (s *Store) initialize(ctx context.Context) error {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) LoadSettings(ctx context.Context) (domain.Settings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadSettingsLocked(ctx)
+}
+
+func (s *Store) loadSettingsLocked(ctx context.Context) (domain.Settings, error) {
 	settings := domain.Settings{
 		ThemePreset: "artbook",
 		FontSize:    18,
@@ -96,11 +102,54 @@ func (s *Store) LoadSettings(ctx context.Context) (domain.Settings, error) {
 }
 
 func (s *Store) SaveSettings(ctx context.Context, settings domain.Settings) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	data, err := json.Marshal(settings)
 	if err != nil {
 		return err
 	}
 	return s.transact(ctx, []sqlite.Statement{setSyncState("local_settings", string(data), domain.NowMillis())})
+}
+
+// UpdateSettings 在 Store.mu 下读取最新设置并原子应用局部补丁，防止并发切主题/字号/字体相互覆盖。
+func (s *Store) UpdateSettings(ctx context.Context, patch func(*domain.Settings)) (domain.Settings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.loadSettingsLocked(ctx)
+	if err != nil {
+		return domain.Settings{}, err
+	}
+	if patch != nil {
+		patch(&st)
+	}
+	st.UpdatedAt = domain.NowMillis()
+	data, err := json.Marshal(st)
+	if err != nil {
+		return domain.Settings{}, err
+	}
+	if err := s.transact(ctx, []sqlite.Statement{setSyncState("local_settings", string(data), st.UpdatedAt)}); err != nil {
+		return domain.Settings{}, err
+	}
+	return st, nil
+}
+
+// GetSyncMeta 轻量读取同步元状态（无需扫描 5 张元数据表）。
+func (s *Store) GetSyncMeta(ctx context.Context) (SyncMeta, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.syncMeta(ctx)
+}
+
+// ResetWorkspaceSyncState 切换到全新 WebDAV 工作区时重置本地发布代次，并标记待重新发布。
+func (s *Store) ResetWorkspaceSyncState(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := domain.NowMillis()
+	return s.transact(ctx, []sqlite.Statement{
+		setSyncState("local_rev", "0", now),
+		setSyncState("last_sync_at", "0", now),
+		setSyncState("dirty", "1", now),
+	})
 }
 
 func (s *Store) syncMeta(ctx context.Context) (SyncMeta, error) {

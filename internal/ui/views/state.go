@@ -39,9 +39,21 @@ type AppUI struct {
 	svc        *app.Service
 	pickFile   PickFileFunc
 	repaintFn  func()
+	uiDispatch func(func())
 	registerFn func(data []byte, family string) error
 
-	mu sync.Mutex
+	mu          sync.Mutex // 保护回调指针、防重标记与请求序号等轻量控制状态
+	uiThreadMu  sync.Mutex // 无窗口无头测试模式下串行化 Render 与 dispatchUI
+	readOrderMu sync.Mutex // 保证阅读进度按 UI 触发顺序串行落库（P1-14）
+
+	// 请求代次与并发控制
+	openSeq         uint64
+	quoteFilterSeq  uint64
+	searchSeq       uint64
+	toastSeq        uint64
+	reloadRunning   bool
+	reloadPending   bool
+	pendingDeeplink string
 
 	// 主导航状态
 	activeTab    components.NavTab
@@ -53,15 +65,15 @@ type AppUI struct {
 	readerMobile bool // 手机单栏模式下是否处于全屏阅读页
 
 	// 已加载的持久化视图数据
-	settings      domain.Settings
-	groups        []domain.BookGroup
-	books         []domain.Book
-	progressMap   map[string]domain.ReadingProgress
-	continueItem  *storage.ContinueReadingItem
-	todayReread   *app.TodayReread
-	quotes        []storage.QuoteView
-	quoteFacets   storage.QuoteFacets
-	stats         storage.StatsOverview
+	settings          domain.Settings
+	groups            []domain.BookGroup
+	books             []domain.Book
+	progressMap       map[string]domain.ReadingProgress
+	continueItem      *storage.ContinueReadingItem
+	todayReread       *app.TodayReread
+	quotes            []storage.QuoteView
+	quoteFacets       storage.QuoteFacets
+	stats             storage.StatsOverview
 	syncOverview      app.SyncOverview
 	localFonts        []app.LocalFont
 	widgetCount       int
@@ -70,15 +82,15 @@ type AppUI struct {
 	deeplinkHandled   bool
 
 	// 阅读器状态
-	activeBookID    string
-	activePoems     []domain.Poem
-	activePoemIdx   int
-	activeFavorites map[string]domain.FavoritePoem
-	highlightRanges []app.LineRange
-	selectingLines  bool
-	selectedLines   map[int]bool
-	downloadingBook string
-	readerError     string
+	activeBookID     string
+	activePoems      []domain.Poem
+	activePoemIdx    int
+	activeFavorites  map[string]domain.FavoritePoem
+	highlightRanges  []app.LineRange
+	selectingLines   bool
+	selectedLines    map[int]bool
+	downloadingBooks map[string]bool
+	readerError      string
 
 	// 瞬态云同步胶囊与操作提示
 	toastMessage string
@@ -132,14 +144,15 @@ type AppUI struct {
 // NewAppUI 创建绑定到核心 Service 的 V3 界面控制器。
 func NewAppUI(svc *app.Service, pickFile PickFileFunc, repaint func()) *AppUI {
 	a := &AppUI{
-		svc:             svc,
-		pickFile:        pickFile,
-		repaintFn:       repaint,
-		registerFn:      ui.RegisterFont,
-		progressMap:     map[string]domain.ReadingProgress{},
-		activeFavorites: map[string]domain.FavoritePoem{},
-		selectedLines:   map[int]bool{},
-		davFolder:       webdav.DefaultAppFolder,
+		svc:              svc,
+		pickFile:         pickFile,
+		repaintFn:        repaint,
+		registerFn:       ui.RegisterFont,
+		progressMap:      map[string]domain.ReadingProgress{},
+		activeFavorites:  map[string]domain.FavoritePoem{},
+		selectedLines:    map[int]bool{},
+		downloadingBooks: map[string]bool{},
+		davFolder:        webdav.DefaultAppFolder,
 	}
 
 	// 加载本地自定义字体并注册到 MyGo 字体引擎
@@ -161,7 +174,7 @@ func NewAppUI(svc *app.Service, pickFile PickFileFunc, repaint func()) *AppUI {
 	a.davHasSecret = svc.HasWebDAVPassword()
 
 	svc.SetCallbacks(a.handleSyncToast, func() {
-		go a.ReloadAsync()
+		a.ReloadAsync()
 	})
 
 	a.reloadSync(context.Background())
@@ -170,28 +183,69 @@ func NewAppUI(svc *app.Service, pickFile PickFileFunc, repaint func()) *AppUI {
 	return a
 }
 
-// SetRepaint 绑定窗口重绘函数（通常为 win.Update）。
+// SetUIDispatch 绑定 UI 主线程状态提交与重绘调度函数（生产环境为 win.Update，消除跨线程竞态 P0-1）。
+func (a *AppUI) SetUIDispatch(fn func(func())) {
+	a.mu.Lock()
+	a.uiDispatch = fn
+	a.mu.Unlock()
+}
+
+// SetRepaint 绑定窗口重绘函数（兼容测试或仅触发重绘的调用方）。
 func (a *AppUI) SetRepaint(fn func()) {
 	a.mu.Lock()
 	a.repaintFn = fn
 	a.mu.Unlock()
 }
 
-func (a *AppUI) requestRepaint() {
+// dispatchUI 保证所有后台 goroutine 对 AppUI 状态字段的修改都在 UI 线程串行提交（P0-1）。
+func (a *AppUI) dispatchUI(fn func()) {
 	a.mu.Lock()
-	fn := a.repaintFn
+	disp := a.uiDispatch
+	repaint := a.repaintFn
 	a.mu.Unlock()
-	if fn != nil {
-		fn()
+	if disp != nil {
+		disp(fn)
+		return
+	}
+	a.uiThreadMu.Lock()
+	fn()
+	a.uiThreadMu.Unlock()
+	if repaint != nil {
+		repaint()
 	}
 }
 
-// ReloadAsync 在后台刷新所有视图数据并触发界面重绘。
+func (a *AppUI) requestRepaint() {
+	a.dispatchUI(func() {})
+}
+
+// ReloadAsync 合并高频刷新通知，在后台串行刷新视图数据并通过 UI 线程提交（P2-1）。
 func (a *AppUI) ReloadAsync() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	a.reloadSync(ctx)
-	a.requestRepaint()
+	a.mu.Lock()
+	if a.reloadRunning {
+		a.reloadPending = true
+		a.mu.Unlock()
+		return
+	}
+	a.reloadRunning = true
+	a.mu.Unlock()
+
+	go func() {
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			a.reloadSync(ctx)
+			cancel()
+
+			a.mu.Lock()
+			if !a.reloadPending {
+				a.reloadRunning = false
+				a.mu.Unlock()
+				return
+			}
+			a.reloadPending = false
+			a.mu.Unlock()
+		}
+	}()
 }
 
 func (a *AppUI) reloadSync(ctx context.Context) {
@@ -224,13 +278,21 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 	cont, contErr := a.svc.GetContinueReading(ctx)
 	today, todayErr := a.svc.PickTodayReread(ctx)
 
+	var (
+		qFilter      storage.QuoteFilter
+		curBookID    string
+		snapOpenSeq  uint64
+		snapQuoteSeq uint64
+	)
 	a.mu.Lock()
-	qFilter := storage.QuoteFilter{
+	qFilter = storage.QuoteFilter{
 		Kind:       a.quoteKind,
 		SourceBook: a.quoteBook,
 		Author:     a.quoteAuthor,
 	}
-	curBookID := a.activeBookID
+	curBookID = a.activeBookID
+	snapOpenSeq = a.openSeq
+	snapQuoteSeq = a.quoteFilterSeq
 	a.mu.Unlock()
 
 	quotes, quotesErr := a.svc.ListQuotes(ctx, qFilter)
@@ -240,6 +302,7 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 	localFonts := a.svc.ListLocalFonts()
 	widgetTL, widgetErr := a.svc.ReadWidgetTimeline()
 	activeWidgets := widgetbridge.ActiveWidgetCount()
+	hasSecret := a.svc.HasWebDAVPassword()
 
 	var (
 		poems    []domain.Poem
@@ -259,63 +322,93 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 		}
 	}
 
-	a.mu.Lock()
-	if settingsErr == nil {
-		a.settings = settings
-		a.fontSizeSlider = float64(settings.FontSize)
-		a.lineHeightSlider = float64(settings.LineHeight)
-	} else if a.settings.FontSize <= 0 {
-		a.settings = domain.Settings{ThemePreset: string(theme.PresetArtbook), FontSize: 18, LineHeight: 1.85}
-		a.fontSizeSlider = 18
-		a.lineHeightSlider = 1.85
-	}
-	if groupsErr == nil {
-		a.groups = groups
-	}
-	if booksErr == nil {
-		a.books = books
-	}
-	if progressErr == nil {
-		a.progressMap = pMap
-	}
-	if contErr == nil {
-		a.continueItem = cont
-	}
-	if todayErr == nil {
-		a.todayReread = today
-	}
-	if quotesErr == nil {
-		a.quotes = quotes
-	}
-	if facetsErr == nil {
-		a.quoteFacets = facets
-	}
-	if statsErr == nil {
-		a.stats = stats
-	}
-	if syncOvErr == nil {
-		a.syncOverview = syncOv
-	}
-	a.localFonts = localFonts
-	a.activeWidgetCount = activeWidgets
-	if widgetErr == nil {
-		cp := widgetTL
-		a.widgetPreview = &cp
-		a.widgetCount = len(widgetTL.Entries)
-	}
-	a.davHasSecret = a.svc.HasWebDAVPassword()
-	if curBookID != "" {
-		if poemsErr == nil {
-			a.activePoems = poems
-			if a.activePoemIdx >= len(poems) {
-				a.activePoemIdx = max(0, len(poems)-1)
+	a.dispatchUI(func() {
+		if settingsErr == nil {
+			a.settings = settings
+			a.fontSizeSlider = float64(settings.FontSize)
+			a.lineHeightSlider = float64(settings.LineHeight)
+		} else if a.settings.FontSize <= 0 {
+			a.settings = domain.Settings{ThemePreset: string(theme.PresetArtbook), FontSize: 18, LineHeight: 1.85}
+			a.fontSizeSlider = 18
+			a.lineHeightSlider = 1.85
+		}
+		if groupsErr == nil {
+			a.groups = groups
+		}
+		if booksErr == nil {
+			a.books = books
+		}
+		if progressErr == nil {
+			a.progressMap = pMap
+		}
+		if contErr == nil {
+			a.continueItem = cont
+		}
+		if todayErr == nil {
+			a.todayReread = today
+		}
+		a.mu.Lock()
+		quoteMatch := a.quoteFilterSeq == snapQuoteSeq
+		openMatch := a.openSeq == snapOpenSeq && a.activeBookID == curBookID
+		a.mu.Unlock()
+		if quoteMatch {
+			if quotesErr == nil {
+				a.quotes = quotes
+			}
+			if facetsErr == nil {
+				a.quoteFacets = facets
 			}
 		}
-		if favsErr == nil {
-			a.activeFavorites = favMap
+		if statsErr == nil {
+			a.stats = stats
 		}
-	}
-	a.mu.Unlock()
+		if syncOvErr == nil {
+			a.syncOverview = syncOv
+		}
+		a.localFonts = localFonts
+		a.activeWidgetCount = activeWidgets
+		if widgetErr == nil {
+			cp := widgetTL
+			a.widgetPreview = &cp
+			a.widgetCount = len(widgetTL.Entries)
+		}
+		a.davHasSecret = hasSecret
+
+		// 若当前在读书已被其他设备删除，退出全屏阅读层避免滞留无返回按钮的空态（P1-7）
+		if booksErr == nil && a.activeBookID != "" {
+			stillExists := false
+			for _, b := range a.books {
+				if b.ID == a.activeBookID {
+					stillExists = true
+					break
+				}
+			}
+			if !stillExists {
+				a.mu.Lock()
+				a.openSeq++
+				a.activeBookID = ""
+				a.mu.Unlock()
+				a.activePoems = nil
+				a.activePoemIdx = 0
+				a.activeFavorites = map[string]domain.FavoritePoem{}
+				a.readerMobile = false
+				a.readerError = ""
+				return
+			}
+		}
+
+		if curBookID != "" && openMatch {
+			if poemsErr == nil {
+				a.activePoems = poems
+				if a.activePoemIdx >= len(poems) {
+					a.activePoemIdx = max(0, len(poems)-1)
+				}
+			}
+			if favsErr == nil {
+				a.activeFavorites = favMap
+			}
+		}
+	})
 }
 
 func (a *AppUI) autoSelectInitialBook() {
@@ -355,20 +448,24 @@ func (a *AppUI) HandleDeeplink(rawURL string) {
 	}
 	switch target.Kind {
 	case app.DeeplinkPoem:
-		a.mu.Lock()
-		a.deeplinkHandled = true
-		a.activeTab = components.TabShelf
-		a.shelfSubTab = components.SubTabBooks
-		a.shelfPager.scopeKey = ""
-		a.poemPager.scopeKey = ""
-		a.showQuoteDetail = false
-		a.mu.Unlock()
-		a.openBook(target.BookID, target.PoemID, target.LineRanges, true)
-		a.requestRepaint()
+		a.dispatchUI(func() {
+			a.deeplinkHandled = true
+			a.activeTab = components.TabShelf
+			a.shelfSubTab = components.SubTabBooks
+			a.shelfPager.scopeKey = ""
+			a.poemPager.scopeKey = ""
+			a.showQuoteDetail = false
+			a.openBookLocked(target.BookID, target.PoemID, target.LineRanges, true, rawURL)
+		})
 	case app.DeeplinkQuote:
-		a.mu.Lock()
-		a.deeplinkHandled = true
-		a.mu.Unlock()
+		var reqSeq uint64
+		a.dispatchUI(func() {
+			a.deeplinkHandled = true
+			a.mu.Lock()
+			a.openSeq++
+			reqSeq = a.openSeq
+			a.mu.Unlock()
+		})
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -376,27 +473,40 @@ func (a *AppUI) HandleDeeplink(rawURL string) {
 			if err != nil {
 				return
 			}
+			var found *storage.QuoteView
 			for i := range all {
 				if all[i].Quote.ID == target.QuoteID {
 					q := all[i]
-					a.mu.Lock()
+					found = &q
+					break
+				}
+			}
+			a.dispatchUI(func() {
+				a.mu.Lock()
+				stale := a.openSeq != reqSeq
+				a.mu.Unlock()
+				if stale {
+					return
+				}
+				if found != nil {
 					a.activeTab = components.TabShelf
 					a.shelfSubTab = components.SubTabQuotes
 					a.shelfPager.scopeKey = ""
 					a.readerMobile = false
-					a.detailQuote = &q
+					a.detailQuote = found
 					a.showQuoteDetail = true
+				} else {
+					a.mu.Lock()
+					a.pendingDeeplink = rawURL
 					a.mu.Unlock()
-					a.requestRepaint()
-					return
+					a.showTransientToast("未在本地找到该散页，同步完成后将自动重试")
 				}
-			}
-			a.showTransientToast("未在本地找到该散页")
+			})
 		}()
 	}
 }
 
-// TriggerStartupSync 应用启动时若已启用 WebDAV，则在后台静默拉取最新元数据。
+// TriggerStartupSync 应用启动时若已启用 WebDAV，则在后台静默拉取最新元数据；完成后如有挂起的冷启动 Deeplink 则自动重试（P1-7）。
 func (a *AppUI) TriggerStartupSync() {
 	if !a.svc.LoadWebDAVProfile().Enabled {
 		return
@@ -404,12 +514,29 @@ func (a *AppUI) TriggerStartupSync() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		_, _ = a.svc.SyncNow(ctx, false)
+		_, err := a.svc.SyncNow(ctx, false)
+		if err == nil {
+			a.mu.Lock()
+			pending := a.pendingDeeplink
+			a.pendingDeeplink = ""
+			a.mu.Unlock()
+			if pending != "" {
+				a.HandleDeeplink(pending)
+			}
+		}
 	}()
 }
 
 // Render 是 MyGo 原生窗口的根视图函数。
 func (a *AppUI) Render(c *ui.Context) {
+	a.mu.Lock()
+	headless := a.uiDispatch == nil
+	a.mu.Unlock()
+	if headless {
+		a.uiThreadMu.Lock()
+		defer a.uiThreadMu.Unlock()
+	}
+
 	pal := a.palette()
 	c.SetTheme(pal.UITheme())
 	c.Root().Background(pal.Background)
@@ -544,10 +671,7 @@ func (a *AppUI) renderSyncToastOverlay(c *ui.Context, pal theme.Palette, isTable
 }
 
 func (a *AppUI) palette() theme.Palette {
-	a.mu.Lock()
-	preset := a.settings.ThemePreset
-	a.mu.Unlock()
-	return theme.ByID(theme.PresetID(preset))
+	return theme.ByID(theme.PresetID(a.settings.ThemePreset))
 }
 
 func (a *AppUI) handleSyncToast(st app.SyncToastState) {
@@ -556,21 +680,34 @@ func (a *AppUI) handleSyncToast(st app.SyncToastState) {
 		a.toastTimer.Stop()
 		a.toastTimer = nil
 	}
-	a.toastMessage = st.Message
+	a.toastSeq++
+	seq := a.toastSeq
 	if st.Phase == app.SyncToastSuccess || st.Phase == app.SyncToastPartial || st.Phase == app.SyncToastError {
 		delay := 2200 * time.Millisecond
 		if st.Phase != app.SyncToastSuccess {
 			delay = 3500 * time.Millisecond
 		}
 		a.toastTimer = time.AfterFunc(delay, func() {
-			a.mu.Lock()
-			a.toastMessage = ""
-			a.mu.Unlock()
-			a.requestRepaint()
+			a.dispatchUI(func() {
+				a.mu.Lock()
+				match := a.toastSeq == seq
+				a.mu.Unlock()
+				if match {
+					a.toastMessage = ""
+				}
+			})
 		})
 	}
 	a.mu.Unlock()
-	a.requestRepaint()
+
+	a.dispatchUI(func() {
+		a.mu.Lock()
+		match := a.toastSeq == seq
+		a.mu.Unlock()
+		if match {
+			a.toastMessage = st.Message
+		}
+	})
 }
 
 func (a *AppUI) showTransientToast(msg string) {
@@ -580,8 +717,17 @@ func (a *AppUI) showTransientToast(msg string) {
 // --- 异步业务动作 ---
 
 func (a *AppUI) openBook(bookID, poemID string, highlightRanges []app.LineRange, enterMobileReader bool) {
+	a.openBookLocked(bookID, poemID, highlightRanges, enterMobileReader, "")
+}
+
+// openBookLocked 必须在 UI 线程上调用（来自点击事件或 dispatchUI 闭包），通过单调递增 openSeq 彻底消除切书乱序与串书污染（P0-2）。
+func (a *AppUI) openBookLocked(bookID, poemID string, highlightRanges []app.LineRange, enterMobileReader bool, deeplinkURL string) {
 	a.mu.Lock()
+	a.openSeq++
+	reqSeq := a.openSeq
 	a.activeBookID = bookID
+	a.mu.Unlock()
+
 	a.highlightRanges = slices.Clone(highlightRanges)
 	a.selectingLines = false
 	a.selectedLines = map[int]bool{}
@@ -589,6 +735,7 @@ func (a *AppUI) openBook(bookID, poemID string, highlightRanges []app.LineRange,
 	if enterMobileReader {
 		a.readerMobile = true
 	}
+
 	var targetBook *domain.Book
 	for i := range a.books {
 		if a.books[i].ID == bookID {
@@ -597,10 +744,9 @@ func (a *AppUI) openBook(bookID, poemID string, highlightRanges []app.LineRange,
 			break
 		}
 	}
-	a.mu.Unlock()
 
 	if targetBook != nil && targetBook.LocalState != domain.LocalStateDownloaded {
-		a.downloadBookAsync(bookID, poemID, highlightRanges)
+		a.downloadBookAsync(bookID, poemID, highlightRanges, reqSeq)
 		return
 	}
 
@@ -608,17 +754,38 @@ func (a *AppUI) openBook(bookID, poemID string, highlightRanges []app.LineRange,
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if targetBook == nil {
-			if b, err := a.svc.Store().GetBook(ctx, bookID); err == nil && b.LocalState != domain.LocalStateDownloaded {
-				a.downloadBookAsync(bookID, poemID, highlightRanges)
+			b, err := a.svc.Store().GetBook(ctx, bookID)
+			if err != nil {
+				if deeplinkURL != "" {
+					a.mu.Lock()
+					a.pendingDeeplink = deeplinkURL
+					a.mu.Unlock()
+				}
+				a.dispatchUI(func() {
+					a.mu.Lock()
+					stale := a.openSeq != reqSeq
+					a.mu.Unlock()
+					if !stale {
+						a.readerError = "暂未在本地找到该诗集，请等待云同步完成后重试"
+					}
+				})
+				return
+			}
+			if b.LocalState != domain.LocalStateDownloaded {
+				a.downloadBookAsync(bookID, poemID, highlightRanges, reqSeq)
 				return
 			}
 		}
 		poems, err := a.svc.ListPoems(ctx, bookID)
 		if err != nil {
-			a.mu.Lock()
-			a.readerError = fmt.Sprintf("加载诗集失败：%v", err)
-			a.mu.Unlock()
-			a.requestRepaint()
+			a.dispatchUI(func() {
+				a.mu.Lock()
+				stale := a.openSeq != reqSeq || a.activeBookID != bookID
+				a.mu.Unlock()
+				if !stale {
+					a.readerError = fmt.Sprintf("加载诗集失败：%v", err)
+				}
+			})
 			return
 		}
 		favs, _ := a.svc.ListFavorites(ctx, bookID)
@@ -653,48 +820,73 @@ func (a *AppUI) openBook(bookID, poemID string, highlightRanges []app.LineRange,
 			}
 		}
 
-		a.mu.Lock()
-		a.activePoems = poems
-		a.activePoemIdx = idx
-		a.activeFavorites = favMap
-		a.poemPager.scopeKey = ""
-		a.mu.Unlock()
+		var readPoem *domain.Poem
+		a.dispatchUI(func() {
+			a.mu.Lock()
+			stale := a.openSeq != reqSeq || a.activeBookID != bookID
+			a.mu.Unlock()
+			if stale {
+				return
+			}
+			a.activePoems = poems
+			a.activePoemIdx = idx
+			a.activeFavorites = favMap
+			a.poemPager.scopeKey = ""
+			a.readerError = ""
+			if len(poems) > 0 && idx < len(poems) && enterMobileReader {
+				cp := poems[idx]
+				readPoem = &cp
+			}
+		})
 
-		// 仅在显式进入阅读或有效诗篇时记录阅读位置
-		if len(poems) > 0 && idx < len(poems) && enterMobileReader {
-			a.recordPoemReadAsync(bookID, poems[idx], poems)
+		if readPoem != nil {
+			a.recordPoemReadAsync(bookID, *readPoem, poems)
 		}
-		a.requestRepaint()
 	}()
 }
 
-func (a *AppUI) downloadBookAsync(bookID, poemID string, highlightRanges []app.LineRange) {
+func (a *AppUI) downloadBookAsync(bookID, poemID string, highlightRanges []app.LineRange, reqSeq uint64) {
 	a.mu.Lock()
-	if a.downloadingBook == bookID {
+	if a.downloadingBooks[bookID] {
 		a.mu.Unlock()
 		return
 	}
-	a.downloadingBook = bookID
-	a.readerError = ""
+	a.downloadingBooks[bookID] = true
 	a.mu.Unlock()
-	a.requestRepaint()
+	a.dispatchUI(func() {
+		a.mu.Lock()
+		match := a.activeBookID == bookID
+		a.mu.Unlock()
+		if match {
+			a.readerError = ""
+		}
+	})
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		err := a.svc.EnsureBookContent(ctx, bookID)
 		a.mu.Lock()
-		a.downloadingBook = ""
-		if err != nil {
-			a.readerError = err.Error()
-		}
+		delete(a.downloadingBooks, bookID)
+		stillTarget := a.openSeq == reqSeq && a.activeBookID == bookID
 		a.mu.Unlock()
+
 		a.reloadSync(nil)
-		if err == nil {
-			a.openBook(bookID, poemID, highlightRanges, a.readerMobile)
-		} else {
-			a.requestRepaint()
-		}
+		a.dispatchUI(func() {
+			a.mu.Lock()
+			match := a.openSeq == reqSeq && a.activeBookID == bookID
+			a.mu.Unlock()
+			if !match {
+				return
+			}
+			if err != nil {
+				a.readerError = err.Error()
+				return
+			}
+			if stillTarget {
+				a.openBookLocked(bookID, poemID, highlightRanges, a.readerMobile, "")
+			}
+		})
 	}()
 }
 
@@ -709,6 +901,9 @@ func (a *AppUI) recordPoemReadAsync(bookID string, poem domain.Poem, allPoems []
 		}
 	}
 	go func() {
+		// 串行写阅读进度，避免快速连续翻页时旧篇目后拿锁覆盖新续读位置（P1-14）
+		a.readOrderMu.Lock()
+		defer a.readOrderMu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_, _ = a.svc.RecordPoemRead(ctx, bookID, poem.ID, 0, totalPoems)
@@ -722,6 +917,9 @@ func (a *AppUI) triggerImportEPUB() {
 	}
 	a.showAddModal = false
 	groupID := a.selectedGrp
+	a.mu.Lock()
+	startSeq := a.openSeq
+	a.mu.Unlock()
 	go func() {
 		filePath, err := a.pickFile("选择 EPUB 诗集文件", []string{"epub"})
 		if err != nil || strings.TrimSpace(filePath) == "" {
@@ -735,8 +933,15 @@ func (a *AppUI) triggerImportEPUB() {
 			a.showTransientToast("导入失败：" + err.Error())
 			return
 		}
-		a.reloadSync(ctx)
-		a.openBook(res.Book.ID, "", nil, false)
+		a.reloadSync(nil)
+		a.dispatchUI(func() {
+			a.mu.Lock()
+			userNavigated := a.openSeq != startSeq
+			a.mu.Unlock()
+			if !userNavigated {
+				a.openBookLocked(res.Book.ID, "", nil, false, "")
+			}
+		})
 		a.showTransientToast(fmt.Sprintf("已导入《%s》(%d 首)", res.Book.Title, res.Book.PoemCount))
 	}()
 }
@@ -764,12 +969,12 @@ func (a *AppUI) triggerImportFont() {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		st, _ := a.svc.LoadSettings(ctx)
-		st.FontFamily = lf.Family
-		st.WidgetTheme.FontFamily = lf.Family
-		st.WidgetTheme.FontFile = lf.Filename
-		_ = a.svc.SaveSettings(ctx, st)
-		a.reloadSync(ctx)
+		_, _ = a.svc.UpdateSettings(ctx, func(st *domain.Settings) {
+			st.FontFamily = lf.Family
+			st.WidgetTheme.FontFamily = lf.Family
+			st.WidgetTheme.FontFile = lf.Filename
+		})
+		a.reloadSync(nil)
 		a.showTransientToast("已启用字体：" + lf.Family)
 	}()
 }

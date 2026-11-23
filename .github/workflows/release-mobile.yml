@@ -1,0 +1,329 @@
+name: Release Mobile (APK & IPA)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "可选：GitHub Release 标签名（如 v0.1.0；留空时取 mygo.json version）"
+        required: false
+        default: ""
+        type: string
+      publish_release:
+        description: "构建完成后自动发布/更新 GitHub Release 并附带 APK 与 IPA"
+        required: true
+        default: true
+        type: boolean
+      android_arch:
+        description: "Android 目标架构（arm64 体积轻巧，universal 含 arm64+arm+x86_64）"
+        required: true
+        default: "arm64"
+        type: choice
+        options:
+          - arm64
+          - universal
+      ios_build_mode:
+        description: "iOS 构建模式：unsigned（免证书未签名真机 .ipa，供自签）或 signed（云端直签）"
+        required: true
+        default: "unsigned"
+        type: choice
+        options:
+          - unsigned
+          - signed
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-mobile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go from go.mod
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Download Go modules & install matching MyGo CLI
+        run: |
+          set -euo pipefail
+          go mod download
+          MYGO_VER=$(go list -m -f '{{.Version}}' github.com/egoist/mygo)
+          echo "Installing mygo CLI @ ${MYGO_VER}"
+          go install "github.com/egoist/mygo/cmd/mygo@${MYGO_VER}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Ensure Android SDK (API 36), NDK & CMake
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=${SDK_ROOT}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${SDK_ROOT}" >> "$GITHUB_ENV"
+
+          SDKMANAGER="${SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "${SDKMANAGER}" ]; then
+            SDKMANAGER=$(find "${SDK_ROOT}/cmdline-tools" -name sdkmanager -type f | head -n 1)
+          fi
+          yes | "${SDKMANAGER}" --licenses >/dev/null || true
+          "${SDKMANAGER}" "platforms;android-36" "build-tools;36.0.0" "cmake;3.22.1"
+          if [ ! -d "${SDK_ROOT}/ndk" ] || [ -z "$(ls -A "${SDK_ROOT}/ndk" 2>/dev/null)" ]; then
+            "${SDKMANAGER}" "ndk;27.2.12479018"
+          fi
+          echo "Installed NDK versions:"
+          ls -la "${SDK_ROOT}/ndk"
+
+      - name: Build Android APK with MyGo
+        run: |
+          set -euo pipefail
+          APP_VER=$(python3 -c 'import json; print(json.load(open("mygo.json"))["version"])')
+          echo "APP_VERSION=${APP_VER}" >> "$GITHUB_ENV"
+
+          mygo native check modules/widgetbridge
+          ARCH="${{ inputs.android_arch || 'arm64' }}"
+          if [ "${ARCH}" = "universal" ]; then
+            mygo build -platform android -o build
+            SUFFIX="universal"
+          else
+            mygo build -platform "android/${ARCH}" -o build
+            SUFFIX="${ARCH}"
+          fi
+
+          mkdir -p dist
+          APK_SRC=$(ls build/android/*.apk | head -n 1)
+          cp "${APK_SRC}" "dist/StillPoets-${APP_VER}-android-${SUFFIX}.apk"
+          ls -lh dist/
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stillpoets-android-apk
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  build-ios:
+    name: Build iOS IPA
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go from go.mod
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download Go modules & install matching MyGo CLI
+        run: |
+          set -euo pipefail
+          go mod download
+          MODE="${{ inputs.ios_build_mode || 'unsigned' }}"
+          if [ "${MODE}" = "unsigned" ]; then
+            CI_BIN_DIR="${RUNNER_TEMP}/mygo-ci-bin"
+            python3 scripts/build_mygo_ci_cli.py \
+              --work-dir "${RUNNER_TEMP}/mygo-ci-work" \
+              --out-bin "${CI_BIN_DIR}/mygo"
+            echo "${CI_BIN_DIR}" >> "$GITHUB_PATH"
+          else
+            MYGO_VER=$(go list -m -f '{{.Version}}' github.com/egoist/mygo)
+            echo "Installing mygo CLI @ ${MYGO_VER}"
+            go install "github.com/egoist/mygo/cmd/mygo@${MYGO_VER}"
+            echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Install Apple signing certificate & provisioning profile
+        if: ${{ (inputs.ios_build_mode || 'unsigned') == 'signed' }}
+        env:
+          IOS_P12_BASE64: ${{ secrets.IOS_P12_BASE64 }}
+          IOS_P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          IOS_WIDGET_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_WIDGET_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${IOS_P12_BASE64}" ] || [ -z "${IOS_PROVISIONING_PROFILE_BASE64}" ]; then
+            echo "::error::缺少签名 Secrets（IOS_P12_BASE64 / IOS_PROVISIONING_PROFILE_BASE64）"
+            exit 1
+          fi
+          CERT_DIR="${RUNNER_TEMP}/ios-signing"
+          mkdir -p "${CERT_DIR}"
+          KEYCHAIN_PATH="${CERT_DIR}/build.keychain-db"
+          KEYCHAIN_PASS="stillpoets-ci-$(date +%s)"
+          P12_PATH="${CERT_DIR}/cert.p12"
+          MAIN_PROFILE_PATH="${CERT_DIR}/main.mobileprovision"
+          WIDGET_PROFILE_PATH=""
+
+          printf '%s' "${IOS_P12_BASE64}" | tr -d '[:space:]' | base64 --decode > "${P12_PATH}"
+          printf '%s' "${IOS_PROVISIONING_PROFILE_BASE64}" | tr -d '[:space:]' | base64 --decode > "${MAIN_PROFILE_PATH}"
+          if [ -n "${IOS_WIDGET_PROVISIONING_PROFILE_BASE64}" ]; then
+            WIDGET_PROFILE_PATH="${CERT_DIR}/widget.mobileprovision"
+            printf '%s' "${IOS_WIDGET_PROVISIONING_PROFILE_BASE64}" | tr -d '[:space:]' | base64 --decode > "${WIDGET_PROFILE_PATH}"
+          fi
+
+          security create-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_PATH}"
+          security import "${P12_PATH}" -P "${IOS_P12_PASSWORD}" -A -t cert -f pkcs12 -k "${KEYCHAIN_PATH}"
+          security list-keychains -d user -s "${KEYCHAIN_PATH}" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "${KEYCHAIN_PATH}"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PASS}" "${KEYCHAIN_PATH}"
+
+          echo "CI_KEYCHAIN_PATH=${KEYCHAIN_PATH}" >> "$GITHUB_ENV"
+          echo "CI_CERT_DIR=${CERT_DIR}" >> "$GITHUB_ENV"
+          echo "CI_MAIN_PROFILE_PATH=${MAIN_PROFILE_PATH}" >> "$GITHUB_ENV"
+          echo "CI_WIDGET_PROFILE_PATH=${WIDGET_PROFILE_PATH}" >> "$GITHUB_ENV"
+
+      - name: Configure mygo.json for iOS target
+        run: |
+          set -euo pipefail
+          MODE="${{ inputs.ios_build_mode || 'unsigned' }}"
+          python3 scripts/prepare_ios_ci.py \
+            --config mygo.json \
+            --mode "${MODE}" \
+            --include-widget "true" \
+            --profile "${CI_MAIN_PROFILE_PATH:-}" \
+            --widget-profile "${CI_WIDGET_PROFILE_PATH:-}" \
+            --bundle-id-override "" \
+            --appex-path "native/ios/build/StillPoetsWidget.appex" \
+            --github-env "$GITHUB_ENV"
+
+      - name: Build StillPoetsWidget.appex with XcodeGen & xcodebuild
+        if: ${{ env.BUILD_WIDGET == 'true' }}
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen generate --spec native/ios/project.yml --project native/ios
+          xcodebuild \
+            -project native/ios/StillPoetsWidget.xcodeproj \
+            -scheme StillPoetsWidget \
+            -configuration Release \
+            -sdk iphoneos \
+            -arch arm64 \
+            -derivedDataPath native/ios/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PRODUCT_BUNDLE_IDENTIFIER="${WIDGET_BUNDLE_ID}" \
+            MARKETING_VERSION="${APP_VERSION}" \
+            CURRENT_PROJECT_VERSION="${APP_BUILD_NUMBER}" \
+            STILLPOETS_KEYCHAIN_GROUP="${STILLPOETS_KEYCHAIN_GROUP}" \
+            STILLPOETS_APP_GROUP="${STILLPOETS_APP_GROUP}" \
+            build
+          APPEX_SRC="native/ios/DerivedData/Build/Products/Release-iphoneos/StillPoetsWidget.appex"
+          rm -rf native/ios/build
+          mkdir -p native/ios/build
+          cp -R "${APPEX_SRC}" native/ios/build/StillPoetsWidget.appex
+
+      - name: Build iOS IPA with MyGo
+        run: |
+          set -euo pipefail
+          mygo native check modules/widgetbridge
+          MODE="${{ inputs.ios_build_mode || 'unsigned' }}"
+          if [ "${MODE}" = "unsigned" ]; then
+            MYGO_IOS_UNSIGNED=1 mygo build -platform ios -o build
+          else
+            mygo build -platform ios -o build
+          fi
+
+          mkdir -p dist
+          IPA_SRC=$(ls build/ios-arm64/*.ipa | head -n 1)
+          cp "${IPA_SRC}" "dist/StillPoets-${APP_VERSION}-ios-arm64-${IOS_DISTRIBUTION}.ipa"
+          ls -lh dist/
+
+      - name: Upload iOS IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stillpoets-ios-ipa
+          path: dist/*.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Cleanup temporary keychain and certificates
+        if: always()
+        run: |
+          if [ -n "${CI_KEYCHAIN_PATH:-}" ] && [ -f "${CI_KEYCHAIN_PATH}" ]; then
+            security delete-keychain "${CI_KEYCHAIN_PATH}" || true
+          fi
+          if [ -n "${CI_CERT_DIR:-}" ] && [ -d "${CI_CERT_DIR}" ]; then
+            rm -rf "${CI_CERT_DIR}" || true
+          fi
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-android, build-ios]
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.publish_release == true }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download APK & IPA artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish GitHub Release with APK & IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          APP_VER=$(python3 -c 'import json; print(json.load(open("mygo.json"))["version"])')
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          elif [ -n "${{ inputs.release_tag }}" ]; then
+            TAG="${{ inputs.release_tag }}"
+          else
+            TAG="v${APP_VER}"
+          fi
+
+          ls -lh release-assets/
+
+          cat > release-notes.md <<EOF
+          ## StillPoets ${TAG}
+
+          ### 安装包说明
+          - **Android (APK)**：内置桌面小组件（\`StillPoetsWidgetProvider\`），可直接安装在 Android 手机 / 平板（ARM64）。
+          - **iOS (IPA)**：内嵌 WidgetKit 桌面小组件（\`StillPoetsWidget.appex\`），免证书未签名真机包，可使用全能签 / 轻松签 / AltStore / SideStore 自签安装。
+
+          ### 本次核心更新
+          - 视觉与排版打磨：棉纸肌理与微纤维、实体书封书脊折痕与底部接触投影、散页 80% 纸白留白 + 信息减法、去工具化「今日重读」与一体化迷你书封「继续阅读」轻卡、散页导语上滑淡出、五类语义差异化字体体系。
+          - 黑夜模式自动切换：支持跟随系统深色模式自动切换「暗夜极简」并同步双端桌面小组件配色。
+          - 顺序阅读进度保护：区分主线顺序阅读与小组件/今日重读/散页/检索偶遇直达，偶遇不覆写「继续阅读」位置。
+          EOF
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release edit "${TAG}" --title "StillPoets ${TAG}" --notes-file release-notes.md
+            gh release upload "${TAG}" release-assets/* --clobber
+          else
+            gh release create "${TAG}" release-assets/* \
+              --title "StillPoets ${TAG}" \
+              --notes-file release-notes.md \
+              --target "${GITHUB_SHA}"
+          fi

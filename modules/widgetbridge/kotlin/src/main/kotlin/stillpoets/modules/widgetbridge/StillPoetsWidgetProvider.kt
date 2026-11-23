@@ -7,6 +7,7 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -156,9 +157,22 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
             val widthDp = max(options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 280), 180)
             val heightDp = max(options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 128), 96)
 
-            val bgColor = parseColorOr(theme.bgColor, Color.parseColor("#F4F4EF"))
-            val textColor = parseColorOr(theme.textColor, Color.parseColor("#1F2320"))
-            val accentColor = parseColorOr(theme.accentColor, Color.parseColor("#3A6B5C"))
+            val useDark = theme.followSystemDark && isSystemDarkMode(context)
+            val bgColor = if (useDark) {
+                parseColorOr(theme.darkBgColor, Color.parseColor("#151517"))
+            } else {
+                parseColorOr(theme.bgColor, Color.parseColor("#F4F4EF"))
+            }
+            val textColor = if (useDark) {
+                parseColorOr(theme.darkTextColor, Color.parseColor("#ECE9E2"))
+            } else {
+                parseColorOr(theme.textColor, Color.parseColor("#1F2320"))
+            }
+            val accentColor = if (useDark) {
+                parseColorOr(theme.darkAccentColor, Color.parseColor("#D0735E"))
+            } else {
+                parseColorOr(theme.accentColor, Color.parseColor("#3A6B5C"))
+            }
             val secondaryColor = withAlpha(textColor, 0.58f)
             val borderColor = if (isDarkColor(bgColor)) {
                 Color.argb(38, 255, 255, 255)
@@ -327,9 +341,13 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
                 val themeObj = root.optJSONObject("theme")
                 val theme = WidgetTheme(
                     preset = themeObj?.optString("preset").orEmpty(),
+                    followSystemDark = themeObj?.optBoolean("followSystemDark", false) ?: false,
                     bgColor = themeObj?.optString("bgColor").orEmpty(),
                     textColor = themeObj?.optString("textColor").orEmpty(),
                     accentColor = themeObj?.optString("accentColor").orEmpty(),
+                    darkBgColor = themeObj?.optString("darkBgColor").orEmpty(),
+                    darkTextColor = themeObj?.optString("darkTextColor").orEmpty(),
+                    darkAccentColor = themeObj?.optString("darkAccentColor").orEmpty(),
                     fontFamily = themeObj?.optString("fontFamily").orEmpty(),
                     fontFile = themeObj?.optString("fontFile").orEmpty(),
                 )
@@ -566,6 +584,10 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
             return Color.argb(a, Color.red(color), Color.green(color), Color.blue(color))
         }
 
+        private fun isSystemDarkMode(context: Context): Boolean {
+            return (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        }
+
         private fun isDarkColor(color: Int): Boolean {
             val lum = 0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)
             return lum < 128.0
@@ -581,18 +603,26 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
 
     private data class WidgetTheme(
         val preset: String,
+        val followSystemDark: Boolean,
         val bgColor: String,
         val textColor: String,
         val accentColor: String,
+        val darkBgColor: String,
+        val darkTextColor: String,
+        val darkAccentColor: String,
         val fontFamily: String,
         val fontFile: String,
     ) {
         companion object {
             fun defaultArtbook() = WidgetTheme(
                 preset = "artbook",
+                followSystemDark = true,
                 bgColor = "#F4F4EF",
                 textColor = "#1F2320",
                 accentColor = "#3A6B5C",
+                darkBgColor = "#151517",
+                darkTextColor = "#ECE9E2",
+                darkAccentColor = "#D0735E",
                 fontFamily = "",
                 fontFile = "",
             )

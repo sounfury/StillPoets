@@ -7,6 +7,8 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -623,4 +625,267 @@ func TestCupertinoFloatingGlassNavEditorialPaperAndOriginalCover(t *testing.T) {
 		t.Fatalf("expected native window bg synced to #151517, got %q", syncedBg)
 	}
 	maybeSavePNG(t, imgDark, "ios-dark-books")
+}
+
+func TestPeekModeProtectsMainlineProgressAndAllowsReturnOrAdopt(t *testing.T) {
+	ctx := t.Context()
+	svc, err := app.Open(ctx, t.TempDir(), app.NewMemorySecretStore())
+	if err != nil {
+		t.Fatalf("app.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+
+	bookID := "peek-test-book"
+	sp := &domain.SPBook{
+		SchemaVersion: 1,
+		BookID:        bookID,
+		Title:         "偶遇测试诗集",
+		Author:        "测试诗人",
+		SourceFormat:  "epub",
+		Poems: []domain.Poem{
+			{ID: "p-0", BookID: bookID, OrderIndex: 0, Kind: domain.EntryKindPoem, Title: "第一首", Stanzas: []domain.Stanza{{Lines: []string{"第一行", "第二行"}}}},
+			{ID: "p-1", BookID: bookID, OrderIndex: 1, Kind: domain.EntryKindPoem, Title: "第二首", Stanzas: []domain.Stanza{{Lines: []string{"第三行", "第四行"}}}},
+			{ID: "p-2", BookID: bookID, OrderIndex: 2, Kind: domain.EntryKindPoem, Title: "第三首", Stanzas: []domain.Stanza{{Lines: []string{"第五行", "第六行"}}}},
+		},
+	}
+	if err := svc.Store().UpsertImportedBook(ctx, domain.Book{
+		ID: bookID, Title: sp.Title, Author: sp.Author, ContentHash: "peek-hash", RawFilename: "peek.epub", PoemCount: 3,
+	}, sp); err != nil {
+		t.Fatalf("UpsertImportedBook: %v", err)
+	}
+
+	appUI := NewAppUI(svc, nil, nil)
+	appUI.reloadSync(ctx)
+
+	// 从测试诗集中挑选 3 首正式诗篇
+	formalIdx := []int{0, 1, 2}
+	p0 := sp.Poems[0]
+	p1 := sp.Poems[1]
+	p2 := sp.Poems[2]
+
+	waitUntil := func(desc string, cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if cond() {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timeout waiting for: %s", desc)
+	}
+
+	// 1. 建立主线顺序进度：读到第 1 首正式诗 p0
+	_, err = appUI.svc.RecordPoemRead(ctx, bookID, p0.ID, 0.3, len(sp.Poems))
+	if err != nil {
+		t.Fatalf("RecordPoemRead p0: %v", err)
+	}
+	appUI.reloadSync(ctx)
+
+	// 2. 桌面小组件 Deeplink 跳转到 p2：进入偶遇模式，不覆盖 LastPoemID，但计入 ReadPoemIDs
+	appUI.HandleDeeplink("stillpoets://poem/" + bookID + "/" + p2.ID + "?lines=1-2&highlight=1")
+	waitUntil("widget deeplink opens p2 in peek mode and records read set", func() bool {
+		prog, err := appUI.svc.GetProgress(ctx, bookID)
+		if err != nil {
+			return false
+		}
+		appUI.uiThreadMu.Lock()
+		ok := appUI.activePoemIdx == formalIdx[2] && appUI.readerEntrySource == entryWidget
+		appUI.uiThreadMu.Unlock()
+		return ok && slices.Contains(prog.ReadPoemIDs, p2.ID)
+	})
+
+	prog, err := appUI.svc.GetProgress(ctx, bookID)
+	if err != nil {
+		t.Fatalf("GetProgress after widget deeplink: %v", err)
+	}
+	if prog.LastPoemID != p0.ID {
+		t.Fatalf("widget deeplink overwrote mainline LastPoemID: got %q, want %q", prog.LastPoemID, p0.ID)
+	}
+
+	// 3. 在偶遇模式下顺手翻到 p1：保持偶遇模式，不改 LastPoemID，但 p1 计入已读集合
+	appUI.navigatePoem(bookID, formalIdx[1])
+	waitUntil("peek swipe records p1 into ReadPoemIDs", func() bool {
+		pr, err := appUI.svc.GetProgress(ctx, bookID)
+		return err == nil && slices.Contains(pr.ReadPoemIDs, p1.ID)
+	})
+	prog, err = appUI.svc.GetProgress(ctx, bookID)
+	if err != nil {
+		t.Fatalf("GetProgress after peek navigate: %v", err)
+	}
+	if prog.LastPoemID != p0.ID || appUI.readerEntrySource != entryWidget {
+		t.Fatalf("peek navigate should keep mainline=%q and peek mode, got last=%q source=%q", p0.ID, prog.LastPoemID, appUI.readerEntrySource)
+	}
+
+	// 4. 在手机端渲染偶遇进度提示条并点击「回到进度」，应跳回 p0 并退出偶遇模式
+	ttPhone := ui.NewTester(appUI.Render, 390, 844)
+	ttPhone.Frame()
+	advanceFrames(ttPhone, 400*time.Millisecond)
+	if err := ttPhone.Click("回到进度"); err != nil {
+		t.Fatalf("click 回到进度 failed: %v", err)
+	}
+	if appUI.activePoemIdx != formalIdx[0] || appUI.readerEntrySource != entryMainline {
+		t.Fatalf("after 回到进度: idx=%d (want %d), source=%q", appUI.activePoemIdx, formalIdx[0], appUI.readerEntrySource)
+	}
+
+	// 5. 从散页入口偶遇 p2，并在平板端点击「从这里续读」，显式将主线更新为 p2
+	appUI.openBookWithSource(bookID, p2.ID, nil, true, entryQuote)
+	waitUntil("quote jump opens p2 in peek mode", func() bool {
+		appUI.uiThreadMu.Lock()
+		defer appUI.uiThreadMu.Unlock()
+		return appUI.activePoemIdx == formalIdx[2] && appUI.readerEntrySource == entryQuote
+	})
+	ttTablet := ui.NewTester(appUI.Render, 1080, 720)
+	ttTablet.Frame()
+	advanceFrames(ttTablet, 400*time.Millisecond)
+	if err := ttTablet.Click("从这里续读"); err != nil {
+		t.Fatalf("click 从这里续读 failed: %v", err)
+	}
+	waitUntil("adopt updates LastPoemID to p2", func() bool {
+		pr, err := appUI.svc.GetProgress(ctx, bookID)
+		return err == nil && pr.LastPoemID == p2.ID
+	})
+	if appUI.readerEntrySource != entryMainline {
+		t.Fatalf("expected entryMainline after adopt, got %q", appUI.readerEntrySource)
+	}
+
+	// 6. 小组件恰好跳到当前主线诗 p2：自动回归主线，保留行高亮且不弹冗余偶遇条
+	appUI.HandleDeeplink("stillpoets://poem/" + bookID + "/" + p2.ID + "?lines=1-1&highlight=1")
+	waitUntil("deeplink to current mainline exits peek mode", func() bool {
+		appUI.uiThreadMu.Lock()
+		defer appUI.uiThreadMu.Unlock()
+		return len(appUI.highlightRanges) == 1 && appUI.activePoemIdx == formalIdx[2] && appUI.readerEntrySource == entryMainline
+	})
+}
+
+func TestFollowSystemDarkModeAutoSwitch(t *testing.T) {
+	ctx := context.Background()
+	svc, err := app.Open(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("app.Open: %v", err)
+	}
+	defer svc.Close()
+
+	appUI := NewAppUI(svc, nil, nil)
+	var (
+		mu       sync.Mutex
+		lastBg   string
+		barDark  bool
+		barCalls int
+	)
+	appUI.SetWindowBgFunc(func(hex string) {
+		mu.Lock()
+		lastBg = hex
+		mu.Unlock()
+	})
+	appUI.SetSystemBarStyleFunc(func(dark bool) {
+		mu.Lock()
+		barDark = dark
+		barCalls++
+		mu.Unlock()
+	})
+
+	tt := ui.NewTester(appUI.Render, 390, 844)
+	tt.Frame()
+
+	readPalette := func() theme.Palette {
+		var p theme.Palette
+		appUI.dispatchUI(func() { p = appUI.palette() })
+		return p
+	}
+	readFollow := func() bool {
+		var v bool
+		appUI.dispatchUI(func() { v = appUI.settings.ShouldFollowSystemDark() })
+		return v
+	}
+
+	// 1. 默认开启跟随系统深色模式：浅色系统下呈现「画册风」，状态栏使用深色图标（barDark=false）
+	if !readFollow() {
+		t.Fatalf("expected FollowSystemDark to default to true")
+	}
+	if got := readPalette().ID; got != theme.PresetArtbook {
+		t.Fatalf("light mode initial palette = %q, want %q", got, theme.PresetArtbook)
+	}
+	mu.Lock()
+	if lastBg != theme.Artbook().BgHex || barDark || barCalls == 0 {
+		t.Fatalf("light mode native sync mismatch: bg=%q barDark=%v calls=%d", lastBg, barDark, barCalls)
+	}
+	mu.Unlock()
+
+	// 2. 手机系统进入深色模式：自动切换为「暗夜极简」，同步原生底色与状态栏浅色图标，且不破坏日间偏好
+	tt.SetDark(true)
+	if got := readPalette().ID; got != theme.PresetDarkMinimal {
+		t.Fatalf("dark mode palette = %q, want %q", got, theme.PresetDarkMinimal)
+	}
+	mu.Lock()
+	if lastBg != theme.DarkMinimal().BgHex || !barDark {
+		t.Fatalf("dark mode native sync mismatch: bg=%q barDark=%v", lastBg, barDark)
+	}
+	mu.Unlock()
+
+	// 3. 手机系统退出深色模式：自动恢复原日间主题「画册风」
+	tt.SetDark(false)
+	if got := readPalette().ID; got != theme.PresetArtbook {
+		t.Fatalf("restored light mode palette = %q, want %q", got, theme.PresetArtbook)
+	}
+	mu.Lock()
+	if lastBg != theme.Artbook().BgHex || barDark {
+		t.Fatalf("restored light mode native sync mismatch: bg=%q barDark=%v", lastBg, barDark)
+	}
+	mu.Unlock()
+
+	// 4. 在深色模式下进入「我的」页并点击浅色主题「刊物风」：自动关闭跟随系统深色，避免被系统覆盖，并持久化到设置与小组件快照
+	tt.SetDark(true)
+	appUI.dispatchUI(func() { appUI.activeTab = components.TabProfile })
+	tt.Frame()
+	if err := tt.Click("刊物风"); err != nil {
+		t.Fatalf("click 刊物风 failed: %v", err)
+	}
+	if readFollow() {
+		t.Fatalf("selecting light theme under dark OS should disable followSystemDark")
+	}
+	if got := readPalette().ID; got != theme.PresetEditorial {
+		t.Fatalf("manual light override under dark OS = %q, want %q", got, theme.PresetEditorial)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		st, err := svc.LoadSettings(ctx)
+		if err == nil && st.ThemePreset == string(theme.PresetEditorial) && !st.ShouldFollowSystemDark() {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	tl, err := svc.ReadWidgetTimeline()
+	if err != nil {
+		t.Fatalf("ReadWidgetTimeline: %v", err)
+	}
+	if tl.Theme.FollowSystemDark {
+		t.Fatalf("widget timeline should record followSystemDark=false")
+	}
+	if tl.Theme.DarkBgColor != theme.DarkMinimal().BgHex {
+		t.Fatalf("widget timeline darkBgColor = %q, want %q", tl.Theme.DarkBgColor, theme.DarkMinimal().BgHex)
+	}
+
+	// 5. 重新开启跟随系统深色模式：在深色系统下立即切回「暗夜极简」，切回浅色系统后恢复刚选的「刊物风」
+	appUI.dispatchUI(func() { appUI.toggleFollowSystemDark(true) })
+	if got := readPalette().ID; got != theme.PresetDarkMinimal {
+		t.Fatalf("re-enabling follow under dark OS = %q, want %q", got, theme.PresetDarkMinimal)
+	}
+	tt.SetDark(false)
+	if got := readPalette().ID; got != theme.PresetEditorial {
+		t.Fatalf("returning to light OS should restore editorial, got %q", got)
+	}
+
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		tl, err = svc.ReadWidgetTimeline()
+		if err == nil && tl.Theme.FollowSystemDark {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if !tl.Theme.FollowSystemDark {
+		t.Fatalf("widget timeline should record followSystemDark=true after toggle")
+	}
 }

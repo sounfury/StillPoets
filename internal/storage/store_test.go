@@ -637,3 +637,62 @@ func TestUpdateSettingsPatchAndKeepDirtyAndMaxCounterGuard(t *testing.T) {
 		t.Fatalf("expected dirty=true and local_rev=1 with keepDirty, got %+v", after)
 	}
 }
+
+func TestRecordPoemPeekPreservesPositionAndContinueReading(t *testing.T) {
+	s, ctx := openTestStore(t), t.Context()
+	importTestBook(t, s, "older")
+	importTestBook(t, s, "newer")
+
+	// 1. 建立 older 的主线阅读进度（older-p1，滚动比例 0.45）
+	mainline, err := s.RecordPoemRead(ctx, "older", "older-p1", 0.45, 2)
+	must(t, err)
+	if mainline.LastPoemID != "older-p1" || mainline.LocalScrollRatio != 0.45 {
+		t.Fatalf("mainline progress = %+v", mainline)
+	}
+
+	// 2. 偶遇 older-p2：计入 ReadPoemIDs 并触发完读，但严格保留 LastPoemID / PositionVer / LocalScrollRatio
+	peeked, changed, err := s.RecordPoemPeek(ctx, "older", "older-p2", 2)
+	must(t, err)
+	if !changed {
+		t.Fatalf("expected first peek of unread poem to report changed=true")
+	}
+	if peeked.LastPoemID != "older-p1" || peeked.PositionVer != mainline.PositionVer || peeked.LocalScrollRatio != 0.45 {
+		t.Fatalf("peek clobbered mainline position: got=%+v wantLast=%q wantVer=%+v", peeked, mainline.LastPoemID, mainline.PositionVer)
+	}
+	if !slices.Equal(peeked.ReadPoemIDs, []string{"older-p1", "older-p2"}) || peeked.Status != domain.ReadStatusFinished {
+		t.Fatalf("peek did not update read set/status: %+v", peeked)
+	}
+
+	// 3. 再次偶遇已读过的 older-p2：无新增状态变化，不递增 Lamport 且不标脏
+	data, metaBefore, err := s.ExportSnapshot(ctx)
+	must(t, err)
+	must(t, s.ApplyMergedSnapshot(ctx, data, metaBefore.DirtySeq, metaBefore.LamportCounter, 1, true))
+	metaClean, err := s.GetSyncMeta(ctx)
+	must(t, err)
+
+	peekAgain, changedAgain, err := s.RecordPoemPeek(ctx, "older", "older-p2", 2)
+	must(t, err)
+	metaAfter, err := s.GetSyncMeta(ctx)
+	must(t, err)
+	if changedAgain || metaAfter.Dirty || metaAfter.LamportCounter != metaClean.LamportCounter || peekAgain.LastPoemID != "older-p1" {
+		t.Fatalf("duplicate peek should be a no-op: changed=%v meta=%+v progress=%+v", changedAgain, metaAfter, peekAgain)
+	}
+
+	// 4. 偶遇一本从未读过的书 newer：计入已读集合但不写入 LastPoemID，不抢占首页「继续阅读」
+	newerPeek, newerChanged, err := s.RecordPoemPeek(ctx, "newer", "newer-p2", 2)
+	must(t, err)
+	if !newerChanged || newerPeek.LastPoemID != "" || !newerPeek.PositionVer.IsZero() ||
+		newerPeek.Status != domain.ReadStatusReading || !slices.Equal(newerPeek.ReadPoemIDs, []string{"newer-p2"}) {
+		t.Fatalf("unread book peek = %+v (changed=%v)", newerPeek, newerChanged)
+	}
+	cont, err := s.GetContinueReading(ctx)
+	must(t, err)
+	if cont == nil || cont.Book.ID != "older" || cont.Progress.LastPoemID != "older-p1" {
+		t.Fatalf("continue reading hijacked by peek: %+v", cont)
+	}
+
+	// 5. 跨书 poemID 依然被拒绝
+	if _, _, err := s.RecordPoemPeek(ctx, "older", "newer-p1", 2); err == nil {
+		t.Fatalf("expected cross-book poemID in RecordPoemPeek to be rejected")
+	}
+}

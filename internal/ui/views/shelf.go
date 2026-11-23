@@ -133,7 +133,7 @@ func (a *AppUI) renderTabletShelfWorkspace(c *ui.Context, pal theme.Palette) {
 				Children(func() {
 					ui.Column(c.Key("tablet-quotes-col")).Fill().Children(func() {
 						a.renderShelfHeaderAndTabs(c, pal)
-						ui.Scroll(c.Key("tablet-quotes-scroll")).Grow(1).FillWidth().Children(func() {
+						ui.Scroll(c.Key("tablet-quotes-scroll")).TrackScroll(&a.tabletQuotesScroll).Grow(1).FillWidth().Children(func() {
 							a.renderQuotesSubTab(c, pal, true)
 						})
 					})
@@ -194,7 +194,7 @@ func (a *AppUI) renderShelfPane(c *ui.Context, pal theme.Palette, isTablet bool)
 					Left(width).Top(0).Bottom(0).
 					Width(width).
 					Children(func() {
-						ui.Scroll(c.Key("shelf-quotes-scroll")).Fill().Children(func() {
+						ui.Scroll(c.Key("shelf-quotes-scroll")).TrackScroll(&a.phoneQuotesScroll).Fill().Children(func() {
 							a.renderQuotesSubTab(c, pal, isTablet)
 						})
 					})
@@ -208,13 +208,13 @@ func (a *AppUI) renderBooksSubTab(c *ui.Context, pal theme.Palette, isTablet boo
 	if !isTablet && a.useFloatingBottomNav() {
 		bottomPad = 108
 	}
-	ui.Column(c.Key("books-subtab")).Padding(14, 18, bottomPad, 18).Gap(18).FillWidth().Children(func() {
+	ui.Column(c.Key("books-subtab")).Padding(10, 18, bottomPad, 18).Gap(14).FillWidth().Children(func() {
 		// 手机单栏在首屏展示「今日重读」画册/刊物主视觉卡；平板左主栏聚焦继续阅读 + 书架网格（右栏已是实时整诗阅读区）
 		if !isTablet {
 			a.renderTodayRereadHero(c, pal)
 		}
 
-		// 继续阅读
+		// 轻巧单行书签条：继续阅读
 		if a.continueItem != nil {
 			a.renderContinueReading(c, pal, a.continueItem)
 		}
@@ -226,108 +226,138 @@ func (a *AppUI) renderBooksSubTab(c *ui.Context, pal theme.Palette, isTablet boo
 
 func (a *AppUI) renderTodayRereadHero(c *ui.Context, pal theme.Palette) {
 	today := a.todayReread
+	poetryFont := theme.PoetryFont(a.settings.FontFamily)
+
 	if today == nil {
 		// 空书库引导卡
-		ui.Column(c.Key("hero-empty")).
+		emptyCard := ui.Column(c.Key("hero-empty")).
 			FillWidth().
-			Padding(20).
-			Gap(12).
+			Padding(16, 18).
+			Gap(10).
 			Radius(6).
 			Background(pal.HeroBg).
 			Border(1, pal.Border).
-			Children(func() {
-				ui.Text(c, "今日重读  |  静候第一卷诗集").FontSize(12).TextColor(pal.TextSecondary)
-				ui.Text(c, "不急着读完，\n给一句诗多一点时间。").
-					FontSize(22).Bold().LineHeight(1.5).TextColor(pal.TextPrimary)
-				ui.Row(c).Gap(10).Padding(6, 0, 0, 0).Children(func() {
-					if ui.PrimaryButton(c, "导入 EPUB 诗集").Clicked() {
-						a.triggerImportEPUB()
-					}
-					if ui.Button(c, "记一张散页").Clicked() {
-						a.openNewQuoteModal()
-					}
-				})
+			Clip()
+		if pal.HeroStyle != theme.HeroOpenPaper {
+			isDark := pal.IsDark()
+			emptyCard.Draw(func(p *ui.Painter, r ui.Rect) {
+				theme.DrawPaperTexture(p, r, 6, isDark, 0.045)
 			})
+		}
+		emptyCard.Children(func() {
+			ui.Text(c, "今日重读  ·  静候第一卷诗集").Font(theme.FontSans).FontSize(11).LetterSpacing(0.6).TextColor(pal.TextSecondary)
+			ui.Text(c, "不急着读完，\n给一句诗多一点时间。").
+				Font(poetryFont).FontSize(19).FontWeight(500).LineHeight(1.55).TextColor(pal.TextPrimary)
+			ui.Row(c).Gap(10).Padding(4, 0, 0, 0).Children(func() {
+				if ui.PrimaryButton(c, "导入 EPUB 诗集").Clicked() {
+					a.triggerImportEPUB()
+				}
+				if ui.Button(c, "记一张散页").Clicked() {
+					a.openNewQuoteModal()
+				}
+			})
+		})
 		return
+	}
+
+	attribution := strings.TrimSpace(today.Author)
+	src := fmt.Sprintf("《%s》", today.BookTitle)
+	if strings.TrimSpace(today.PoemTitle) != "" {
+		src += " · " + today.PoemTitle
+	}
+	if attribution != "" {
+		attribution += "  " + src
+	} else {
+		attribution = src
 	}
 
 	if pal.HeroStyle == theme.HeroOpenPaper {
 		// 刊物风（Editorial）：无底色块，左侧刊物蓝细竖条 + 开放纸面大字
-		ui.Row(c.Key("hero-editorial")).FillWidth().Gap(14).Padding(6, 0, 8, 0).Children(func() {
-			ui.Box(c).Width(3).FillHeight().Background(pal.HeroCorner).Radius(2)
-			ui.Column(c).Grow(1).Gap(10).Children(func() {
-				ui.Text(c, "今日重读  |  来自我的诗集").FontSize(12).TextColor(pal.TextMuted)
-				ui.Text(c, today.Excerpt).
-					FontSize(19).FontWeight(500).LineHeight(1.52).MaxLines(4).TextColor(pal.TextPrimary)
-				ui.Column(c).Gap(2).Children(func() {
-					ui.Text(c, today.Author).FontSize(13).Bold().MaxLines(1).TextColor(pal.TextPrimary)
-					ui.Textf(c, "《%s》· %s", today.BookTitle, today.PoemTitle).FontSize(12).MaxLines(1).TextColor(pal.TextMuted)
+		ui.Row(c.Key("hero-editorial")).FillWidth().Gap(12).Padding(4, 0, 4, 0).Children(func() {
+			ui.Box(c).Width(2.5).FillHeight().Background(pal.HeroCorner).Radius(1.5)
+			ui.Column(c).Grow(1).Gap(7).Children(func() {
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "今日重读").Font(theme.FontSans).FontSize(11).FontWeight(600).LetterSpacing(0.8).TextColor(pal.TextSecondary)
+					ui.Text(c, "·").Font(theme.FontSans).FontSize(11).TextColor(pal.TextMuted)
+					ui.Text(c, "来自我的诗集").Font(theme.FontNote).FontSize(11).TextColor(pal.TextMuted)
 				})
+				ui.Text(c, today.Excerpt).
+					Font(poetryFont).FontSize(18).FontWeight(400).LineHeight(1.54).MaxLines(3).TextColor(pal.TextPrimary)
+				ui.Text(c, attribution).Font(theme.FontNote).FontSize(12).MaxLines(1).TextColor(pal.TextMuted)
 				a.renderHeroActions(c, pal, today)
 			})
 		})
 		return
 	}
 
-	// 画册风 / 暗夜极简：鼠尾草绿矩形色块 + 右上赤陶几何角标
+	// 画册风 / 暗夜极简：鼠尾草绿棉纸色块 + 右上规整几何赤陶四分之一圆弧 + 纸张纤维肌理
 	hero := ui.Column(c.Key("hero-artbook")).
 		FillWidth().
-		Padding(20, 20, 18, 20).
-		Gap(12).
+		Padding(15, 18, 13, 18).
+		Gap(8).
 		Radius(4).
+		Border(1, pal.Border.Alpha(0.55)).
 		Clip().
 		Draw(func(p *ui.Painter, r ui.Rect) {
-			p.Fill(r, pal.HeroBg, 4)
-			// 右上几何赤陶弧块（对应 stillpoets-v3-shelf-fragments.png）
-			corner := (&ui.Path{}).
-				MoveTo(r.X+r.W*0.72, r.Y).
-				LineTo(r.X+r.W, r.Y).
-				LineTo(r.X+r.W, r.Y+74).
-				LineTo(r.X+r.W*0.90, r.Y+74).
-				QuadTo(r.X+r.W*0.76, r.Y+54, r.X+r.W*0.72, r.Y).
-				Close()
-			p.FillPath(corner, pal.HeroCorner)
+			p.Clip(r, 4, func() {
+				p.Fill(r, pal.HeroBg, 0)
+				// 右上标准四分之一圆赤陶角标（圆心锚定右上顶点，边缘利落自然）
+				arcR := min(float32(56), r.H*0.38)
+				corner := (&ui.Path{}).Circle(r.X+r.W, r.Y, arcR)
+				p.FillPath(corner, pal.HeroCorner)
+				// 叠加 4.8% 纸张肌理与纤维，消除扁平色块电子感
+				theme.DrawPaperTexture(p, r, 0, pal.IsDark(), 0.048)
+			})
 		})
 	hero.Children(func() {
-		ui.Text(c, "今日重读  |  来自我的诗集").FontSize(12).TextColor(pal.TextSecondary)
-		ui.Text(c, today.Excerpt).
-			FontSize(19).FontWeight(500).LineHeight(1.5).MaxLines(4).TextColor(pal.TextPrimary).Padding(2, 24, 2, 0)
-		ui.Column(c).Gap(2).Children(func() {
-			ui.Text(c, today.Author).FontSize(13).Bold().MaxLines(1).TextColor(pal.TextPrimary)
-			ui.Textf(c, "《%s》· %s", today.BookTitle, today.PoemTitle).FontSize(12).MaxLines(1).TextColor(pal.TextSecondary)
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "今日重读").Font(theme.FontSans).FontSize(11).FontWeight(600).LetterSpacing(0.8).TextColor(pal.TextSecondary)
+			ui.Text(c, "·").Font(theme.FontSans).FontSize(11).TextColor(pal.TextSecondary)
+			ui.Text(c, "来自我的诗集").Font(theme.FontNote).FontSize(11).TextColor(pal.TextSecondary)
 		})
+		ui.Text(c, today.Excerpt).
+			Font(poetryFont).FontSize(17.5).FontWeight(400).LineHeight(1.52).MaxLines(3).TextColor(pal.TextPrimary).Padding(1, 22, 1, 0)
+		ui.Text(c, attribution).Font(theme.FontNote).FontSize(12).MaxLines(1).TextColor(pal.TextSecondary)
 		a.renderHeroActions(c, pal, today)
 	})
 }
 
 func (a *AppUI) renderHeroActions(c *ui.Context, pal theme.Palette, today *app.TodayReread) {
-	ui.Row(c.Key("hero-actions")).FillWidth().AlignItems(ui.Center).Padding(6, 0, 0, 0).Children(func() {
+	// 去工具化 CTA：将实心陶土红胶囊改为克制的「纯文字 + 细下划线」阅读入口
+	ui.Row(c.Key("hero-actions")).FillWidth().AlignItems(ui.Center).Padding(3, 0, 0, 0).Children(func() {
 		readBtn := ui.Row(c.Key("hero-read")).
-			Padding(8, 16).
-			Radius(6).
-			Background(pal.Accent).
+			Padding(4, 2, 4, 0).
 			AlignItems(ui.Center).
 			Cursor(ui.CursorPointer)
 		theme.ApplyPressScale(readBtn, 0.95)
 		readBtn.Children(func() {
-			ui.Text(c, "读完整首 ↗").FontSize(13).Bold().TextColor(pal.AccentText)
+			ui.Text(c, "读完整首 ↗").
+				Font(theme.FontSans).
+				FontSize(12.5).
+				FontWeight(600).
+				LetterSpacing(0.3).
+				TextColor(pal.Accent).
+				Underline().
+				UnderlineOffset(3).
+				DecorationColor(pal.Accent.Alpha(0.65)).
+				DecorationThickness(1)
 		})
 		if readBtn.Clicked() {
-			a.openBook(today.BookID, today.PoemID, app.ParseLineRanges(today.HighlightLines), true)
+			a.openBookWithSource(today.BookID, today.PoemID, app.ParseLineRanges(today.HighlightLines), true, entryToday)
 		}
 
 		ui.Spacer(c)
 
 		saveBtn := ui.Row(c.Key("hero-save-quote")).
-			Padding(8, 10).
-			Gap(5).
+			Padding(4, 2, 4, 6).
+			Gap(4).
 			AlignItems(ui.Center).
-			Radius(6).
+			Radius(4).
 			Cursor(ui.CursorPointer)
 		theme.ApplyPressScale(saveBtn, 0.95)
 		saveBtn.Children(func() {
-			ui.Icon(c, components.IconBookmark).Width(15).Height(15).TextColor(pal.TextPrimary)
-			ui.Text(c, "留作散页").FontSize(13).TextColor(pal.TextPrimary)
+			ui.Icon(c, components.IconBookmark).Width(13.5).Height(13.5).TextColor(pal.TextSecondary)
+			ui.Text(c, "留作散页").Font(theme.FontSans).FontSize(12).TextColor(pal.TextSecondary)
 		})
 		if saveBtn.Clicked() {
 			a.saveTodayRereadAsQuote(today)
@@ -370,45 +400,88 @@ func (a *AppUI) renderContinueReading(c *ui.Context, pal theme.Palette, item *st
 			ratio = 1
 		}
 	}
+	pct := int(math.Round(ratio * 100))
 	subtitle := "上次读到书内诗篇"
-	if item.PoemTitle != "" {
+	if strings.TrimSpace(item.PoemTitle) != "" {
 		subtitle = fmt.Sprintf("上次读到《%s》", item.PoemTitle)
 	}
 
-	ui.Column(c.Key("continue-section")).Gap(10).FillWidth().Children(func() {
-		ui.Text(c, "继续阅读").FontSize(16).Bold().TextColor(pal.TextPrimary)
-
-		card := ui.Row(c.Key("continue-card")).
-			FillWidth().
-			Padding(10, 4).
-			Gap(12).
-			Radius(8).
-			AlignItems(ui.Center).
-			Cursor(ui.CursorPointer)
-		theme.ApplyPressScale(card, 0.98)
-		card.Children(func() {
-			components.BookCoverThumbnail(c, "cont-thumb", item.Book.ID, a.coverImageFor(item.Book), pal)
-			ui.Column(c).Grow(1).Gap(5).Children(func() {
-				ui.Text(c, item.Book.Title).FontSize(15).Bold().TextColor(pal.TextPrimary).MaxLines(1)
-				ui.Text(c, subtitle).FontSize(12).TextColor(pal.TextMuted).MaxLines(1)
-				ui.Progress(c, ratio).Height(3).FillWidth().TextColor(pal.Accent).Background(pal.Border)
-			})
-			ui.Icon(c, components.IconArrowRight).Width(18).Height(18).TextColor(pal.TextSecondary)
+	// 内嵌迷你实体书封 + 右上「继续阅读 · 百分比」+ 极细进度条的一体化轻卡（省去外置区块标题）
+	card := ui.Row(c.Key("continue-card")).
+		FillWidth().
+		Padding(11, 13).
+		Gap(13).
+		Radius(10).
+		Background(pal.Surface).
+		Border(1, pal.Border).
+		AlignItems(ui.Center).
+		Clip().
+		Cursor(ui.CursorPointer)
+	theme.ApplyPressScale(card, 0.985)
+	if !pal.IsDark() {
+		card.Shadow(0, 2, 7, -1, ui.RGBA(32, 26, 18, 0.045))
+	}
+	if grain := pal.PaperGrainOpacity(); grain > 0 {
+		isDark := pal.IsDark()
+		card.Draw(func(p *ui.Painter, r ui.Rect) {
+			theme.DrawPaperTexture(p, r, 10, isDark, grain*0.85)
 		})
-		if card.Clicked() {
-			a.openBook(item.Book.ID, item.Progress.LastPoemID, nil, true)
-		}
+	}
+	card.Children(func() {
+		components.BookCoverThumbnail(c, "cont-thumb", item.Book.ID, a.coverImageFor(item.Book), pal)
+
+		ui.Column(c).Grow(1).Gap(4).Children(func() {
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, item.Book.Title).
+					Font(theme.FontSerif).
+					FontSize(14.5).
+					Bold().
+					TextColor(pal.TextPrimary).
+					MaxLines(1).
+					Grow(1)
+
+				ui.Row(c).Gap(3).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "继续阅读").Font(theme.FontSans).FontSize(11).TextColor(pal.TextMuted)
+					if item.Book.PoemCount > 0 {
+						ui.Text(c, "·").Font(theme.FontSans).FontSize(11).TextColor(pal.TextMuted)
+						ui.Textf(c, "%d%%", pct).Font(theme.FontMono).FontFeatures("tnum").FontSize(11).TextColor(pal.TextMuted)
+					}
+				})
+			})
+
+			ui.Text(c, subtitle).
+				Font(theme.FontNote).
+				FontSize(12).
+				TextColor(pal.TextSecondary).
+				MaxLines(1)
+
+			ui.Box(c.Key("continue-progress")).
+				FillWidth().
+				Height(5).
+				Draw(func(p *ui.Painter, r ui.Rect) {
+					bar := ui.Rect{X: r.X, Y: r.Y + 2.5, W: r.W, H: 2.5}
+					p.Fill(bar, pal.Border.Alpha(0.55), 1.25)
+					if ratio > 0 {
+						p.Fill(ui.Rect{X: bar.X, Y: bar.Y, W: bar.W * float32(ratio), H: bar.H}, pal.Accent, 1.25)
+					}
+				})
+		})
+
+		ui.Icon(c, components.IconChevronRight).Width(15).Height(15).TextColor(pal.TextMuted)
 	})
+	if card.Clicked() {
+		a.openBook(item.Book.ID, item.Progress.LastPoemID, nil, true)
+	}
 }
 
 func (a *AppUI) renderMyBooksSection(c *ui.Context, pal theme.Palette, isTablet bool) {
-	ui.Column(c.Key("my-books-section")).Gap(12).FillWidth().Children(func() {
+	ui.Column(c.Key("my-books-section")).Gap(10).FillWidth().Children(func() {
 		// 标题行：我的诗集 + 右侧轻量「管理分组」
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "我的诗集").FontSize(16).Bold().TextColor(pal.TextPrimary).Grow(1)
-			manageBtn := ui.Box(c.Key("manage-groups")).Padding(4, 6).Cursor(ui.CursorPointer)
+			ui.Text(c, "我的诗集").Font(theme.FontSerif).FontSize(16).Bold().LetterSpacing(0.3).TextColor(pal.TextPrimary).Grow(1)
+			manageBtn := ui.Box(c.Key("manage-groups")).Padding(3, 6).Cursor(ui.CursorPointer)
 			manageBtn.Children(func() {
-				ui.Text(c, "管理分组").FontSize(12).TextColor(pal.TextMuted)
+				ui.Text(c, "管理分组").Font(theme.FontSans).FontSize(12).TextColor(pal.TextMuted)
 			})
 			if manageBtn.Clicked() {
 				a.groupFormError = ""
@@ -417,19 +490,19 @@ func (a *AppUI) renderMyBooksSection(c *ui.Context, pal theme.Palette, isTablet 
 		})
 
 		// 横向直达分组切换条（不藏二级页）
-		ui.ScrollHorizontal(c.Key("group-pills-scroll")).FillWidth().Height(30).Scrollbars(false).Children(func() {
-			ui.Row(c).Gap(18).Padding(2, 0, 4, 0).Children(func() {
+		ui.ScrollHorizontal(c.Key("group-pills-scroll")).FillWidth().Height(28).Scrollbars(false).Children(func() {
+			ui.Row(c).Gap(18).Padding(1, 0, 3, 0).Children(func() {
 				renderGroupTab := func(id, label string) {
 					active := a.selectedGrp == id
 					col := ui.Column(c.Key("grp-"+id)).AlignItems(ui.Center).Gap(4).Cursor(ui.CursorPointer)
 					col.Children(func() {
-						txt := ui.Text(c, label).FontSize(13)
+						txt := ui.Text(c, label).Font(theme.FontSans).FontSize(13)
 						if active {
-							txt.Bold().TextColor(pal.TextPrimary)
+							txt.FontWeight(600).TextColor(pal.TextPrimary)
 						} else {
 							txt.TextColor(pal.TextMuted)
 						}
-						bar := ui.Box(c).Width(24).Height(2).Radius(1).Transition(theme.ColorTransition())
+						bar := ui.Box(c).Width(20).Height(1.5).Radius(1).Transition(theme.ColorTransition())
 						if active {
 							bar.Background(pal.Accent)
 						} else {
@@ -463,7 +536,7 @@ func (a *AppUI) renderMyBooksSection(c *ui.Context, pal theme.Palette, isTablet 
 					if a.selectedGrp == "" {
 						msg = "书架空空如也，导入一本 EPUB 诗集开始阅读吧"
 					}
-					ui.Text(c, msg).FontSize(13).TextColor(pal.TextMuted)
+					ui.Text(c, msg).Font(theme.FontNote).FontSize(13).TextColor(pal.TextMuted)
 					if ui.PrimaryButton(c, "+ 导入 EPUB 诗集").Clicked() {
 						a.triggerImportEPUB()
 					}
@@ -472,7 +545,7 @@ func (a *AppUI) renderMyBooksSection(c *ui.Context, pal theme.Palette, isTablet 
 		}
 
 		cols := layout.BookGridColumns(c)
-		ui.Grid(c.Key("book-cover-grid")).Columns(cols).Gap(12).FillWidth().Children(func() {
+		ui.Grid(c.Key("book-cover-grid")).Columns(cols).Gap(14).FillWidth().Children(func() {
 			for _, b := range books {
 				selected := isTablet && b.ID == a.activeBookID
 				isRemote := b.LocalState != domain.LocalStateDownloaded
@@ -491,31 +564,44 @@ func (a *AppUI) renderQuotesSubTab(c *ui.Context, pal theme.Palette, isTablet bo
 	if !isTablet && a.useFloatingBottomNav() {
 		bottomPad = 108
 	}
-	ui.Column(c.Key("quotes-subtab")).Padding(14, 18, bottomPad, 18).Gap(14).FillWidth().Children(func() {
-		// 顶部标题与副标题
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			ui.Column(c).Grow(1).Gap(4).Children(func() {
-				ui.Text(c, "留住的句子").FontSize(24).Bold().TextColor(pal.TextPrimary)
-				ui.Text(c, "片段，也有来处。").FontSize(13).TextColor(pal.TextMuted)
-			})
-			addQuoteBtn := ui.Row(c.Key("quick-add-quote")).
-				Padding(7, 12).
-				Gap(5).
-				Radius(8).
-				Background(pal.Surface).
-				Border(1, pal.Border).
-				AlignItems(ui.Center).
-				Cursor(ui.CursorPointer)
-			addQuoteBtn.Children(func() {
-				ui.Icon(c, components.IconBookmark).Width(15).Height(15).TextColor(pal.TextPrimary)
-				ui.Text(c, "记一张").FontSize(13).TextColor(pal.TextPrimary)
-			})
-			if addQuoteBtn.Clicked() {
-				a.openNewQuoteModal()
-			}
-		})
+	scrollY := a.phoneQuotesScroll.Y
+	if isTablet {
+		scrollY = a.tabletQuotesScroll.Y
+	}
+	// 上滑时自然淡出顶部轻量导语，把首屏与阅读空间彻底让给诗歌卡片
+	introOpacity := float32(1.0)
+	if scrollY > 0 {
+		introOpacity = max(0, 1-scrollY/36)
+	}
 
-		// V1.0 类型筛选条：全部 / 诗歌节选 / 独立散句
+	ui.Column(c.Key("quotes-subtab")).Padding(8, 18, bottomPad, 18).Gap(10).FillWidth().Children(func() {
+		// 弱化的单行导语 + 右侧极简「记一张」入口（随向上滑动自然收起/淡出）
+		ui.Row(c.Key("quotes-intro-bar")).
+			FillWidth().
+			AlignItems(ui.Center).
+			Opacity(introOpacity).
+			Children(func() {
+				ui.Row(c).Grow(1).Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "留住的句子").Font(theme.FontSerif).FontSize(14).FontWeight(600).TextColor(pal.TextSecondary)
+					ui.Text(c, "·  片段，也有来处").Font(theme.FontNote).FontSize(12).Italic().TextColor(pal.TextMuted).MaxLines(1)
+				})
+				addQuoteBtn := ui.Row(c.Key("quick-add-quote")).
+					Padding(4, 2, 4, 8).
+					Gap(4).
+					Radius(6).
+					AlignItems(ui.Center).
+					Cursor(ui.CursorPointer)
+				theme.ApplyPressScale(addQuoteBtn, 0.94)
+				addQuoteBtn.Children(func() {
+					ui.Icon(c, components.IconBookmark).Width(13.5).Height(13.5).TextColor(pal.Accent)
+					ui.Text(c, "记一张").Font(theme.FontSans).FontSize(12).FontWeight(500).TextColor(pal.Accent)
+				})
+				if addQuoteBtn.Clicked() {
+					a.openNewQuoteModal()
+				}
+			})
+
+		// V1.0 类型筛选条：全部 / 诗歌节选 / 独立散句（紧凑克制）
 		ui.Row(c.Key("quote-kind-tabs")).Gap(18).AlignItems(ui.Center).Children(func() {
 			kinds := []struct {
 				kind  domain.QuoteKind
@@ -527,13 +613,19 @@ func (a *AppUI) renderQuotesSubTab(c *ui.Context, pal theme.Palette, isTablet bo
 			}
 			for _, k := range kinds {
 				active := a.quoteKind == k.kind
-				btn := ui.Box(c.Key("qk-"+k.label)).Padding(4, 2).Cursor(ui.CursorPointer)
+				btn := ui.Column(c.Key("qk-"+k.label)).AlignItems(ui.Center).Gap(3).Padding(2, 0).Cursor(ui.CursorPointer)
 				btn.Children(func() {
-					t := ui.Text(c, k.label).FontSize(14)
+					t := ui.Text(c, k.label).Font(theme.FontSans).FontSize(13)
 					if active {
-						t.Bold().TextColor(pal.TextPrimary)
+						t.FontWeight(600).TextColor(pal.TextPrimary)
 					} else {
 						t.TextColor(pal.TextMuted)
+					}
+					dot := ui.Box(c).Width(14).Height(1.5).Radius(1).Transition(theme.ColorTransition())
+					if active {
+						dot.Background(pal.Accent)
+					} else {
+						dot.Background(ui.Transparent)
 					}
 				})
 				if btn.Clicked() {
@@ -545,25 +637,28 @@ func (a *AppUI) renderQuotesSubTab(c *ui.Context, pal theme.Palette, isTablet bo
 
 		// 按「原书出处 / 作者」筛选（V1.0 不按收藏筛选）
 		if len(a.quoteFacets.SourceBooks) > 0 || len(a.quoteFacets.Authors) > 0 {
-			ui.ScrollHorizontal(c.Key("quote-facets-scroll")).FillWidth().Height(34).Scrollbars(false).Children(func() {
-				ui.Row(c).Gap(8).Padding(2, 0).Children(func() {
+			ui.ScrollHorizontal(c.Key("quote-facets-scroll")).FillWidth().Height(28).Scrollbars(false).Children(func() {
+				ui.Row(c).Gap(7).Padding(1, 0).Children(func() {
 					renderChip := func(key, label string, active bool, onClick func()) {
 						bg := pal.Surface
 						fg := pal.TextSecondary
 						bd := pal.Border
 						if active {
-							bg = pal.Accent
-							fg = pal.AccentText
-							bd = pal.Accent
+							bg = pal.Accent.Alpha(0.11)
+							fg = pal.Accent
+							bd = pal.Accent.Alpha(0.45)
 						}
 						chip := ui.Box(c.Key(key)).
-							Padding(5, 10).
+							Padding(4, 10).
 							Radius(999).
 							Background(bg).
 							Border(1, bd).
 							Cursor(ui.CursorPointer)
 						chip.Children(func() {
-							ui.Text(c, label).FontSize(12).TextColor(fg)
+							t := ui.Text(c, label).Font(theme.FontSans).FontSize(11.5).TextColor(fg)
+							if active {
+								t.FontWeight(600)
+							}
 						})
 						if chip.Clicked() {
 							onClick()
@@ -614,9 +709,9 @@ func (a *AppUI) renderQuotesSubTab(c *ui.Context, pal theme.Palette, isTablet bo
 				Background(pal.Surface).
 				Border(1, pal.Border).
 				Children(func() {
-					ui.Text(c, "还没有留住的散页").FontSize(15).Bold().TextColor(pal.TextPrimary)
+					ui.Text(c, "还没有留住的散页").Font(theme.FontSerif).FontSize(15).Bold().TextColor(pal.TextPrimary)
 					ui.Text(c, "在读诗时划选诗行点「留作散页」，或直接手动记下一句打动你的话。").
-						FontSize(13).TextColor(pal.TextMuted)
+						Font(theme.FontSans).FontSize(13).TextColor(pal.TextMuted)
 					if ui.PrimaryButton(c, "+ 记一张散页").Clicked() {
 						a.openNewQuoteModal()
 					}
@@ -630,7 +725,7 @@ func (a *AppUI) renderQuotesSubTab(c *ui.Context, pal theme.Palette, isTablet bo
 			buckets[i%cols] = append(buckets[i%cols], qv)
 		}
 
-		ui.Row(c.Key("quotes-masonry")).FillWidth().Gap(12).AlignItems(ui.Start).Children(func() {
+		ui.Row(c.Key("quotes-masonry")).FillWidth().Gap(12).Padding(2, 0, 0, 0).AlignItems(ui.Start).Children(func() {
 			for colIdx := 0; colIdx < cols; colIdx++ {
 				ui.Column(c.Key(fmt.Sprintf("qcol-%d", colIdx))).Grow(1).Gap(12).Children(func() {
 					for rowIdx, qv := range buckets[colIdx] {
@@ -644,73 +739,86 @@ func (a *AppUI) renderQuotesSubTab(c *ui.Context, pal theme.Palette, isTablet bo
 }
 
 func (a *AppUI) renderQuoteCard(c *ui.Context, pal theme.Palette, qv storage.QuoteView, idx int) {
-	swatches := pal.QuoteSwatches
-	var sw theme.CardSwatch
-	if qv.EffectiveKind == domain.QuoteKindStandalone {
-		// 独立散句优先使用沉静暖白细线卡（与原型右下角一致）
-		sw = swatches[len(swatches)-1]
-	} else {
-		sw = swatches[idx%len(swatches)]
-	}
+	isStandalone := qv.EffectiveKind == domain.QuoteKindStandalone
+	sw := pal.QuoteSwatchFor(idx, isStandalone)
+	poetryFont := theme.PoetryFont(a.settings.FontFamily)
 
-	tagLabel := "诗歌节选"
-	if qv.EffectiveKind == domain.QuoteKindStandalone {
-		tagLabel = "独立散句"
-	}
-
+	// 约 80% 保持纸白/浅米细线卡 + 纸张微肌理；仅约 20% 彩色点缀；整张可点击查看详情/跳读原诗
 	card := ui.Column(c.Key("qcard-"+qv.Quote.ID)).
 		FillWidth().
-		Padding(16, 15).
-		Gap(10).
+		Padding(18, 15, 14, 15).
+		Gap(13).
 		Radius(4).
 		Background(sw.Bg).
 		Border(1, sw.Border).
+		Clip().
 		Cursor(ui.CursorPointer)
 	theme.ApplyPressScale(card, 0.975)
+
+	// 纸白卡加极轻的纸片落影，彩色卡叠 4.8% 纸张肌理
+	if !sw.IsFilled && !pal.IsDark() {
+		card.Shadow(0, 2, 7, -1, ui.RGBA(32, 26, 18, 0.055))
+	}
+	grainOpacity := float32(0.036)
+	if sw.IsFilled {
+		grainOpacity = 0.048
+	}
+	if pal.ID == theme.PresetEditorial && !sw.IsFilled {
+		grainOpacity = 0
+	}
+	if grainOpacity > 0 {
+		darkSurf := sw.IsDarkSurface()
+		card.Draw(func(p *ui.Painter, r ui.Rect) {
+			theme.DrawPaperTexture(p, r, 4, darkSurf, grainOpacity)
+		})
+	}
+
 	card.Children(func() {
-		ui.Text(c, tagLabel).FontSize(11).TextColor(sw.Muted)
-
-		// 非满底卡片在顶部配一根极细的主题强调线
-		if !sw.IsFilled {
-			ui.Box(c).FillWidth().Height(1.5).Background(sw.Accent)
-		}
-
+		// 信息减法：诗句直接作为视觉核心，拉大行距与内边距让断行有韵律感
 		ui.Text(c, qv.Quote.Content).
-			FontSize(15).FontWeight(500).LineHeight(1.58).TextColor(sw.Text)
+			Font(poetryFont).
+			FontSize(14.5).
+			FontWeight(400).
+			LineHeight(1.82).
+			TextColor(sw.Text)
 
-		if strings.TrimSpace(qv.Quote.Author) != "" {
-			ui.Text(c, qv.Quote.Author).FontSize(12).MaxLines(1).TextColor(sw.Muted)
-		}
+		// 极细短韵律线，代替笨重满宽分隔线
+		ui.Box(c).Width(20).Height(1).Background(sw.Accent.Alpha(0.55))
 
-		// 细分隔线
-		ui.Box(c).FillWidth().Height(1).Background(sw.Border)
-
-		// 出处行
+		// 极简底部出处 + 极小角落标记：首行排「作者 + 右角微标」，次行全宽排出处，避免双列下出处被挤断行
+		author := strings.TrimSpace(qv.Quote.Author)
 		sourceParts := []string{}
 		if qv.Quote.SourceBook != "" {
-			sourceParts = append(sourceParts, qv.Quote.SourceBook)
+			sourceParts = append(sourceParts, "《"+qv.Quote.SourceBook+"》")
 		}
 		if qv.Quote.PoemTitle != "" && qv.Quote.PoemTitle != qv.Quote.SourceBook {
 			sourceParts = append(sourceParts, qv.Quote.PoemTitle)
 		}
 		sourceText := strings.Join(sourceParts, " · ")
-		if sourceText == "" {
-			sourceText = "随手记下"
-		}
-		ui.Text(c, sourceText).FontSize(12).TextColor(sw.Muted).MaxLines(2)
 
-		// 仅「诗歌节选（且原诗集仍存在）」提供 读完整首 ↗
-		if qv.EffectiveKind == domain.QuoteKindExcerpt {
-			jump := ui.Box(c.Key("jump-"+qv.Quote.ID)).Padding(2, 0).Cursor(ui.CursorPointer)
-			jump.Children(func() {
-				ui.Text(c, "读完整首 ↗").FontSize(12).Bold().TextColor(sw.Text)
-			})
-			if jump.Clicked() {
-				a.selectShelfSubTab(components.SubTabBooks)
-				a.openBook(qv.Quote.BookID, qv.Quote.PoemID, app.ParseLineRanges(qv.Quote.HighlightLines), true)
-				return
-			}
+		cornerMark := "节选 ↗"
+		if isStandalone {
+			cornerMark = "散句"
 		}
+
+		ui.Column(c).FillWidth().Gap(3).Children(func() {
+			ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+				lead := author
+				leadClr := sw.Text.Alpha(0.82)
+				if lead == "" {
+					lead = "随手记下"
+					leadClr = sw.Muted
+				}
+				ui.Text(c, lead).Font(theme.FontNote).FontSize(12).TextColor(leadClr).MaxLines(1).Grow(1)
+				ui.Text(c, cornerMark).
+					Font(theme.FontMono).
+					FontSize(9.5).
+					TextColor(sw.Muted.Alpha(0.75))
+			})
+			if sourceText != "" {
+				ui.Text(c, sourceText).Font(theme.FontNote).FontSize(11).TextColor(sw.Muted).MaxLines(2)
+			}
+		})
 	})
 
 	if card.Clicked() {

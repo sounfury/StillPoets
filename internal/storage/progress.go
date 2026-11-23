@@ -72,7 +72,20 @@ func setLocalScroll(bookID string, ratio float64) sqlite.Statement {
 }
 
 func (s *Store) RecordPoemRead(ctx context.Context, bookID, poemID string, scrollRatio float64, totalPoems int) (domain.ReadingProgress, error) {
+	p, _, err := s.recordPoemProgress(ctx, bookID, poemID, scrollRatio, totalPoems, true)
+	return p, err
+}
+
+// RecordPoemPeek 记录一次偶遇/直达浏览（如小组件、今日重读、散页跳原诗、全局检索）：
+// 计入已读诗篇集合 ReadPoemIDs 并维持完读状态流转，但严格冻结主线续读位置 LastPoemID、PositionVer 与本机滚动比例，
+// 避免打断顺序阅读进度或抢占首页「继续阅读」。若本诗已读且状态未变，则不产生脏写。
+func (s *Store) RecordPoemPeek(ctx context.Context, bookID, poemID string, totalPoems int) (domain.ReadingProgress, bool, error) {
+	return s.recordPoemProgress(ctx, bookID, poemID, 0, totalPoems, false)
+}
+
+func (s *Store) recordPoemProgress(ctx context.Context, bookID, poemID string, scrollRatio float64, totalPoems int, updatePosition bool) (domain.ReadingProgress, bool, error) {
 	var progress domain.ReadingProgress
+	changed := false
 	err := s.mutate(ctx, func(v domain.Version, now int64) ([]sqlite.Statement, error) {
 		var err error
 		progress, err = s.GetProgress(ctx, bookID)
@@ -87,26 +100,43 @@ func (s *Store) RecordPoemRead(ctx context.Context, bookID, poemID string, scrol
 				}
 			}
 		}
-		progress.LastPoemID, progress.PositionVer, progress.LocalScrollRatio = poemID, v, scrollRatio
-		if poemID != "" {
+
+		readChanged := false
+		if poemID != "" && !slices.Contains(progress.ReadPoemIDs, poemID) {
 			progress.ReadPoemIDs = append(progress.ReadPoemIDs, poemID)
 			slices.Sort(progress.ReadPoemIDs)
 			progress.ReadPoemIDs = slices.Compact(progress.ReadPoemIDs)
+			readChanged = true
 		}
+
+		statusChanged := false
 		if progress.Status != domain.ReadStatusFinished {
 			switch {
 			case totalPoems > 0 && len(progress.ReadPoemIDs) >= totalPoems:
 				progress.Status, progress.FinishedAt, progress.StatusVer = domain.ReadStatusFinished, now, v
+				statusChanged = true
 			case progress.Status == domain.ReadStatusUnread:
 				progress.Status, progress.StatusVer = domain.ReadStatusReading, v
+				statusChanged = true
 			}
 		}
-		return []sqlite.Statement{putProgress(progress), setLocalScroll(bookID, scrollRatio)}, nil
+
+		if updatePosition {
+			progress.LastPoemID, progress.PositionVer, progress.LocalScrollRatio = poemID, v, scrollRatio
+			changed = true
+			return []sqlite.Statement{putProgress(progress), setLocalScroll(bookID, scrollRatio)}, nil
+		}
+
+		if !readChanged && !statusChanged {
+			return nil, nil
+		}
+		changed = true
+		return []sqlite.Statement{putProgress(progress)}, nil
 	})
 	if err != nil {
-		return domain.ReadingProgress{}, err
+		return domain.ReadingProgress{}, false, err
 	}
-	return progress, nil
+	return progress, changed, nil
 }
 
 func (s *Store) UpdateLocalScroll(ctx context.Context, bookID string, ratio float64) error {

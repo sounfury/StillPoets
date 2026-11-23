@@ -26,35 +26,76 @@ type CardSwatch struct {
 	Text     ui.Color
 	Muted    ui.Color
 	Border   ui.Color
-	IsFilled bool // true 表示深/彩底色卡，false 表示暖白细线卡
+	IsFilled bool // true 表示深/彩底色卡，false 表示纸白/浅米细线卡
+}
+
+// IsDarkSurface 粗略判断色块底色是否偏暗（用于决定纸张肌理叠暖白高光还是暖墨纹理）。
+func (s CardSwatch) IsDarkSurface() bool {
+	lum := 0.299*float32(s.Bg.R) + 0.587*float32(s.Bg.G) + 0.114*float32(s.Bg.B)
+	return lum < 140
 }
 
 // Palette 定义应用与小组件共享的语义配色 Token。
 type Palette struct {
-	ID            PresetID
-	Name          string
-	Subtitle      string
-	HeroStyle     HeroStyle
-	Background    ui.Color
-	ReaderPaper   ui.Color
-	Surface       ui.Color
-	SurfaceMuted  ui.Color
-	Border        ui.Color
-	TextPrimary   ui.Color
-	TextSecondary ui.Color
-	TextMuted     ui.Color
-	Accent        ui.Color
-	AccentText    ui.Color
-	HeroBg        ui.Color
-	HeroCorner    ui.Color
-	HighlightBg   ui.Color
-	QuoteSwatches []CardSwatch
-	CoverSwatches []CardSwatch
+	ID                  PresetID
+	Name                string
+	Subtitle            string
+	HeroStyle           HeroStyle
+	Background          ui.Color
+	ReaderPaper         ui.Color
+	Surface             ui.Color
+	SurfaceMuted        ui.Color
+	Border              ui.Color
+	TextPrimary         ui.Color
+	TextSecondary       ui.Color
+	TextMuted           ui.Color
+	Accent              ui.Color
+	AccentText          ui.Color
+	HeroBg              ui.Color
+	HeroCorner          ui.Color
+	HighlightBg         ui.Color
+	QuoteSwatches       []CardSwatch
+	QuotePaperSwatches  []CardSwatch
+	QuoteAccentSwatches []CardSwatch
+	CoverSwatches       []CardSwatch
 
 	// 供原生桌面小组件序列化使用的十六进制色值
 	BgHex     string
 	TextHex   string
 	AccentHex string
+}
+
+// IsDark 返回当前主题是否为暗色主题。
+func (p Palette) IsDark() bool {
+	return p.ID == PresetDarkMinimal
+}
+
+// PaperGrainOpacity 返回当前主题纸面背景与阅读纸张的肌理透明度（3%~5% 纸书微质感；刊物风保持纯白纸面）。
+func (p Palette) PaperGrainOpacity() float32 {
+	switch p.ID {
+	case PresetArtbook:
+		return 0.042
+	case PresetDarkMinimal:
+		return 0.038
+	default:
+		return 0
+	}
+}
+
+// QuoteSwatchFor 为第 idx 张散页挑选配色：保持约 80% 纸白/浅米细线卡，仅约 20%（每 5 张 1 张）作为彩色点缀，
+// 且在 2/3/4 列瀑布流中天然错开不相邻；独立散句始终使用沉静纸白卡。
+func (p Palette) QuoteSwatchFor(idx int, isStandalone bool) CardSwatch {
+	papers := p.QuotePaperSwatches
+	if len(papers) == 0 {
+		papers = p.QuoteSwatches
+	}
+	if !isStandalone && len(p.QuoteAccentSwatches) > 0 && idx >= 0 && idx%5 == 1 {
+		return p.QuoteAccentSwatches[(idx/5)%len(p.QuoteAccentSwatches)]
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	return papers[idx%len(papers)]
 }
 
 // Presets 返回内置预设主题集合。
@@ -78,6 +119,15 @@ func ByID(id PresetID) Palette {
 	}
 }
 
+// Resolve 根据用户所选主题、是否跟随系统深色模式以及当前系统深色状态，返回实际生效的配色板。
+// 开启跟随时，系统进入深色模式自动采用「暗夜极简」作为默认黑夜主题，退出深色模式后恢复用户所选主题。
+func Resolve(preferred PresetID, followSystemDark, systemDark bool) Palette {
+	if followSystemDark && systemDark {
+		return DarkMinimal()
+	}
+	return ByID(preferred)
+}
+
 // UITheme 将当前语义色板映射为 mygo/ui 内置控件主题（按钮、输入框、弹窗、进度条自动同步配色）。
 func (p Palette) UITheme() *ui.Theme {
 	var t *ui.Theme
@@ -95,6 +145,7 @@ func (p Palette) UITheme() *ui.Theme {
 	t.Accent = p.Accent
 	t.AccentText = p.AccentText
 	t.InactiveAccent = p.Accent
+	t.Font = FontSans
 	t.Radius = 8
 	return t
 }
@@ -124,6 +175,16 @@ func Artbook() Palette {
 			{Bg: ui.Hex("#BC5B46"), Accent: ui.Hex("#F4EAE3"), Text: ui.Hex("#FAF6F0"), Muted: ui.Hex("#F0D9D0"), Border: ui.Hex("#B0523D"), IsFilled: true},
 			{Bg: ui.Hex("#334C68"), Accent: ui.Hex("#DCE5EE"), Text: ui.Hex("#F7F9FB"), Muted: ui.Hex("#C7D4E2"), Border: ui.Hex("#2B415A"), IsFilled: true},
 			{Bg: ui.Hex("#FAF9F5"), Accent: ui.Hex("#334C68"), Text: ui.Hex("#1A1A1A"), Muted: ui.Hex("#7D7B74"), Border: ui.Hex("#DFDDD5"), IsFilled: false},
+		},
+		QuotePaperSwatches: []CardSwatch{
+			{Bg: ui.Hex("#FAF9F5"), Accent: ui.Hex("#5B6B54"), Text: ui.Hex("#1A1A1A"), Muted: ui.Hex("#7A7870"), Border: ui.Hex("#E3E0D7"), IsFilled: false},
+			{Bg: ui.Hex("#F7F5EE"), Accent: ui.Hex("#BC5B46"), Text: ui.Hex("#1A1A1A"), Muted: ui.Hex("#7D7A72"), Border: ui.Hex("#E1DDD3"), IsFilled: false},
+			{Bg: ui.Hex("#FAF9F5"), Accent: ui.Hex("#334C68"), Text: ui.Hex("#1A1A1A"), Muted: ui.Hex("#7A7870"), Border: ui.Hex("#E3E0D7"), IsFilled: false},
+		},
+		QuoteAccentSwatches: []CardSwatch{
+			{Bg: ui.Hex("#D5DEC9"), Accent: ui.Hex("#4E5F47"), Text: ui.Hex("#1C1D1A"), Muted: ui.Hex("#4D5649"), Border: ui.Hex("#C5D0BA"), IsFilled: true},
+			{Bg: ui.Hex("#BF624D"), Accent: ui.Hex("#F6EDE6"), Text: ui.Hex("#FBF7F2"), Muted: ui.Hex("#F0DBD3"), Border: ui.Hex("#B25742"), IsFilled: true},
+			{Bg: ui.Hex("#37506C"), Accent: ui.Hex("#DDE6F0"), Text: ui.Hex("#F7F9FB"), Muted: ui.Hex("#C9D6E4"), Border: ui.Hex("#2E445D"), IsFilled: true},
 		},
 		CoverSwatches: []CardSwatch{
 			{Bg: ui.Hex("#BC5B46"), Accent: ui.Hex("#F2E8DC"), Text: ui.Hex("#FAF6F0"), Muted: ui.Hex("#F0D9D0"), Border: ui.Hex("#A84E3B"), IsFilled: true},
@@ -166,6 +227,16 @@ func Editorial() Palette {
 			{Bg: ui.Hex("#2345B5"), Accent: ui.Hex("#E3E9FA"), Text: ui.Hex("#F8FAFF"), Muted: ui.Hex("#C5D2F5"), Border: ui.Hex("#1C3A9E"), IsFilled: true},
 			{Bg: ui.Hex("#FCFCFC"), Accent: ui.Hex("#2345B5"), Text: ui.Hex("#181818"), Muted: ui.Hex("#7B7A74"), Border: border, IsFilled: false},
 		},
+		QuotePaperSwatches: []CardSwatch{
+			{Bg: paper, Accent: ui.Hex("#2345B5"), Text: ui.Hex("#181818"), Muted: ui.Hex("#73726C"), Border: border, IsFilled: false},
+			{Bg: ui.Hex("#FBFBF9"), Accent: ui.Hex("#752B36"), Text: ui.Hex("#181818"), Muted: ui.Hex("#73726C"), Border: border, IsFilled: false},
+			{Bg: paper, Accent: ui.Hex("#5B664E"), Text: ui.Hex("#181818"), Muted: ui.Hex("#73726C"), Border: border, IsFilled: false},
+		},
+		QuoteAccentSwatches: []CardSwatch{
+			{Bg: ui.Hex("#2345B5"), Accent: ui.Hex("#E3E9FA"), Text: ui.Hex("#F8FAFF"), Muted: ui.Hex("#C8D4F5"), Border: ui.Hex("#1C3A9E"), IsFilled: true},
+			{Bg: ui.Hex("#752B36"), Accent: ui.Hex("#F3E5E7"), Text: ui.Hex("#FAF6F3"), Muted: ui.Hex("#E5CACF"), Border: ui.Hex("#66242E"), IsFilled: true},
+			{Bg: ui.Hex("#5B664E"), Accent: ui.Hex("#EEF0EA"), Text: ui.Hex("#F9F9F6"), Muted: ui.Hex("#D5DCCE"), Border: ui.Hex("#4D5742"), IsFilled: true},
+		},
 		CoverSwatches: []CardSwatch{
 			{Bg: ui.Hex("#2345B5"), Accent: ui.Hex("#F2F1EC"), Text: ui.Hex("#FAFAF8"), Muted: ui.Hex("#CBD6F6"), Border: ui.Hex("#1D3999"), IsFilled: true},
 			{Bg: ui.Hex("#752B36"), Accent: ui.Hex("#F2EFEA"), Text: ui.Hex("#FAF7F5"), Muted: ui.Hex("#E4C9CD"), Border: ui.Hex("#63222C"), IsFilled: true},
@@ -203,6 +274,16 @@ func DarkMinimal() Palette {
 			{Bg: ui.Hex("#6B362C"), Accent: ui.Hex("#F1D7CE"), Text: ui.Hex("#F7EFEA"), Muted: ui.Hex("#DABAB0"), Border: ui.Hex("#7D4135"), IsFilled: true},
 			{Bg: ui.Hex("#233345"), Accent: ui.Hex("#C5D4E4"), Text: ui.Hex("#EEF3F8"), Muted: ui.Hex("#A8BACE"), Border: ui.Hex("#2E4259"), IsFilled: true},
 			{Bg: ui.Hex("#1F2024"), Accent: ui.Hex("#D0735E"), Text: ui.Hex("#ECE9E2"), Muted: ui.Hex("#9B978E"), Border: ui.Hex("#32333A"), IsFilled: false},
+		},
+		QuotePaperSwatches: []CardSwatch{
+			{Bg: ui.Hex("#1E1F23"), Accent: ui.Hex("#A8BA9F"), Text: ui.Hex("#ECE9E2"), Muted: ui.Hex("#9B978E"), Border: ui.Hex("#2E3037"), IsFilled: false},
+			{Bg: ui.Hex("#212227"), Accent: ui.Hex("#D0735E"), Text: ui.Hex("#ECE9E2"), Muted: ui.Hex("#9B978E"), Border: ui.Hex("#31333B"), IsFilled: false},
+			{Bg: ui.Hex("#1E1F23"), Accent: ui.Hex("#8FA9C4"), Text: ui.Hex("#ECE9E2"), Muted: ui.Hex("#9B978E"), Border: ui.Hex("#2E3037"), IsFilled: false},
+		},
+		QuoteAccentSwatches: []CardSwatch{
+			{Bg: ui.Hex("#242D26"), Accent: ui.Hex("#A8BA9F"), Text: ui.Hex("#ECE9E2"), Muted: ui.Hex("#A5AD9F"), Border: ui.Hex("#323D34"), IsFilled: true},
+			{Bg: ui.Hex("#63332A"), Accent: ui.Hex("#F1D7CE"), Text: ui.Hex("#F7EFEA"), Muted: ui.Hex("#DABAB0"), Border: ui.Hex("#763E33"), IsFilled: true},
+			{Bg: ui.Hex("#233345"), Accent: ui.Hex("#C5D4E4"), Text: ui.Hex("#EEF3F8"), Muted: ui.Hex("#A8BACE"), Border: ui.Hex("#2E4259"), IsFilled: true},
 		},
 		CoverSwatches: []CardSwatch{
 			{Bg: ui.Hex("#7D3F32"), Accent: ui.Hex("#DFD5C8"), Text: ui.Hex("#F7F3EE"), Muted: ui.Hex("#DFC4BB"), Border: ui.Hex("#8E4A3C"), IsFilled: true},

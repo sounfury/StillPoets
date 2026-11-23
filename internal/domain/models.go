@@ -384,17 +384,22 @@ func NormalizeWidgetRefreshMinutes(minutes int) int {
 
 // WidgetThemeConfig 定义小组件视觉主题，与原生 WidgetKit / Glance 共享。
 type WidgetThemeConfig struct {
-	Preset      string `json:"preset"`               // artbook | editorial | dark_minimal
-	FontFamily  string `json:"fontFamily,omitempty"` // 内置或已注册的自定义字体名
-	FontFile    string `json:"fontFile,omitempty"`   // 本地字体文件名
-	BgColor     string `json:"bgColor"`
-	TextColor   string `json:"textColor"`
-	AccentColor string `json:"accentColor"`
+	Preset           string `json:"preset"`                     // artbook | editorial | dark_minimal
+	FollowSystemDark bool   `json:"followSystemDark,omitempty"` // 开启后系统进入深色模式时自动切换为暗夜极简配色
+	FontFamily       string `json:"fontFamily,omitempty"`       // 内置或已注册的自定义字体名
+	FontFile         string `json:"fontFile,omitempty"`         // 本地字体文件名
+	BgColor          string `json:"bgColor"`
+	TextColor        string `json:"textColor"`
+	AccentColor      string `json:"accentColor"`
+	DarkBgColor      string `json:"darkBgColor,omitempty"`
+	DarkTextColor    string `json:"darkTextColor,omitempty"`
+	DarkAccentColor  string `json:"darkAccentColor,omitempty"`
 }
 
 // Settings 保存本机应用外观与小组件偏好（V1.0 仅本机存储，不跨端同步；严禁包含 WebDAV 密码）。
 type Settings struct {
 	ThemePreset          string            `json:"themePreset"`
+	FollowSystemDark     *bool             `json:"followSystemDark,omitempty"`  // nil 表示默认开启：系统进入深色模式自动切换为暗夜极简
 	UseOriginalCover     bool              `json:"useOriginalCover,omitempty"`
 	FloatingBottomBar    *bool             `json:"floatingBottomBar,omitempty"` // nil 表示跟随平台默认（iOS 开启、其他平台关闭）
 	FontFamily           string            `json:"fontFamily"`
@@ -405,6 +410,14 @@ type Settings struct {
 	WidgetRefreshMinutes int               `json:"widgetRefreshMinutes,omitempty"`
 	WidgetTheme          WidgetThemeConfig `json:"widgetTheme"`
 	UpdatedAt            int64             `json:"updatedAt"`
+}
+
+// ShouldFollowSystemDark 返回是否开启「跟随系统深色模式」（未显式设置时默认开启）。
+func (s Settings) ShouldFollowSystemDark() bool {
+	if s.FollowSystemDark == nil {
+		return true
+	}
+	return *s.FollowSystemDark
 }
 
 // WidgetTimeline 是主 App 预编译写入共享容器、供原生小组件直接消费的快照协议。

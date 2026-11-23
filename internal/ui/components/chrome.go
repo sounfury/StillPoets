@@ -28,27 +28,41 @@ const (
 
 // BrandHeader 渲染顶部品牌行（StillPoets + 搜索 + 新增），全部新增操作收敛至顶部 "+"。
 func BrandHeader(c *ui.Context, pal theme.Palette, title string, showActions bool, onSearch, onAdd func()) {
+	titleFont := theme.FontSerif
+	titleSize := float32(21)
+	letterSp := float32(0.4)
+	if title == "StillPoets" {
+		titleFont = theme.FontBrand
+		titleSize = 23
+		letterSp = 0.25
+	}
 	ui.Row(c.Key("brand-header")).
 		FillWidth().
-		Padding(14, 20, 8, 20).
+		Padding(10, 20, 4, 20).
 		AlignItems(ui.Center).
 		Children(func() {
-			ui.Text(c, title).FontSize(22).Bold().TextColor(pal.TextPrimary).Grow(1)
+			ui.Text(c, title).
+				Font(titleFont).
+				FontSize(titleSize).
+				Bold().
+				LetterSpacing(letterSp).
+				TextColor(pal.TextPrimary).
+				Grow(1)
 			if showActions {
-				ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-					searchBtn := ui.Box(c.Key("btn-search")).Width(34).Height(34).Center().Radius(8).Cursor(ui.CursorPointer)
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					searchBtn := ui.Box(c.Key("btn-search")).Width(32).Height(32).Center().Radius(8).Cursor(ui.CursorPointer)
 					theme.ApplyPressScale(searchBtn, 0.92)
 					searchBtn.Children(func() {
-						ui.Icon(c, IconSearch).Width(19).Height(19).TextColor(pal.TextPrimary)
+						ui.Icon(c, IconSearch).Width(18).Height(18).TextColor(pal.TextPrimary)
 					})
 					if searchBtn.Clicked() && onSearch != nil {
 						onSearch()
 					}
 
-					addBtn := ui.Box(c.Key("btn-add")).Width(34).Height(34).Center().Radius(8).Cursor(ui.CursorPointer)
+					addBtn := ui.Box(c.Key("btn-add")).Width(32).Height(32).Center().Radius(8).Cursor(ui.CursorPointer)
 					theme.ApplyPressScale(addBtn, 0.92)
 					addBtn.Children(func() {
-						ui.Icon(c, IconPlus).Width(20).Height(20).TextColor(pal.TextPrimary)
+						ui.Icon(c, IconPlus).Width(19).Height(19).TextColor(pal.TextPrimary)
 					})
 					if addBtn.Clicked() && onAdd != nil {
 						onAdd()
@@ -69,21 +83,21 @@ func ShelfSubTabs(c *ui.Context, pal theme.Palette, active ShelfSubTab, slidePro
 
 	row := ui.Row(c.Key("shelf-subtabs")).
 		FillWidth().
-		Padding(4, 20, 0, 20).
+		Padding(2, 20, 0, 20).
 		AlignItems(ui.End)
 	if pal.HeroStyle == theme.HeroOpenPaper {
 		row.BorderColor(pal.Border).BorderWidth(0, 0, 1, 0)
 	}
 	row.Children(func() {
 		const (
-			itemW float32 = 46
+			itemW float32 = 44
 			gapW  float32 = 22
-			barW  float32 = 32
+			barW  float32 = 28
 		)
 		// 指示条随 slideProgress 在两个标签中心之间平滑滑移
 		barX := (itemW-barW)/2 + slideProgress*(itemW+gapW)
 
-		tabsWrap := ui.Column(c.Key("shelf-subtabs-wrap")).Gap(6)
+		tabsWrap := ui.Column(c.Key("shelf-subtabs-wrap")).Gap(5)
 		tabsWrap.Children(func() {
 			ui.Row(c).Gap(gapW).AlignItems(ui.End).Children(func() {
 				items := []struct {
@@ -95,12 +109,12 @@ func ShelfSubTabs(c *ui.Context, pal theme.Palette, active ShelfSubTab, slidePro
 				}
 				for _, item := range items {
 					isActive := active == item.tab
-					col := ui.Box(c.Key(item.label)).Width(itemW).Center().Padding(4, 0, 0, 0).Cursor(ui.CursorPointer)
+					col := ui.Box(c.Key(item.label)).Width(itemW).Center().Padding(2, 0, 0, 0).Cursor(ui.CursorPointer)
 					theme.ApplyPressScale(col, 0.94)
 					col.Children(func() {
-						txt := ui.Text(c, item.label).FontSize(16)
+						txt := ui.Text(c, item.label).Font(theme.FontSans).FontSize(15).LetterSpacing(0.4)
 						if isActive {
-							txt.Bold().TextColor(pal.TextPrimary)
+							txt.FontWeight(600).TextColor(pal.TextPrimary)
 						} else {
 							txt.TextColor(pal.TextMuted)
 						}
@@ -114,9 +128,9 @@ func ShelfSubTabs(c *ui.Context, pal theme.Palette, active ShelfSubTab, slidePro
 			// 跟手滑动的主题短下划线轨道
 			ui.Box(c.Key("subtab-track")).
 				Width(itemW*2+gapW).
-				Height(2.5).
+				Height(2).
 				Draw(func(p *ui.Painter, r ui.Rect) {
-					p.Fill(ui.Rect{X: r.X + barX, Y: r.Y, W: barW, H: r.H}, pal.Accent, 1.5)
+					p.Fill(ui.Rect{X: r.X + barX, Y: r.Y, W: barW, H: r.H}, pal.Accent, 1)
 				})
 		})
 	})
@@ -198,7 +212,7 @@ func FloatingBottomNavBar(c *ui.Context, pal theme.Palette, active NavTab, onSel
 								clr = pal.Accent
 							}
 							ui.Icon(c, item.icon).Width(20).Height(20).TextColor(clr)
-							lbl := ui.Text(c, item.label).FontSize(11).TextColor(clr)
+							lbl := ui.Text(c, item.label).Font(theme.FontSans).FontSize(11).TextColor(clr)
 							if isActive {
 								lbl.Bold()
 							}
@@ -241,7 +255,7 @@ func BottomNavBar(c *ui.Context, pal theme.Palette, active NavTab, onSelect func
 						}
 					}
 					ui.Icon(c, item.icon).Width(20).Height(20).TextColor(clr)
-					lbl := ui.Text(c, item.label).FontSize(11).TextColor(clr)
+					lbl := ui.Text(c, item.label).Font(theme.FontSans).FontSize(11).TextColor(clr)
 					if isActive {
 						lbl.Bold()
 					}
@@ -272,7 +286,7 @@ func TabletNavRail(c *ui.Context, pal theme.Palette, active NavTab, onSelect fun
 		AlignItems(ui.Center).
 		Gap(22).
 		Children(func() {
-			ui.Text(c, "S").FontSize(26).Bold().Italic().TextColor(pal.TextPrimary).Padding(0, 0, 12, 0)
+			ui.Text(c, "S").Font(theme.FontBrand).FontSize(27).Bold().Italic().TextColor(pal.TextPrimary).Padding(0, 0, 12, 0)
 			for _, item := range navItems() {
 				isActive := active == item.tab
 				col := ui.Column(c.Key(item.label)).
@@ -293,7 +307,7 @@ func TabletNavRail(c *ui.Context, pal theme.Palette, active NavTab, onSelect fun
 						}
 					}
 					ui.Icon(c, item.icon).Width(21).Height(21).TextColor(clr)
-					lbl := ui.Text(c, item.label).FontSize(11).TextColor(clr)
+					lbl := ui.Text(c, item.label).Font(theme.FontSans).FontSize(11).TextColor(clr)
 					if isActive {
 						lbl.Bold()
 					}
@@ -328,7 +342,7 @@ func SyncToastPill(c *ui.Context, pal theme.Palette, message string, onClick fun
 	theme.ApplyPressScale(pill, 0.96)
 	pill.Children(func() {
 		ui.Icon(c, IconCloudCheck).Width(15).Height(15).TextColor(pal.Accent)
-		ui.Text(c, message).FontSize(12).TextColor(pal.TextSecondary)
+		ui.Text(c, message).Font(theme.FontSans).FontSize(12).TextColor(pal.TextSecondary)
 	})
 	if pill.Clicked() && onClick != nil {
 		onClick()

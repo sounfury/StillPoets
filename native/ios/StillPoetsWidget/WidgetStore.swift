@@ -6,19 +6,27 @@ import SwiftUI
 
 struct WidgetThemePayload: Codable, Equatable {
     var preset: String?
+    var followSystemDark: Bool?
     var fontFamily: String?
     var fontFile: String?
     var bgColor: String?
     var textColor: String?
     var accentColor: String?
+    var darkBgColor: String?
+    var darkTextColor: String?
+    var darkAccentColor: String?
 
     static let fallback = WidgetThemePayload(
         preset: "artbook",
+        followSystemDark: true,
         fontFamily: nil,
         fontFile: nil,
         bgColor: "#F4F4EF",
         textColor: "#1A1A1A",
-        accentColor: "#BC5B46"
+        accentColor: "#BC5B46",
+        darkBgColor: "#151517",
+        darkTextColor: "#ECE9E2",
+        darkAccentColor: "#D0735E"
     )
 }
 

@@ -132,18 +132,32 @@ struct StillPoetsTimelineProvider: TimelineProvider {
 
 struct StillPoetsWidgetView: View {
     @Environment(\.widgetFamily) private var family
+    @Environment(\.colorScheme) private var colorScheme
     let entry: StillPoetsWidgetEntry
 
+    private var useDarkAppearance: Bool {
+        (entry.theme.followSystemDark ?? false) && colorScheme == .dark
+    }
+
     private var bgColor: Color {
-        Color(hex: entry.theme.bgColor, fallback: Color(red: 0.969, green: 0.953, blue: 0.914))
+        if useDarkAppearance {
+            return Color(hex: entry.theme.darkBgColor, fallback: Color(red: 0.082, green: 0.082, blue: 0.090))
+        }
+        return Color(hex: entry.theme.bgColor, fallback: Color(red: 0.969, green: 0.953, blue: 0.914))
     }
 
     private var textColor: Color {
-        Color(hex: entry.theme.textColor, fallback: Color(red: 0.141, green: 0.122, blue: 0.102))
+        if useDarkAppearance {
+            return Color(hex: entry.theme.darkTextColor, fallback: Color(red: 0.925, green: 0.914, blue: 0.886))
+        }
+        return Color(hex: entry.theme.textColor, fallback: Color(red: 0.141, green: 0.122, blue: 0.102))
     }
 
     private var accentColor: Color {
-        Color(hex: entry.theme.accentColor, fallback: Color(red: 0.702, green: 0.361, blue: 0.243))
+        if useDarkAppearance {
+            return Color(hex: entry.theme.darkAccentColor, fallback: Color(red: 0.816, green: 0.451, blue: 0.369))
+        }
+        return Color(hex: entry.theme.accentColor, fallback: Color(red: 0.702, green: 0.361, blue: 0.243))
     }
 
     private var mutedColor: Color {

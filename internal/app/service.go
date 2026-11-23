@@ -795,6 +795,16 @@ func (s *Service) RecordPoemRead(ctx context.Context, bookID, poemID string, scr
 	return p, err
 }
 
+// RecordPoemPeek 记录偶遇/直达浏览：仅计入 ReadPoemIDs，不修改续读位置 LastPoemID。
+func (s *Service) RecordPoemPeek(ctx context.Context, bookID, poemID string, totalPoems int) (domain.ReadingProgress, error) {
+	p, changed, err := s.store.RecordPoemPeek(ctx, bookID, poemID, totalPoems)
+	if err == nil && changed {
+		s.notifyDataChanged()
+		s.scheduleDebouncedSync()
+	}
+	return p, err
+}
+
 func (s *Service) MarkBookFinished(ctx context.Context, bookID string, finished bool) (domain.ReadingProgress, error) {
 	p, err := s.store.MarkBookFinished(ctx, bookID, finished)
 	if err == nil {

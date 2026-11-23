@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/mobile"
 
 	"stillpoets/internal/app"
 	"stillpoets/internal/domain"
@@ -27,7 +28,7 @@ func (a *AppUI) renderModals(c *ui.Context, pal theme.Palette) {
 func (a *AppUI) renderAddModal(c *ui.Context, pal theme.Palette) {
 	components.AnimatedSheet(c, &a.showAddModal, pal, []float32{0.44}, "新增", func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "新增").FontSize(17).Bold().TextColor(pal.TextPrimary).Grow(1)
+			ui.Text(c, "新增").Font(theme.FontSerif).FontSize(17).Bold().TextColor(pal.TextPrimary).Grow(1)
 			closeBtn := ui.Box(c.Key("add-close")).Padding(4).Cursor(ui.CursorPointer)
 			theme.ApplyPressScale(closeBtn, 0.90)
 			closeBtn.Children(func() { ui.Icon(c, components.IconClose).Width(16).Height(16).TextColor(pal.TextMuted) })
@@ -76,7 +77,7 @@ func (a *AppUI) renderQuoteEditorModal(c *ui.Context, pal theme.Palette) {
 			title = "编辑散页"
 		}
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			ui.Text(c, title).FontSize(17).Bold().TextColor(pal.TextPrimary).Grow(1)
+			ui.Text(c, title).Font(theme.FontSerif).FontSize(17).Bold().TextColor(pal.TextPrimary).Grow(1)
 			closeBtn := ui.Box(c.Key("qe-close")).Padding(4).Cursor(ui.CursorPointer)
 			theme.ApplyPressScale(closeBtn, 0.90)
 			closeBtn.Children(func() { ui.Icon(c, components.IconClose).Width(16).Height(16).TextColor(pal.TextMuted) })
@@ -148,7 +149,7 @@ func (a *AppUI) renderQuoteDetailModal(c *ui.Context, pal theme.Palette) {
 			tag = "诗歌节选"
 		}
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			ui.Text(c, tag).FontSize(12).Bold().TextColor(pal.Accent).Grow(1)
+			ui.Text(c, tag).Font(theme.FontMono).FontSize(11).LetterSpacing(0.6).TextColor(pal.Accent).Grow(1)
 			closeBtn := ui.Box(c.Key("qd-close")).Padding(4).Cursor(ui.CursorPointer)
 			theme.ApplyPressScale(closeBtn, 0.90)
 			closeBtn.Children(func() { ui.Icon(c, components.IconClose).Width(16).Height(16).TextColor(pal.TextMuted) })
@@ -157,7 +158,12 @@ func (a *AppUI) renderQuoteDetailModal(c *ui.Context, pal theme.Palette) {
 			}
 		})
 
-		ui.Text(c, qv.Quote.Content).FontSize(19).Bold().LineHeight(1.65).TextColor(pal.TextPrimary)
+		ui.Text(c, qv.Quote.Content).
+			Font(theme.PoetryFont(a.settings.FontFamily)).
+			FontSize(18.5).
+			FontWeight(400).
+			LineHeight(1.78).
+			TextColor(pal.TextPrimary)
 
 		metaParts := []string{}
 		if qv.Quote.Author != "" {
@@ -170,7 +176,7 @@ func (a *AppUI) renderQuoteDetailModal(c *ui.Context, pal theme.Palette) {
 			metaParts = append(metaParts, qv.Quote.PoemTitle)
 		}
 		if len(metaParts) > 0 {
-			ui.Text(c, strings.Join(metaParts, " · ")).FontSize(13).TextColor(pal.TextMuted)
+			ui.Text(c, strings.Join(metaParts, " · ")).Font(theme.FontNote).FontSize(13).TextColor(pal.TextMuted)
 		}
 
 		ui.Divider(c)
@@ -180,7 +186,7 @@ func (a *AppUI) renderQuoteDetailModal(c *ui.Context, pal theme.Palette) {
 				if ui.PrimaryButton(c, "读完整首 ↗").Clicked() {
 					a.showQuoteDetail = false
 					a.selectShelfSubTab(components.SubTabBooks)
-					a.openBook(qv.Quote.BookID, qv.Quote.PoemID, app.ParseLineRanges(qv.Quote.HighlightLines), true)
+					a.openBookWithSource(qv.Quote.BookID, qv.Quote.PoemID, app.ParseLineRanges(qv.Quote.HighlightLines), true, entryQuote)
 				}
 			}
 			ui.Spacer(c)
@@ -214,7 +220,7 @@ func (a *AppUI) renderQuoteDetailModal(c *ui.Context, pal theme.Palette) {
 func (a *AppUI) renderGroupManagerModal(c *ui.Context, pal theme.Palette) {
 	components.AnimatedDialog(c, "groups", &a.showGroupModal, pal, 440, 540, func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "管理诗集分组").FontSize(17).Bold().TextColor(pal.TextPrimary).Grow(1)
+			ui.Text(c, "管理诗集分组").Font(theme.FontSerif).FontSize(17).Bold().TextColor(pal.TextPrimary).Grow(1)
 			closeBtn := ui.Box(c.Key("gm-close")).Padding(4).Cursor(ui.CursorPointer)
 			theme.ApplyPressScale(closeBtn, 0.90)
 			closeBtn.Children(func() { ui.Icon(c, components.IconClose).Width(16).Height(16).TextColor(pal.TextMuted) })
@@ -411,7 +417,7 @@ func (a *AppUI) renderSearchModal(c *ui.Context, pal theme.Palette) {
 							a.showSearchModal = false
 							a.activeTab = components.TabShelf
 							a.selectShelfSubTab(components.SubTabBooks)
-							a.openBook(p.BookID, p.ID, nil, true)
+							a.openBookWithSource(p.BookID, p.ID, nil, true, entrySearch)
 						}
 					}
 				}
@@ -501,6 +507,9 @@ func (a *AppUI) renderTOCModal(c *ui.Context, pal theme.Palette) {
 				a.mu.Unlock()
 				a.readerMobile = false
 				a.activePoems = nil
+				a.readerEntrySource = entryMainline
+				a.peekBannerHidden = false
+				a.pendingPoemID = ""
 				go func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
@@ -551,6 +560,7 @@ func (a *AppUI) renderTOCModal(c *ui.Context, pal theme.Palette) {
 				for i, p := range a.activePoems {
 					i, p := i, p
 					isCurrent := i == a.activePoemIdx
+					isMainline := prog.LastPoemID != "" && p.ID == prog.LastPoemID
 					_, isFav := a.activeFavorites[p.ID]
 					bg := ui.Transparent
 					if isCurrent {
@@ -572,6 +582,11 @@ func (a *AppUI) renderTOCModal(c *ui.Context, pal theme.Palette) {
 						} else {
 							titleEl.TextColor(pal.TextPrimary)
 						}
+						if isMainline {
+							ui.Box(c).Padding(2, 6).Radius(999).Border(1, pal.Accent).Children(func() {
+								ui.Text(c, "续读").FontSize(10).TextColor(pal.Accent)
+							})
+						}
 						if !p.IsPoem() {
 							ui.Text(c, "附文").FontSize(10).TextColor(pal.TextMuted)
 						}
@@ -581,7 +596,11 @@ func (a *AppUI) renderTOCModal(c *ui.Context, pal theme.Palette) {
 					})
 					if row.Clicked() {
 						a.showTOCModal = false
-						a.navigatePoem(book.ID, i)
+						if a.readerEntrySource.isPeek() && isMainline {
+							a.returnToMainlineProgress(book.ID)
+						} else {
+							a.navigatePoem(book.ID, i)
+						}
 					}
 				}
 			})
@@ -603,8 +622,7 @@ func (a *AppUI) renderTypographyModal(c *ui.Context, pal theme.Palette) {
 
 		ui.Row(c.Key("typo-themes")).FillWidth().Gap(8).Children(func() {
 			for _, preset := range theme.Presets() {
-				active := theme.PresetID(a.settings.ThemePreset) == preset.ID ||
-					(a.settings.ThemePreset == "" && preset.ID == theme.PresetArtbook)
+				active := pal.ID == preset.ID
 				btn := ui.Box(c.Key("tp-"+string(preset.ID))).
 					Grow(1).
 					Padding(8).
@@ -625,6 +643,23 @@ func (a *AppUI) renderTypographyModal(c *ui.Context, pal theme.Palette) {
 				if btn.Clicked() {
 					a.applyThemePreset(preset)
 				}
+			}
+		})
+
+		ui.Row(c.Key("typo-follow-dark")).FillWidth().AlignItems(ui.Center).Children(func() {
+			followDark := a.settings.ShouldFollowSystemDark()
+			ui.Column(c).Grow(1).Gap(2).Children(func() {
+				ui.Text(c, "跟随系统深色模式").FontSize(13).TextColor(pal.TextSecondary)
+				hint := "深色模式自动切换为「暗夜极简」"
+				if followDark && a.systemDark {
+					hint = "当前已随系统切换为「暗夜极简」"
+				} else if !followDark {
+					hint = "已关闭自动切换"
+				}
+				ui.Text(c, hint).FontSize(11).TextColor(pal.TextMuted)
+			})
+			if mobile.Switch(c.Key("sw-typo-follow-dark"), &followDark).Changed() {
+				a.toggleFollowSystemDark(followDark)
 			}
 		})
 

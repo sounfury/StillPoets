@@ -91,25 +91,42 @@ func main() {
 			return paths[0], nil
 		}
 
-		initialBg := theme.Artbook().BgHex
+		initialDark := mygo.Theme.IsDark()
+		initialPal := theme.Resolve(theme.PresetArtbook, true, initialDark)
 		if st, err := svc.LoadSettings(context.Background()); err == nil {
-			initialBg = theme.ByID(theme.PresetID(st.ThemePreset)).BgHex
+			initialPal = theme.Resolve(theme.PresetID(st.ThemePreset), st.ShouldFollowSystemDark(), initialDark)
 		}
 
 		uiInst := views.NewAppUI(svc, pickFile, nil)
+		uiInst.SetInitialSystemDark(initialDark)
 		win = mygo.NewWindow(mygo.WindowOptions{
 			Title:           "StillPoets",
 			Width:           1080,
 			Height:          720,
 			MinWidth:        360,
 			MinHeight:       600,
-			BackgroundColor: initialBg,
+			BackgroundColor: initialPal.BgHex,
 			StateKey:        "stillpoets-main",
 			Content:         ui.View(uiInst.Render),
 		})
 		uiInst.SetUIDispatch(win.Update)
 		uiInst.SetWindowBgFunc(func(hex string) {
 			_ = win.SetBackgroundColor(hex)
+		})
+		syncSystemBars := func(darkContent bool) {
+			if darkContent {
+				mygo.SystemBars.SetStyle(mygo.BarStyleLight)
+			} else {
+				mygo.SystemBars.SetStyle(mygo.BarStyleDark)
+			}
+		}
+		uiInst.SetSystemBarStyleFunc(syncSystemBars)
+		syncSystemBars(initialPal.ID == theme.PresetDarkMinimal)
+
+		// 监听手机系统深色/浅色模式变化，实时通知 UI 自动切换暗夜极简或恢复日间主题，并同步刷新桌面小组件配色
+		mygo.Theme.OnUpdated(func() {
+			uiInst.NotifySystemDarkMode(mygo.Theme.IsDark())
+			go widgetbridge.Reload(svc.WidgetTimelinePath(), svc.FontsDir())
 		})
 
 		mu.Lock()

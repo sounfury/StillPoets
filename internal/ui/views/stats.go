@@ -22,7 +22,7 @@ func (a *AppUI) renderStatsPage(c *ui.Context, pal theme.Palette, isTablet bool)
 		ui.Scroll(c.Key("stats-scroll")).Grow(1).FillWidth().Children(func() {
 			ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(12, 20, bottomPad, 20).Children(func() {
 				ui.Column(c).FillWidth().MaxWidth(layout.ReadingMaxWidthDIP + 100).Gap(18).Children(func() {
-					ui.Text(c, "阅读总览").FontSize(14).Bold().TextColor(pal.TextSecondary)
+					ui.Text(c, "阅读总览").Font(theme.FontSerif).FontSize(15).Bold().LetterSpacing(0.3).TextColor(pal.TextSecondary)
 
 					cols := 2
 					if isTablet {
@@ -50,10 +50,10 @@ func (a *AppUI) renderStatsPage(c *ui.Context, pal theme.Palette, isTablet bool)
 								Background(pal.Surface).
 								Border(1, pal.Border).
 								Children(func() {
-									ui.Text(c, m.label).FontSize(12).TextColor(pal.TextMuted)
+									ui.Text(c, m.label).Font(theme.FontSans).FontSize(12).TextColor(pal.TextMuted)
 									ui.Row(c).AlignItems(ui.End).Gap(4).Children(func() {
-										ui.Textf(c, "%d", m.value).FontSize(26).Bold().TextColor(pal.TextPrimary)
-										ui.Text(c, m.unit).FontSize(12).TextColor(pal.TextMuted).Padding(0, 0, 4, 0)
+										ui.Textf(c, "%d", m.value).Font(theme.FontSerif).FontFeatures("tnum").FontSize(27).Bold().TextColor(pal.TextPrimary)
+										ui.Text(c, m.unit).Font(theme.FontSans).FontSize(12).TextColor(pal.TextMuted).Padding(0, 0, 4, 0)
 									})
 								})
 						}
@@ -61,7 +61,7 @@ func (a *AppUI) renderStatsPage(c *ui.Context, pal theme.Palette, isTablet bool)
 
 					// 诗集阅读进度清单
 					if len(a.books) > 0 {
-						ui.Text(c, "书架阅读进度").FontSize(14).Bold().TextColor(pal.TextSecondary).Padding(8, 0, 0, 0)
+						ui.Text(c, "书架阅读进度").Font(theme.FontSerif).FontSize(15).Bold().LetterSpacing(0.3).TextColor(pal.TextSecondary).Padding(8, 0, 0, 0)
 						ui.Column(c.Key("stats-book-list")).Gap(10).FillWidth().Children(func() {
 							for _, b := range a.books {
 								prog := a.progressMap[b.ID]
@@ -91,8 +91,8 @@ func (a *AppUI) renderStatsPage(c *ui.Context, pal theme.Palette, isTablet bool)
 									components.BookCoverThumbnail(c, "st-th-"+b.ID, b.ID, a.coverImageFor(b), pal)
 									ui.Column(c).Grow(1).Gap(5).Children(func() {
 										ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-											ui.Text(c, b.Title).FontSize(14).Bold().TextColor(pal.TextPrimary).Grow(1).MaxLines(1)
-											ui.Text(c, statusText).FontSize(11).TextColor(pal.TextMuted)
+											ui.Text(c, b.Title).Font(theme.FontSerif).FontSize(14).Bold().TextColor(pal.TextPrimary).Grow(1).MaxLines(1)
+											ui.Text(c, statusText).Font(theme.FontMono).FontFeatures("tnum").FontSize(11).TextColor(pal.TextMuted)
 										})
 										ui.Progress(c, ratio).Height(3).FillWidth().TextColor(pal.Accent).Background(pal.Border)
 									})

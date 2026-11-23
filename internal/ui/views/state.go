@@ -27,6 +27,22 @@ import (
 // PickFileFunc 抽象原生文件选择框（EPUB 或字体导入），便于解耦 mygo.Dialog。
 type PickFileFunc func(title string, extensions []string) (string, error)
 
+// readerEntrySource 区分主线顺序阅读与各类偶遇直达入口。
+// 偶遇模式下仅计入已读集合 ReadPoemIDs，不覆写顺序续读位置 LastPoemID，避免打断顺序阅读。
+type readerEntrySource string
+
+const (
+	entryMainline readerEntrySource = ""       // 书架封面 / 继续阅读 / 统计页 / 默认选中
+	entryWidget   readerEntrySource = "小组件"  // 桌面小组件 Deeplink
+	entryToday    readerEntrySource = "今日重读" // 书架首页「今日重读」
+	entryQuote    readerEntrySource = "散页"    // 散页列表/详情「读完整首」
+	entrySearch   readerEntrySource = "检索"    // 全局检索命中诗篇
+)
+
+func (s readerEntrySource) isPeek() bool {
+	return s != entryMainline
+}
+
 type coverCacheEntry struct {
 	hash string
 	img  ui.ImageSource
@@ -48,9 +64,13 @@ type AppUI struct {
 	pickFile        PickFileFunc
 	repaintFn       func()
 	uiDispatch      func(func())
-	windowBgFn      func(string)
-	lastWindowBgHex string
-	registerFn      func(data []byte, family string) error
+	windowBgFn       func(string)
+	lastWindowBgHex  string
+	systemBarStyleFn func(darkContent bool)
+	lastBarDarkSet   bool
+	lastBarDark      bool
+	systemDark       bool
+	registerFn       func(data []byte, family string) error
 
 	mu          sync.Mutex // 保护回调指针、防重标记与请求序号等轻量控制状态
 	uiThreadMu  sync.Mutex // 无窗口无头测试模式下串行化 Render 与 dispatchUI
@@ -92,15 +112,18 @@ type AppUI struct {
 	deeplinkHandled   bool
 
 	// 阅读器状态
-	activeBookID     string
-	activePoems      []domain.Poem
-	activePoemIdx    int
-	activeFavorites  map[string]domain.FavoritePoem
-	highlightRanges  []app.LineRange
-	selectingLines   bool
-	selectedLines    map[int]bool
-	downloadingBooks map[string]bool
-	readerError      string
+	activeBookID      string
+	activePoems       []domain.Poem
+	activePoemIdx     int
+	activeFavorites   map[string]domain.FavoritePoem
+	highlightRanges   []app.LineRange
+	selectingLines    bool
+	selectedLines     map[int]bool
+	downloadingBooks  map[string]bool
+	readerError       string
+	readerEntrySource readerEntrySource
+	peekBannerHidden  bool
+	pendingPoemID     string
 
 	// 瞬态云同步胶囊与操作提示
 	toastMessage string
@@ -142,9 +165,11 @@ type AppUI struct {
 	davHasSecret bool
 
 	// 阅读器与双入口手势分页状态
-	poemPager     horizontalPagerState
-	shelfPager    horizontalPagerState
-	shelfDragging bool
+	poemPager          horizontalPagerState
+	shelfPager         horizontalPagerState
+	shelfDragging      bool
+	phoneQuotesScroll  ui.ScrollState
+	tabletQuotesScroll ui.ScrollState
 
 	// 排版滑块中间值（float64 适配 ui.Slider）
 	fontSizeSlider   float64
@@ -348,6 +373,7 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 			a.fontSizeSlider = 18
 			a.lineHeightSlider = 1.85
 		}
+		a.syncNativeAppearance(a.palette())
 		if groupsErr == nil {
 			a.groups = groups
 		}
@@ -409,6 +435,9 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 				a.activeFavorites = map[string]domain.FavoritePoem{}
 				a.readerMobile = false
 				a.readerError = ""
+				a.readerEntrySource = entryMainline
+				a.peekBannerHidden = false
+				a.pendingPoemID = ""
 				return
 			}
 		}
@@ -471,7 +500,7 @@ func (a *AppUI) HandleDeeplink(rawURL string) {
 			a.shelfPager.scopeKey = ""
 			a.poemPager.scopeKey = ""
 			a.showQuoteDetail = false
-			a.openBookLocked(target.BookID, target.PoemID, target.LineRanges, true, rawURL)
+			a.openBookLocked(target.BookID, target.PoemID, target.LineRanges, true, rawURL, entryWidget)
 		})
 	case app.DeeplinkQuote:
 		var reqSeq uint64
@@ -515,7 +544,7 @@ func (a *AppUI) HandleDeeplink(rawURL string) {
 					a.mu.Lock()
 					a.pendingDeeplink = rawURL
 					a.mu.Unlock()
-					a.showTransientToast("未在本地找到该散页，同步完成后将自动重试")
+					a.showTransientToastOnUI("未在本地找到该散页，同步完成后将自动重试")
 				}
 			})
 		}()
@@ -553,10 +582,13 @@ func (a *AppUI) Render(c *ui.Context) {
 		defer a.uiThreadMu.Unlock()
 	}
 
+	if sysTheme := c.Theme(); sysTheme != nil {
+		a.systemDark = sysTheme.Dark
+	}
 	pal := a.palette()
 	c.SetTheme(pal.UITheme())
 	c.Root().Background(pal.Background)
-	a.syncNativeWindowBg(pal.BgHex)
+	a.syncNativeAppearance(pal)
 
 	isTablet := layout.IsTablet(c)
 
@@ -592,21 +624,27 @@ func (a *AppUI) renderTabletShell(c *ui.Context, pal theme.Palette) {
 
 		ui.Box(c.Key("tablet-content")).Grow(1).FillHeight().Clip().Children(func() {
 			tabKey := fmt.Sprintf("tablet-tab-%d", a.activeTab)
-			ui.Box(c.Key(tabKey)).
+			tabBox := ui.Box(c.Key(tabKey)).
 				Absolute().
 				Fill().
 				Background(pal.Background).
-				Transition(theme.TabPageTransition()).
-				Children(func() {
-					switch a.activeTab {
-					case components.TabShelf:
-						a.renderTabletShelfWorkspace(c, pal)
-					case components.TabStats:
-						a.renderStatsPage(c, pal, true)
-					case components.TabProfile:
-						a.renderProfilePage(c, pal, true)
-					}
+				Transition(theme.TabPageTransition())
+			if grain := pal.PaperGrainOpacity(); grain > 0 {
+				isDark := pal.IsDark()
+				tabBox.Draw(func(p *ui.Painter, r ui.Rect) {
+					theme.DrawPaperTexture(p, r, 0, isDark, grain)
 				})
+			}
+			tabBox.Children(func() {
+				switch a.activeTab {
+				case components.TabShelf:
+					a.renderTabletShelfWorkspace(c, pal)
+				case components.TabStats:
+					a.renderStatsPage(c, pal, true)
+				case components.TabProfile:
+					a.renderProfilePage(c, pal, true)
+				}
+			})
 		})
 	})
 }
@@ -622,21 +660,27 @@ func (a *AppUI) renderPhoneShell(c *ui.Context, pal theme.Palette) {
 	floatingNav := a.useFloatingBottomNav()
 	renderBody := func() {
 		tabKey := fmt.Sprintf("phone-tab-%d", a.activeTab)
-		ui.Box(c.Key(tabKey)).
+		tabBox := ui.Box(c.Key(tabKey)).
 			Absolute().
 			Fill().
 			Background(pal.Background).
-			Transition(theme.TabPageTransition()).
-			Children(func() {
-				switch a.activeTab {
-				case components.TabShelf:
-					a.renderShelfPane(c, pal, false)
-				case components.TabStats:
-					a.renderStatsPage(c, pal, false)
-				case components.TabProfile:
-					a.renderProfilePage(c, pal, false)
-				}
+			Transition(theme.TabPageTransition())
+		if grain := pal.PaperGrainOpacity(); grain > 0 {
+			isDark := pal.IsDark()
+			tabBox.Draw(func(p *ui.Painter, r ui.Rect) {
+				theme.DrawPaperTexture(p, r, 0, isDark, grain)
 			})
+		}
+		tabBox.Children(func() {
+			switch a.activeTab {
+			case components.TabShelf:
+				a.renderShelfPane(c, pal, false)
+			case components.TabStats:
+				a.renderStatsPage(c, pal, false)
+			case components.TabProfile:
+				a.renderProfilePage(c, pal, false)
+			}
+		})
 	}
 
 	ui.Box(c.Key("phone-stage")).Fill().Clip().Children(func() {
@@ -711,7 +755,24 @@ func (a *AppUI) renderSyncToastOverlay(c *ui.Context, pal theme.Palette, isTable
 }
 
 func (a *AppUI) palette() theme.Palette {
-	return theme.ByID(theme.PresetID(a.settings.ThemePreset))
+	return theme.Resolve(
+		theme.PresetID(a.settings.ThemePreset),
+		a.settings.ShouldFollowSystemDark(),
+		a.systemDark,
+	)
+}
+
+// SetInitialSystemDark 在窗口首次渲染前写入当前系统深色模式状态。
+func (a *AppUI) SetInitialSystemDark(dark bool) {
+	a.systemDark = dark
+}
+
+// NotifySystemDarkMode 接收来自宿主（mygo.Theme.OnUpdated）的系统深浅色切换事件，触发实时主题重绘与状态栏同步。
+func (a *AppUI) NotifySystemDarkMode(dark bool) {
+	a.dispatchUI(func() {
+		a.systemDark = dark
+		a.syncNativeAppearance(a.palette())
+	})
 }
 
 // SetWindowBgFunc 注册原生窗口背景色同步回调，确保切换主题时状态栏/安全区底色同步更新。
@@ -720,6 +781,19 @@ func (a *AppUI) SetWindowBgFunc(fn func(hex string)) {
 	a.windowBgFn = fn
 	a.lastWindowBgHex = ""
 	a.mu.Unlock()
+}
+
+// SetSystemBarStyleFunc 注册系统状态栏/导航栏图标极性回调（darkContent=true 表示深色底配浅色图标）。
+func (a *AppUI) SetSystemBarStyleFunc(fn func(darkContent bool)) {
+	a.mu.Lock()
+	a.systemBarStyleFn = fn
+	a.lastBarDarkSet = false
+	a.mu.Unlock()
+}
+
+func (a *AppUI) syncNativeAppearance(pal theme.Palette) {
+	a.syncNativeWindowBg(pal.BgHex)
+	a.syncSystemBarStyle(pal.ID == theme.PresetDarkMinimal)
 }
 
 func (a *AppUI) syncNativeWindowBg(bgHex string) {
@@ -735,6 +809,19 @@ func (a *AppUI) syncNativeWindowBg(bgHex string) {
 	a.lastWindowBgHex = bgHex
 	a.mu.Unlock()
 	fn(bgHex)
+}
+
+func (a *AppUI) syncSystemBarStyle(darkContent bool) {
+	a.mu.Lock()
+	fn := a.systemBarStyleFn
+	if fn == nil || (a.lastBarDarkSet && a.lastBarDark == darkContent) {
+		a.mu.Unlock()
+		return
+	}
+	a.lastBarDarkSet = true
+	a.lastBarDark = darkContent
+	a.mu.Unlock()
+	fn(darkContent)
 }
 
 // coverImageFor 按需返回诗集原书封面的已解码图像；未开启原书封面、无封面或尚未加载完成时返回 nil（自动回退几何色块封面）。
@@ -777,7 +864,7 @@ func (a *AppUI) coverImageFor(book domain.Book) ui.ImageSource {
 	return nil
 }
 
-func (a *AppUI) handleSyncToast(st app.SyncToastState) {
+func (a *AppUI) setToastState(st app.SyncToastState, notifyRepaint bool) {
 	a.mu.Lock()
 	if a.toastTimer != nil {
 		a.toastTimer.Stop()
@@ -785,46 +872,56 @@ func (a *AppUI) handleSyncToast(st app.SyncToastState) {
 	}
 	a.toastSeq++
 	seq := a.toastSeq
+	a.toastMessage = st.Message
 	if st.Phase == app.SyncToastSuccess || st.Phase == app.SyncToastPartial || st.Phase == app.SyncToastError {
 		delay := 2200 * time.Millisecond
 		if st.Phase != app.SyncToastSuccess {
 			delay = 3500 * time.Millisecond
 		}
 		a.toastTimer = time.AfterFunc(delay, func() {
-			a.dispatchUI(func() {
-				a.mu.Lock()
-				match := a.toastSeq == seq
-				a.mu.Unlock()
-				if match {
-					a.toastMessage = ""
-				}
-			})
+			a.mu.Lock()
+			match := a.toastSeq == seq
+			if match {
+				a.toastMessage = ""
+			}
+			a.mu.Unlock()
+			if match {
+				a.requestRepaint()
+			}
 		})
 	}
 	a.mu.Unlock()
 
-	a.dispatchUI(func() {
-		a.mu.Lock()
-		match := a.toastSeq == seq
-		a.mu.Unlock()
-		if match {
-			a.toastMessage = st.Message
-		}
-	})
+	if notifyRepaint {
+		a.requestRepaint()
+	}
+}
+
+func (a *AppUI) handleSyncToast(st app.SyncToastState) {
+	a.setToastState(st, true)
 }
 
 func (a *AppUI) showTransientToast(msg string) {
-	a.handleSyncToast(app.SyncToastState{Phase: app.SyncToastSuccess, Message: msg})
+	a.setToastState(app.SyncToastState{Phase: app.SyncToastSuccess, Message: msg}, true)
+}
+
+// showTransientToastOnUI 供已在 UI 线程 / Render 点击事件中调用，避免同步重入 uiThreadMu 或 win.Update 导致死锁。
+func (a *AppUI) showTransientToastOnUI(msg string) {
+	a.setToastState(app.SyncToastState{Phase: app.SyncToastSuccess, Message: msg}, false)
 }
 
 // --- 异步业务动作 ---
 
 func (a *AppUI) openBook(bookID, poemID string, highlightRanges []app.LineRange, enterMobileReader bool) {
-	a.openBookLocked(bookID, poemID, highlightRanges, enterMobileReader, "")
+	a.openBookLocked(bookID, poemID, highlightRanges, enterMobileReader, "", entryMainline)
+}
+
+func (a *AppUI) openBookWithSource(bookID, poemID string, highlightRanges []app.LineRange, enterMobileReader bool, source readerEntrySource) {
+	a.openBookLocked(bookID, poemID, highlightRanges, enterMobileReader, "", source)
 }
 
 // openBookLocked 必须在 UI 线程上调用（来自点击事件或 dispatchUI 闭包），通过单调递增 openSeq 彻底消除切书乱序与串书污染（P0-2）。
-func (a *AppUI) openBookLocked(bookID, poemID string, highlightRanges []app.LineRange, enterMobileReader bool, deeplinkURL string) {
+func (a *AppUI) openBookLocked(bookID, poemID string, highlightRanges []app.LineRange, enterMobileReader bool, deeplinkURL string, source readerEntrySource) {
 	a.mu.Lock()
 	a.openSeq++
 	reqSeq := a.openSeq
@@ -835,6 +932,9 @@ func (a *AppUI) openBookLocked(bookID, poemID string, highlightRanges []app.Line
 	a.selectingLines = false
 	a.selectedLines = map[int]bool{}
 	a.readerError = ""
+	a.readerEntrySource = source
+	a.peekBannerHidden = false
+	a.pendingPoemID = poemID
 	if enterMobileReader {
 		a.readerMobile = true
 	}
@@ -849,7 +949,7 @@ func (a *AppUI) openBookLocked(bookID, poemID string, highlightRanges []app.Line
 	}
 
 	if targetBook != nil && targetBook.LocalState != domain.LocalStateDownloaded {
-		a.downloadBookAsync(bookID, poemID, highlightRanges, reqSeq)
+		a.downloadBookAsync(bookID, poemID, highlightRanges, reqSeq, source)
 		return
 	}
 
@@ -875,7 +975,7 @@ func (a *AppUI) openBookLocked(bookID, poemID string, highlightRanges []app.Line
 				return
 			}
 			if b.LocalState != domain.LocalStateDownloaded {
-				a.downloadBookAsync(bookID, poemID, highlightRanges, reqSeq)
+				a.downloadBookAsync(bookID, poemID, highlightRanges, reqSeq, source)
 				return
 			}
 		}
@@ -896,7 +996,7 @@ func (a *AppUI) openBookLocked(bookID, poemID string, highlightRanges []app.Line
 		for _, f := range favs {
 			favMap[f.PoemID] = f
 		}
-		prog, _ := a.svc.GetProgress(ctx, bookID)
+		prog, progErr := a.svc.GetProgress(ctx, bookID)
 
 		// 定位目标诗篇（优先显式 poemID，其次续读 LastPoemID，其次首篇正式诗）
 		idx := 0
@@ -923,6 +1023,12 @@ func (a *AppUI) openBookLocked(bookID, poemID string, highlightRanges []app.Line
 			}
 		}
 
+		// 若偶遇直达的恰好就是本书当前主线续读位置，则自然回归主线阅读，避免冗余提示条。
+		effectiveSource := source
+		if effectiveSource.isPeek() && len(poems) > 0 && idx < len(poems) && prog.LastPoemID != "" && poems[idx].ID == prog.LastPoemID {
+			effectiveSource = entryMainline
+		}
+
 		var readPoem *domain.Poem
 		a.dispatchUI(func() {
 			a.mu.Lock()
@@ -931,11 +1037,17 @@ func (a *AppUI) openBookLocked(bookID, poemID string, highlightRanges []app.Line
 			if stale {
 				return
 			}
+			if progErr == nil {
+				a.progressMap[bookID] = prog
+			}
 			a.activePoems = poems
 			a.activePoemIdx = idx
 			a.activeFavorites = favMap
 			a.poemPager.scopeKey = ""
 			a.readerError = ""
+			a.readerEntrySource = effectiveSource
+			a.peekBannerHidden = false
+			a.pendingPoemID = ""
 			if len(poems) > 0 && idx < len(poems) && enterMobileReader {
 				cp := poems[idx]
 				readPoem = &cp
@@ -943,12 +1055,16 @@ func (a *AppUI) openBookLocked(bookID, poemID string, highlightRanges []app.Line
 		})
 
 		if readPoem != nil {
-			a.recordPoemReadAsync(bookID, *readPoem, poems)
+			if effectiveSource.isPeek() {
+				a.recordPoemPeekAsync(bookID, *readPoem, poems)
+			} else {
+				a.recordPoemReadAsync(bookID, *readPoem, poems)
+			}
 		}
 	}()
 }
 
-func (a *AppUI) downloadBookAsync(bookID, poemID string, highlightRanges []app.LineRange, reqSeq uint64) {
+func (a *AppUI) downloadBookAsync(bookID, poemID string, highlightRanges []app.LineRange, reqSeq uint64, source readerEntrySource) {
 	a.mu.Lock()
 	if a.downloadingBooks[bookID] {
 		a.mu.Unlock()
@@ -987,7 +1103,7 @@ func (a *AppUI) downloadBookAsync(bookID, poemID string, highlightRanges []app.L
 				return
 			}
 			if stillTarget {
-				a.openBookLocked(bookID, poemID, highlightRanges, a.readerMobile, "")
+				a.openBookLocked(bookID, poemID, highlightRanges, a.readerMobile, "", source)
 			}
 		})
 	}()
@@ -997,12 +1113,7 @@ func (a *AppUI) recordPoemReadAsync(bookID string, poem domain.Poem, allPoems []
 	if !poem.IsPoem() {
 		return
 	}
-	totalPoems := 0
-	for _, p := range allPoems {
-		if p.IsPoem() {
-			totalPoems++
-		}
-	}
+	totalPoems := countFormalPoems(allPoems)
 	go func() {
 		// 串行写阅读进度，避免快速连续翻页时旧篇目后拿锁覆盖新续读位置（P1-14）
 		a.readOrderMu.Lock()
@@ -1013,9 +1124,34 @@ func (a *AppUI) recordPoemReadAsync(bookID string, poem domain.Poem, allPoems []
 	}()
 }
 
+func (a *AppUI) recordPoemPeekAsync(bookID string, poem domain.Poem, allPoems []domain.Poem) {
+	if !poem.IsPoem() {
+		return
+	}
+	totalPoems := countFormalPoems(allPoems)
+	go func() {
+		// 与主线写进度共享串行锁，确保偶遇写入与主线写入严格按触发顺序落库
+		a.readOrderMu.Lock()
+		defer a.readOrderMu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = a.svc.RecordPoemPeek(ctx, bookID, poem.ID, totalPoems)
+	}()
+}
+
+func countFormalPoems(allPoems []domain.Poem) int {
+	totalPoems := 0
+	for _, p := range allPoems {
+		if p.IsPoem() {
+			totalPoems++
+		}
+	}
+	return totalPoems
+}
+
 func (a *AppUI) triggerImportEPUB() {
 	if a.pickFile == nil {
-		a.showTransientToast("当前环境未注册文件选择器")
+		a.showTransientToastOnUI("当前环境未注册文件选择器")
 		return
 	}
 	a.showAddModal = false
@@ -1042,7 +1178,7 @@ func (a *AppUI) triggerImportEPUB() {
 			userNavigated := a.openSeq != startSeq
 			a.mu.Unlock()
 			if !userNavigated {
-				a.openBookLocked(res.Book.ID, "", nil, false, "")
+				a.openBookLocked(res.Book.ID, "", nil, false, "", entryMainline)
 			}
 		})
 		a.showTransientToast(fmt.Sprintf("已导入《%s》(%d 首)", res.Book.Title, res.Book.PoemCount))
@@ -1051,7 +1187,7 @@ func (a *AppUI) triggerImportEPUB() {
 
 func (a *AppUI) triggerImportFont() {
 	if a.pickFile == nil {
-		a.showTransientToast("当前环境未注册文件选择器")
+		a.showTransientToastOnUI("当前环境未注册文件选择器")
 		return
 	}
 	go func() {

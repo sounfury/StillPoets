@@ -53,6 +53,11 @@ func (s *Service) RebuildWidgetTimeline(ctx context.Context) (domain.WidgetTimel
 	if wTheme.FontFamily == "" {
 		wTheme.FontFamily = settings.FontFamily
 	}
+	darkPal := theme.DarkMinimal()
+	wTheme.FollowSystemDark = settings.ShouldFollowSystemDark()
+	wTheme.DarkBgColor = darkPal.BgHex
+	wTheme.DarkTextColor = darkPal.TextHex
+	wTheme.DarkAccentColor = darkPal.AccentHex
 
 	entries, err := s.buildWidgetEntries(ctx, settings)
 	if err != nil {

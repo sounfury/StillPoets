@@ -48,14 +48,13 @@ func (a *AppUI) renderThemeAndFontSection(c *ui.Context, pal theme.Palette, isTa
 		Background(pal.Surface).
 		Border(1, pal.Border).
 		Children(func() {
-			ui.Text(c, "外观主题与阅读字体").FontSize(16).Bold().TextColor(pal.TextPrimary)
+			ui.Text(c, "外观主题与阅读字体").Font(theme.FontSerif).FontSize(16).Bold().TextColor(pal.TextPrimary)
 			ui.Text(c, "仅保存在本机，不影响其他设备的阅读偏好").FontSize(12).TextColor(pal.TextMuted)
 
 			// 3 套内置主题切换卡
 			ui.Row(c.Key("theme-presets")).FillWidth().Gap(10).Children(func() {
 				for _, preset := range theme.Presets() {
-					active := theme.PresetID(a.settings.ThemePreset) == preset.ID ||
-						(a.settings.ThemePreset == "" && preset.ID == theme.PresetArtbook)
+					active := pal.ID == preset.ID
 					card := ui.Column(c.Key("preset-"+string(preset.ID))).
 						Grow(1).
 						Padding(12).
@@ -73,7 +72,7 @@ func (a *AppUI) renderThemeAndFontSection(c *ui.Context, pal theme.Palette, isTa
 					card.Children(func() {
 						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 							ui.Box(c).Width(12).Height(12).Radius(6).Background(preset.HeroCorner)
-							ui.Text(c, preset.Name).FontSize(13).Bold().TextColor(preset.TextPrimary)
+							ui.Text(c, preset.Name).Font(theme.FontSerif).FontSize(13).Bold().TextColor(preset.TextPrimary)
 						})
 						ui.Text(c, preset.Subtitle).FontSize(11).TextColor(preset.TextMuted).MaxLines(1)
 					})
@@ -82,6 +81,40 @@ func (a *AppUI) renderThemeAndFontSection(c *ui.Context, pal theme.Palette, isTa
 					}
 				}
 			})
+
+			// 跟随系统深色模式开关：系统进入黑夜模式自动切为「暗夜极简」，退出时恢复原浅色主题
+			ui.Row(c.Key("follow-system-dark-row")).
+				FillWidth().
+				Padding(10, 12).
+				Gap(12).
+				Radius(8).
+				Background(pal.Background).
+				Border(1, pal.Border).
+				AlignItems(ui.Center).
+				Children(func() {
+					followDark := a.settings.ShouldFollowSystemDark()
+					ui.Column(c).Grow(1).Gap(2).Children(func() {
+						ui.Text(c, "跟随系统深色模式").FontSize(13).Bold().TextColor(pal.TextPrimary)
+						var desc string
+						switch {
+						case !followDark:
+							desc = "已关闭自动切换，始终保持当前所选主题"
+						case a.systemDark:
+							dayPal := theme.ByID(theme.PresetID(a.settings.ThemePreset))
+							if dayPal.ID == theme.PresetDarkMinimal {
+								desc = "当前系统为深色模式，已启用「暗夜极简」"
+							} else {
+								desc = fmt.Sprintf("当前系统为深色模式，已自动切为「暗夜极简」；浅色模式将恢复「%s」", dayPal.Name)
+							}
+						default:
+							desc = "手机进入深色模式时，将自动切换为「暗夜极简」"
+						}
+						ui.Text(c, desc).FontSize(11).LineHeight(1.45).TextColor(pal.TextMuted)
+					})
+					if mobile.Switch(c.Key("sw-follow-system-dark"), &followDark).Changed() {
+						a.toggleFollowSystemDark(followDark)
+					}
+				})
 
 			// 书架封面展示样式开关：原书封面 vs 几何色块封面
 			ui.Row(c.Key("cover-style-row")).
@@ -153,7 +186,7 @@ func (a *AppUI) renderThemeAndFontSection(c *ui.Context, pal theme.Palette, isTa
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
 				curFont := a.settings.FontFamily
 				if curFont == "" {
-					curFont = "系统默认衬线/无衬线"
+					curFont = "默认文学衬线（宋体 / Georgia）"
 				}
 				ui.Textf(c, "当前字体：%s", curFont).FontSize(13).TextColor(pal.TextSecondary).Grow(1)
 				if ui.Button(c, "导入 .ttf / .otf").Clicked() {
@@ -204,7 +237,7 @@ func (a *AppUI) renderWebDAVSection(c *ui.Context, pal theme.Palette) {
 		Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Column(c).Grow(1).Gap(2).Children(func() {
-					ui.Text(c, "WebDAV 多端同步").FontSize(16).Bold().TextColor(pal.TextPrimary)
+					ui.Text(c, "WebDAV 多端同步").Font(theme.FontSerif).FontSize(16).Bold().TextColor(pal.TextPrimary)
 					ui.Text(c, "Per-Device 单写者代次快照 · 密码仅存入系统安全密钥链").FontSize(12).TextColor(pal.TextMuted)
 				})
 				if ov.Configured {
@@ -307,7 +340,7 @@ func (a *AppUI) renderWidgetSection(c *ui.Context, pal theme.Palette) {
 		Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Column(c).Grow(1).Gap(2).Children(func() {
-					ui.Text(c, "桌面小组件（诗笺）").FontSize(16).Bold().TextColor(pal.TextPrimary)
+					ui.Text(c, "桌面小组件（诗笺）").Font(theme.FontSerif).FontSize(16).Bold().TextColor(pal.TextPrimary)
 					ui.Text(c, "自动同步当前主题与内容池；点击诗句直达整首诗并高亮原行").
 						FontSize(12).LineHeight(1.5).TextColor(pal.TextMuted)
 				})
@@ -502,7 +535,7 @@ func (a *AppUI) renderCacheSection(c *ui.Context, pal theme.Palette) {
 		Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Column(c).Grow(1).Gap(2).Children(func() {
-					ui.Text(c, "本地离线正文缓存").FontSize(16).Bold().TextColor(pal.TextPrimary)
+					ui.Text(c, "本地离线正文缓存").Font(theme.FontSerif).FontSize(16).Bold().TextColor(pal.TextPrimary)
 					ui.Textf(c, "当前已离线缓存 %d 本诗集；清理缓存保留云端书目、阅读进度与散页", a.stats.OfflineBookCount).
 						FontSize(12).TextColor(pal.TextMuted)
 				})
@@ -518,21 +551,76 @@ func (a *AppUI) renderCacheSection(c *ui.Context, pal theme.Palette) {
 // --- 「我的」页面异步动作 ---
 
 func (a *AppUI) applyThemePreset(preset theme.Palette) {
+	// 1. 在系统深色模式下主动选择浅色主题，或浅色模式下主动常驻「暗夜极简」时，自动关闭跟随系统深色，避免选择被立即覆盖。
+	disableFollow := false
+	if a.settings.ShouldFollowSystemDark() {
+		if (a.systemDark && preset.ID != theme.PresetDarkMinimal) ||
+			(!a.systemDark && preset.ID == theme.PresetDarkMinimal) {
+			disableFollow = true
+		}
+	}
+
 	a.settings.ThemePreset = string(preset.ID)
+	if disableFollow {
+		off := false
+		a.settings.FollowSystemDark = &off
+	}
 	a.settings.WidgetTheme.Preset = string(preset.ID)
 	a.settings.WidgetTheme.BgColor = preset.BgHex
 	a.settings.WidgetTheme.TextColor = preset.TextHex
 	a.settings.WidgetTheme.AccentColor = preset.AccentHex
-	a.syncNativeWindowBg(preset.BgHex)
+	a.syncNativeAppearance(a.palette())
+
+	if disableFollow {
+		a.showTransientToastOnUI(fmt.Sprintf("已切换为「%s」（已关闭跟随系统深色）", preset.Name))
+	}
+
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_, _ = a.svc.UpdateSettings(ctx, func(st *domain.Settings) {
 			st.ThemePreset = string(preset.ID)
+			if disableFollow {
+				off := false
+				st.FollowSystemDark = &off
+			}
 			st.WidgetTheme.Preset = string(preset.ID)
 			st.WidgetTheme.BgColor = preset.BgHex
 			st.WidgetTheme.TextColor = preset.TextHex
 			st.WidgetTheme.AccentColor = preset.AccentHex
+		})
+	}()
+}
+
+func (a *AppUI) toggleFollowSystemDark(enabled bool) {
+	v := enabled
+	a.settings.FollowSystemDark = &v
+	// 若之前手动锁死在「暗夜极简」，重新开启跟随系统时将日间主题恢复为默认「画册风」，使浅色模式能正常回切。
+	restoreLight := enabled && theme.PresetID(a.settings.ThemePreset) == theme.PresetDarkMinimal
+	if restoreLight {
+		a.settings.ThemePreset = string(theme.PresetArtbook)
+	}
+	a.syncNativeAppearance(a.palette())
+
+	if enabled {
+		if a.systemDark {
+			a.showTransientToastOnUI("已开启跟随系统深色，已自动切为「暗夜极简」")
+		} else {
+			a.showTransientToastOnUI("已开启跟随系统深色模式")
+		}
+	} else {
+		a.showTransientToastOnUI("已关闭跟随系统深色模式")
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = a.svc.UpdateSettings(ctx, func(st *domain.Settings) {
+			vv := enabled
+			st.FollowSystemDark = &vv
+			if restoreLight {
+				st.ThemePreset = string(theme.PresetArtbook)
+			}
 		})
 	}()
 }

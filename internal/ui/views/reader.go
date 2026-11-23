@@ -20,12 +20,19 @@ import (
 func (a *AppUI) renderReaderPane(c *ui.Context, pal theme.Palette, isTablet bool) {
 	book, hasBook := a.activeBook()
 
-	ui.Column(c.Key("reader-pane")).Fill().Background(pal.ReaderPaper).Children(func() {
+	pane := ui.Column(c.Key("reader-pane")).Fill().Background(pal.ReaderPaper)
+	if grain := pal.PaperGrainOpacity(); grain > 0 {
+		isDark := pal.IsDark()
+		pane.Draw(func(p *ui.Painter, r ui.Rect) {
+			theme.DrawPaperTexture(p, r, 0, isDark, grain*0.85)
+		})
+	}
+	pane.Children(func() {
 		if !hasBook {
 			ui.Column(c).Fill().Center().Gap(12).Padding(32).Children(func() {
-				ui.Text(c, "StillPoets").FontSize(26).Bold().TextColor(pal.TextPrimary)
+				ui.Text(c, "StillPoets").Font(theme.FontBrand).FontSize(26).Bold().TextColor(pal.TextPrimary)
 				ui.Text(c, "在左侧选择一本诗集，或点右上角 + 导入新的 EPUB。").
-					FontSize(14).TextColor(pal.TextMuted)
+					Font(theme.FontNote).FontSize(14).TextColor(pal.TextMuted)
 			})
 			return
 		}
@@ -58,9 +65,14 @@ func (a *AppUI) renderReaderPane(c *ui.Context, pal theme.Palette, isTablet bool
 			ui.Row(c.Key("reader-error-bar")).FillWidth().Padding(8, 20).Gap(10).AlignItems(ui.Center).Background(pal.HighlightBg).Children(func() {
 				ui.Text(c, a.readerError).FontSize(12).TextColor(pal.Accent).Grow(1)
 				if ui.Button(c, "重试").Clicked() {
-					a.openBook(book.ID, current.ID, a.highlightRanges, a.readerMobile)
+					a.openBookWithSource(book.ID, current.ID, a.highlightRanges, a.readerMobile, a.readerEntrySource)
 				}
 			})
+		}
+
+		// 1.5 若处于「偶遇浏览」模式（小组件/今日重读/散页/检索直达），展示克制的进度保护提示条
+		if a.readerEntrySource.isPeek() && !a.peekBannerHidden && hasPoem {
+			a.renderPeekProgressBanner(c, pal, book, current, isTablet)
 		}
 
 		// 2. 若处于「划选诗行」模式，展示平滑展开的轻量操作条（留作散页 / 设为本诗金句）
@@ -264,7 +276,7 @@ func (a *AppUI) renderRemoteBookState(c *ui.Context, pal theme.Palette, book dom
 				a.openSeq++
 				reqSeq := a.openSeq
 				a.mu.Unlock()
-				a.downloadBookAsync(book.ID, "", a.highlightRanges, reqSeq)
+				a.downloadBookAsync(book.ID, a.pendingPoemID, a.highlightRanges, reqSeq, a.readerEntrySource)
 			}
 		}
 	})
@@ -297,7 +309,7 @@ func (a *AppUI) renderReaderHeader(c *ui.Context, pal theme.Palette, book domain
 				}
 			}
 
-			ui.Text(c, headerText).FontSize(13).TextColor(pal.TextMuted).MaxLines(1).Grow(1)
+			ui.Text(c, headerText).Font(theme.FontNote).FontSize(13).TextColor(pal.TextMuted).MaxLines(1).Grow(1)
 
 			// 目录与书本管理
 			tocBtn := ui.Box(c.Key("reader-toc")).Width(34).Height(34).Center().Radius(6).Cursor(ui.CursorPointer)
@@ -348,12 +360,124 @@ func (a *AppUI) renderReaderHeader(c *ui.Context, pal theme.Palette, book domain
 			aaBtn := ui.Box(c.Key("reader-aa")).Padding(6, 8).Center().Radius(6).Cursor(ui.CursorPointer)
 			theme.ApplyPressScale(aaBtn, 0.92)
 			aaBtn.Children(func() {
-				ui.Text(c, "Aa").FontSize(15).Bold().TextColor(pal.TextPrimary)
+				ui.Text(c, "Aa").Font(theme.FontSerif).FontSize(15).Bold().TextColor(pal.TextPrimary)
 			})
 			if aaBtn.Clicked() {
 				a.showTypoModal = true
 			}
 		})
+}
+
+func (a *AppUI) renderPeekProgressBanner(c *ui.Context, pal theme.Palette, book domain.Book, current domain.Poem, isTablet bool) {
+	mainIdx, mainPoem, hasMainline := a.mainlineProgressInfo(book.ID)
+	atMainline := hasMainline && mainIdx == a.activePoemIdx
+
+	var summary string
+	switch {
+	case atMainline:
+		if mainPoem.Title != "" {
+			summary = fmt.Sprintf("已回到上次进度 · 第 %d 首《%s》", mainIdx+1, mainPoem.Title)
+		} else {
+			summary = fmt.Sprintf("已回到上次进度 · 第 %d 首", mainIdx+1)
+		}
+	case hasMainline:
+		if mainPoem.Title != "" {
+			summary = fmt.Sprintf("来自%s · 顺序进度在第 %d 首《%s》", a.readerEntrySource, mainIdx+1, mainPoem.Title)
+		} else {
+			summary = fmt.Sprintf("来自%s · 顺序进度在第 %d 首", a.readerEntrySource, mainIdx+1)
+		}
+	default:
+		summary = fmt.Sprintf("来自%s · 当前浏览不改顺序进度", a.readerEntrySource)
+	}
+
+	renderPill := func(key, label string, primary bool, onClick func()) {
+		bg, fg, bd := pal.ReaderPaper, pal.TextPrimary, pal.Border
+		if primary {
+			bg, fg, bd = pal.Accent, pal.AccentText, pal.Accent
+		}
+		pill := ui.Box(c.Key(key)).
+			Padding(5, 11).
+			Radius(999).
+			Background(bg).
+			Border(1, bd).
+			Cursor(ui.CursorPointer).
+			Transition(theme.ColorTransition())
+		theme.ApplyPressScale(pill, 0.94)
+		pill.Children(func() {
+			t := ui.Text(c, label).FontSize(12).TextColor(fg)
+			if primary {
+				t.Bold()
+			}
+		})
+		if pill.Clicked() {
+			onClick()
+		}
+	}
+
+	renderActions := func() {
+		switch {
+		case atMainline:
+			renderPill("peek-resume-main", "恢复顺序阅读", true, func() {
+				a.returnToMainlineProgress(book.ID)
+			})
+		case hasMainline:
+			renderPill("peek-return-main", "回到进度", true, func() {
+				a.returnToMainlineProgress(book.ID)
+			})
+			if current.IsPoem() {
+				renderPill("peek-adopt-cur", "从这里续读", false, func() {
+					a.adoptCurrentAsMainlineProgress(book.ID)
+				})
+			}
+		default:
+			if current.IsPoem() {
+				renderPill("peek-start-here", "从这里开始读", true, func() {
+					a.adoptCurrentAsMainlineProgress(book.ID)
+				})
+			}
+		}
+	}
+
+	renderDismiss := func() {
+		closeBtn := ui.Box(c.Key("peek-dismiss")).Width(24).Height(24).Center().Radius(6).Cursor(ui.CursorPointer)
+		theme.ApplyPressScale(closeBtn, 0.90)
+		closeBtn.Children(func() {
+			ui.Icon(c, components.IconClose).Width(13).Height(13).TextColor(pal.TextMuted)
+		})
+		if closeBtn.Clicked() {
+			a.peekBannerHidden = true
+		}
+	}
+
+	container := ui.Column(c.Key("peek-progress-bar")).
+		FillWidth().
+		Padding(8, 20).
+		Gap(7).
+		Background(pal.HighlightBg).
+		BorderColor(pal.Border).
+		BorderWidth(1, 0, 1, 0).
+		Transition(theme.BarRevealTransition())
+
+	container.Children(func() {
+		if isTablet {
+			ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, summary).FontSize(12).TextColor(pal.TextSecondary).MaxLines(1).Grow(1)
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					renderActions()
+					renderDismiss()
+				})
+			})
+			return
+		}
+
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, summary).FontSize(12).TextColor(pal.TextSecondary).MaxLines(1).Grow(1)
+			renderDismiss()
+		})
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+			renderActions()
+		})
+	})
 }
 
 func (a *AppUI) renderSelectionActionBar(c *ui.Context, pal theme.Palette, book domain.Book, poem domain.Poem) {
@@ -396,13 +520,10 @@ func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.
 	if lineHeight < 1.3 {
 		lineHeight = 1.85
 	}
-	fontFamily := a.settings.FontFamily
-
-	applyFont := func(e ui.Element) ui.Element {
-		if fontFamily != "" {
-			return e.Font(fontFamily)
-		}
-		return e
+	poetryFont := theme.PoetryFont(a.settings.FontFamily)
+	noteFont := theme.FontNote
+	if strings.TrimSpace(a.settings.FontFamily) != "" {
+		noteFont = poetryFont
 	}
 
 	ui.Column(c.Key("poem-column")).
@@ -412,20 +533,19 @@ func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.
 		Children(func() {
 			// 诗题 + 副题 + 作者
 			ui.Column(c).Gap(6).Children(func() {
-				titleEl := ui.Text(c, poem.Title).FontSize(fontSize + 10).Bold().TextColor(pal.TextPrimary)
-				applyFont(titleEl)
+				ui.Text(c, poem.Title).Font(poetryFont).FontSize(fontSize + 9).Bold().LetterSpacing(0.4).TextColor(pal.TextPrimary)
 				if poem.Subtitle != "" {
-					applyFont(ui.Text(c, poem.Subtitle).FontSize(fontSize - 3).Italic().TextColor(pal.TextSecondary))
+					ui.Text(c, poem.Subtitle).Font(noteFont).FontSize(fontSize - 3).Italic().TextColor(pal.TextSecondary)
 				}
 				author := poem.Author
 				if author == "" {
 					author = book.Author
 				}
 				if author != "" {
-					applyFont(ui.Text(c, author).FontSize(fontSize - 3).TextColor(pal.TextMuted))
+					ui.Text(c, author).Font(noteFont).FontSize(fontSize - 3).TextColor(pal.TextMuted)
 				}
 				if !poem.IsPoem() {
-					ui.Text(c, "附文 · 不计入完读与小组件池").FontSize(11).TextColor(pal.TextMuted)
+					ui.Text(c, "附文 · 不计入完读与小组件池").Font(theme.FontSans).FontSize(11).TextColor(pal.TextMuted)
 				}
 			})
 
@@ -433,7 +553,7 @@ func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.
 			if strings.TrimSpace(poem.Epigraph) != "" {
 				ui.Row(c).FillWidth().Gap(10).Padding(4, 0).Children(func() {
 					ui.Box(c).Width(2).FillHeight().Background(pal.Border)
-					applyFont(ui.Text(c, poem.Epigraph).FontSize(fontSize - 3).Italic().LineHeight(lineHeight).TextColor(pal.TextSecondary).Grow(1))
+					ui.Text(c, poem.Epigraph).Font(noteFont).FontSize(fontSize - 3).Italic().LineHeight(lineHeight).TextColor(pal.TextSecondary).Grow(1)
 				})
 			}
 
@@ -462,11 +582,11 @@ func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.
 								lineRow.Cursor(ui.CursorPointer)
 							}
 							lineRow.Children(func() {
-								txt := ui.Text(c, line).
+								ui.Text(c, line).
+									Font(poetryFont).
 									FontSize(fontSize).
 									LineHeight(lineHeight).
 									TextColor(pal.TextPrimary)
-								applyFont(txt)
 							})
 							if isCurrent && a.selectingLines && lineRow.Clicked() {
 								if a.selectedLines[curLine] {
@@ -483,7 +603,7 @@ func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.
 			// 落款 / 写作时间地点（Colophon）
 			if strings.TrimSpace(poem.Colophon) != "" {
 				ui.Row(c).FillWidth().Justify(ui.End).Padding(8, 0, 0, 0).Children(func() {
-					applyFont(ui.Text(c, poem.Colophon).FontSize(fontSize - 4).TextColor(pal.TextMuted))
+					ui.Text(c, poem.Colophon).Font(noteFont).FontSize(fontSize - 4).Italic().TextColor(pal.TextMuted)
 				})
 			}
 
@@ -502,8 +622,8 @@ func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.
 								label = fmt.Sprintf("%d", ni+1)
 							}
 							ui.Row(c.Key(fmt.Sprintf("note-%d", ni))).FillWidth().Gap(8).AlignItems(ui.Start).Children(func() {
-								ui.Text(c, label).FontSize(11).Bold().TextColor(pal.TextMuted)
-								ui.Text(c, note.Body).FontSize(13).LineHeight(1.65).TextColor(pal.TextSecondary).Grow(1)
+								ui.Text(c, label).Font(theme.FontMono).FontSize(11).Bold().TextColor(pal.TextMuted)
+								ui.Text(c, note.Body).Font(theme.FontSans).FontSize(13).LineHeight(1.65).TextColor(pal.TextSecondary).Grow(1)
 							})
 						}
 					})
@@ -543,7 +663,7 @@ func (a *AppUI) renderReaderFooter(c *ui.Context, pal theme.Palette, book domain
 			counter := ui.Box(c.Key("poem-counter")).Padding(6, 12).Radius(6).Cursor(ui.CursorPointer)
 			theme.ApplyPressScale(counter, 0.94)
 			counter.Children(func() {
-				ui.Textf(c, "第 %d / %d 首", idx+1, total).FontSize(12).TextColor(pal.TextMuted)
+				ui.Textf(c, "第 %d / %d 首", idx+1, total).Font(theme.FontMono).FontFeatures("tnum").FontSize(12).TextColor(pal.TextMuted)
 			})
 			if counter.Clicked() {
 				a.showTOCModal = true
@@ -577,7 +697,58 @@ func (a *AppUI) commitPoemIndex(bookID string, nextIdx int) {
 	a.highlightRanges = nil
 	a.selectingLines = false
 	a.selectedLines = map[int]bool{}
+	if a.readerEntrySource.isPeek() {
+		a.recordPoemPeekAsync(bookID, a.activePoems[nextIdx], a.activePoems)
+		return
+	}
 	a.recordPoemReadAsync(bookID, a.activePoems[nextIdx], a.activePoems)
+}
+
+func (a *AppUI) mainlineProgressInfo(bookID string) (int, domain.Poem, bool) {
+	prog, ok := a.progressMap[bookID]
+	if !ok || prog.LastPoemID == "" {
+		return -1, domain.Poem{}, false
+	}
+	for i, p := range a.activePoems {
+		if p.ID == prog.LastPoemID {
+			return i, p, true
+		}
+	}
+	return -1, domain.Poem{}, false
+}
+
+// returnToMainlineProgress 从偶遇浏览一键跳回本书原本的顺序阅读进度，并恢复主线追踪。
+func (a *AppUI) returnToMainlineProgress(bookID string) {
+	mainIdx, mainPoem, ok := a.mainlineProgressInfo(bookID)
+	if !ok {
+		a.readerEntrySource = entryMainline
+		a.peekBannerHidden = false
+		return
+	}
+	a.readerEntrySource = entryMainline
+	a.peekBannerHidden = false
+	a.highlightRanges = nil
+	a.selectingLines = false
+	a.selectedLines = map[int]bool{}
+	a.activePoemIdx = mainIdx
+	a.recordPoemReadAsync(bookID, mainPoem, a.activePoems)
+	a.showTransientToastOnUI("已回到顺序阅读进度")
+}
+
+// adoptCurrentAsMainlineProgress 显式将当前偶遇浏览的诗篇设为新的顺序阅读进度，并退出偶遇模式。
+func (a *AppUI) adoptCurrentAsMainlineProgress(bookID string) {
+	if a.activePoemIdx < 0 || a.activePoemIdx >= len(a.activePoems) {
+		return
+	}
+	cur := a.activePoems[a.activePoemIdx]
+	if !cur.IsPoem() {
+		a.showTransientToastOnUI("附文不计入阅读进度")
+		return
+	}
+	a.readerEntrySource = entryMainline
+	a.peekBannerHidden = false
+	a.recordPoemReadAsync(bookID, cur, a.activePoems)
+	a.showTransientToastOnUI("已更新为当前阅读进度")
 }
 
 func (a *AppUI) navigatePoem(bookID string, nextIdx int) {

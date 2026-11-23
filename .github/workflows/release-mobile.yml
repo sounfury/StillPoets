@@ -69,6 +69,8 @@ jobs:
         run: |
           set -euo pipefail
           go mod download
+          # Go module cache is read-only by default on Linux; Gradle needs write access to MyGo's native module directories (e.g. sqlitecore/kotlin/build).
+          chmod -R u+w "$(go env GOMODCACHE)/github.com/egoist" || true
           MYGO_VER=$(go list -m -f '{{.Version}}' github.com/egoist/mygo)
           echo "Installing mygo CLI @ ${MYGO_VER}"
           go install "github.com/egoist/mygo/cmd/mygo@${MYGO_VER}"

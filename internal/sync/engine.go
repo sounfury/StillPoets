@@ -22,26 +22,28 @@ type DeviceWarning struct {
 
 // SyncRequest 描述一次串行同步执行的输入状态。
 type SyncRequest struct {
-	InstallID       string            // 当前本机的唯一安装 ID（不随系统备份克隆）
-	LocalRev        uint64            // 本机上次已确认发布成功的代次号（首次为 0）
-	LocalCounter    uint64            // 本机持久化的 Lamport 逻辑时钟计数
-	LocalData       SnapshotData      // 本机待合并的完整元数据快照
-	HasDirty        bool              // 本机是否存在尚未发布的变更（或合并后需要主动发布）
-	ForcePush       bool              // 强制发布新代次（例如首次建库或退役旧设备前）
-	KnownRemoteRevs map[string]uint64 // 已验证且已提交到本地数据库的远端代次
+	InstallID       string              // 当前本机的唯一安装 ID（不随系统备份克隆）
+	LocalRev        uint64              // 本机上次已确认发布成功的代次号（首次为 0）
+	LocalCounter    uint64              // 本机持久化的 Lamport 逻辑时钟计数
+	LocalData       SnapshotData        // 本机待合并的完整元数据快照
+	HasDirty        bool                // 本机是否存在尚未发布的变更（或合并后需要主动发布）
+	ForcePush       bool                // 强制发布新代次（例如首次建库或退役旧设备前）
+	KnownRemoteRevs map[string]uint64   // 已验证且已提交到本地数据库的远端代次
+	PendingBooks    map[string]struct{} // 目标工作区尚未验证资产的本机诗集
 }
 
 // SyncResult 返回单次同步的合并结果、推进后的逻辑时钟与发布状态。
 type SyncResult struct {
-	MergedData        SnapshotData
-	MaxCounter        uint64
-	Published         bool
-	PublishedRev      uint64
-	PartialSync       bool
-	Warnings          []DeviceWarning
-	RemoteDevices     []string          // 本轮确认已合并有效快照的远端 installId 列表
-	SyncedDeviceRevs  map[string]uint64 // 本轮确认已完整合并最新代次的远端 installId -> rev（用于安全退役）
-	IncompleteDevices map[string]bool   // 本轮最新代次读取失败或发生降级回退的远端设备集合
+	MergedData         SnapshotData
+	MaxCounter         uint64
+	Published          bool
+	PublishedRev       uint64
+	PartialSync        bool
+	PendingBookUploads int
+	Warnings           []DeviceWarning
+	RemoteDevices      []string          // 本轮确认已合并有效快照的远端 installId 列表
+	SyncedDeviceRevs   map[string]uint64 // 本轮确认已完整合并最新代次的远端 installId -> rev（用于安全退役）
+	IncompleteDevices  map[string]bool   // 本轮最新代次读取失败或发生降级回退的远端设备集合
 }
 
 // Engine 负责单个 WebDAV 工作区的串行同步调度（防抖任务与手动同步共用同一串行锁）。
@@ -105,10 +107,12 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 	slices.Sort(deviceIDs)
 
 	res := &SyncResult{
-		MergedData:        MergeSnapshotData(SnapshotData{}, req.LocalData),
-		MaxCounter:        MaxCounterInData(req.LocalCounter, req.LocalData),
-		SyncedDeviceRevs:  make(map[string]uint64),
-		IncompleteDevices: make(map[string]bool),
+		MergedData:         MergeSnapshotData(SnapshotData{}, req.LocalData),
+		MaxCounter:         MaxCounterInData(req.LocalCounter, req.LocalData),
+		PartialSync:        len(req.PendingBooks) > 0,
+		PendingBookUploads: len(req.PendingBooks),
+		SyncedDeviceRevs:   make(map[string]uint64),
+		IncompleteDevices:  make(map[string]bool),
 	}
 
 	var ownRemoteMaxRev, ownValidRev uint64
@@ -170,13 +174,20 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 	}
 	nextRev++
 
+	dataToPublish := res.MergedData
+	if len(req.PendingBooks) > 0 {
+		dataToPublish.Books = slices.DeleteFunc(slices.Clone(dataToPublish.Books), func(book domain.Book) bool {
+			_, pending := req.PendingBooks[book.ID]
+			return pending && !book.Deleted
+		})
+	}
 	snap := &DeviceSnapshot{
 		SchemaVersion: ProtocolSchemaVersion,
 		InstallID:     req.InstallID,
 		Rev:           nextRev,
 		MaxCounter:    res.MaxCounter,
 		GeneratedAt:   domain.NowMillis(),
-		Data:          res.MergedData,
+		Data:          dataToPublish,
 	}
 	payload, err := EncodeSnapshot(snap)
 	if err != nil {
@@ -401,11 +412,8 @@ func (e *Engine) UploadBookAssets(
 	if err != nil {
 		return nil, fmt.Errorf("sync: verify raw file %s: %w", rawPath, err)
 	}
-	if rawEntry.IsDir {
-		return nil, fmt.Errorf("sync: verify raw file %s: expected a file, found a collection", rawPath)
-	}
-	if want := int64(len(rawOriginal)); rawEntry.ContentLength > 0 && rawEntry.ContentLength != want {
-		return nil, fmt.Errorf("sync: verify raw file %s: content length mismatch: got %d, want %d", rawPath, rawEntry.ContentLength, want)
+	if err := validateRawBookEntry(rawEntry, int64(len(rawOriginal))); err != nil {
+		return nil, fmt.Errorf("sync: verify raw file %s: %w", rawPath, err)
 	}
 
 	// 3. 封面图非强依赖，上传失败仅记录警告，不阻断书目发布
@@ -417,6 +425,35 @@ func (e *Engine) UploadBookAssets(
 		}
 	}
 	return result, nil
+}
+
+// VerifyBookAssets 确认目标工作区已有该版本的正文与原始文件，可跳过重复迁移。
+func (e *Engine) VerifyBookAssets(ctx context.Context, book domain.Book) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	parsed, _, err := e.client.GetWithLimit(ctx, BookParsedPath(book.ID), MaxSPBookCompressedBytes)
+	if err != nil {
+		return err
+	}
+	if _, err := DecodeSPBook(parsed, book.ContentHash, book.ID); err != nil {
+		return err
+	}
+	entry, err := e.client.Stat(ctx, BookRawPath(book.ID, book.RawFilename))
+	if err != nil {
+		return err
+	}
+	return validateRawBookEntry(entry, book.RawSize)
+}
+
+func validateRawBookEntry(entry *webdav.Entry, expectedSize int64) error {
+	if entry.IsDir {
+		return errors.New("expected a file, found a collection")
+	}
+	if expectedSize > 0 && entry.ContentLength > 0 && entry.ContentLength != expectedSize {
+		return fmt.Errorf("content length mismatch: got %d, want %d", entry.ContentLength, expectedSize)
+	}
+	return nil
 }
 
 // RetireDevice 手动退役旧安装设备（例如重装 App 或更换手机后）。

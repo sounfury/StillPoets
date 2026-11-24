@@ -27,6 +27,7 @@ const (
 	webdavProfileFilename = "webdav_profile.json"
 	webdavPasswordKey     = "webdav_password"
 	defaultSyncDebounce   = 4 * time.Second
+	maxCoverBytes         = 8 << 20
 )
 
 // SecretStore 抽象系统级安全凭据存储（生产环境对接 mygo.Secrets，测试使用内存实现）。
@@ -156,21 +157,23 @@ type Service struct {
 	secrets SecretStore
 	diag    *diagLogger
 
-	mu             sync.Mutex
-	widgetMu       sync.Mutex
-	syncSem        chan struct{}
-	syncWG         sync.WaitGroup
-	syncCancel     context.CancelFunc // 当前同步或退役操作，由 mu 保护
-	lifeCtx        context.Context
-	lifeCancel     context.CancelFunc
-	profile        WebDAVProfile
-	workspaceEpoch uint64
-	webdavClient   *webdav.Client // 仅用于当前 workspaceEpoch，由 mu 保护
-	remoteDevices  []string
-	debounceDelay  time.Duration
-	debounceTimer  *time.Timer
-	debounceGen    uint64
-	closed         bool
+	mu                 sync.Mutex
+	widgetMu           sync.Mutex
+	syncSem            chan struct{}
+	syncWG             sync.WaitGroup
+	syncCancel         context.CancelFunc // 当前同步或退役操作，由 mu 保护
+	lifeCtx            context.Context
+	lifeCancel         context.CancelFunc
+	profile            WebDAVProfile
+	workspacePasswords bool
+	migrationSources   []WebDAVProfile
+	workspaceEpoch     uint64
+	webdavClient       *webdav.Client // 仅用于当前 workspaceEpoch，由 mu 保护
+	remoteDevices      []string
+	debounceDelay      time.Duration
+	debounceTimer      *time.Timer
+	debounceGen        uint64
+	closed             bool
 
 	onSyncToast     func(SyncToastState)
 	onDataChanged   func()
@@ -588,7 +591,6 @@ func (s *Service) EnsureBookCover(ctx context.Context, bookID string) (string, e
 	if err != nil {
 		return "", err
 	}
-	const maxCoverBytes = 8 << 20
 	raw, _, err := client.GetWithLimit(ctx, booksync.BookCoverPath(book.ID), maxCoverBytes)
 	if err != nil || len(raw) == 0 {
 		return "", err
@@ -1014,27 +1016,26 @@ func (s *Service) LoadWebDAVProfile() WebDAVProfile {
 
 // HasWebDAVPassword 检查系统安全凭据库中是否已存有 WebDAV 密码。
 func (s *Service) HasWebDAVPassword() bool {
-	b, err := s.secrets.Get(webdavPasswordKey)
-	return err == nil && len(b) > 0
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	password, err := s.activeWebDAVPasswordLocked()
+	return err == nil && password != ""
 }
 
 // TestWebDAVConnection 在不落盘修改配置的前提下验证连通性并初始化远端工作区。
 func (s *Service) TestWebDAVConnection(ctx context.Context, input WebDAVConfigInput) (*booksync.WorkspaceInitResult, error) {
-	pass := input.Password
-	if pass == "" {
-		if stored, err := s.secrets.Get(webdavPasswordKey); err == nil {
-			pass = string(stored)
+	profile := webDAVProfileFromInput(input)
+	password := input.Password
+	if password == "" {
+		s.mu.Lock()
+		var err error
+		password, err = s.webDAVPasswordForInputLocked(profile)
+		s.mu.Unlock()
+		if err != nil {
+			return nil, err
 		}
 	}
-	client, err := webdav.NewClient(webdav.Config{
-		BaseURL:                     strings.TrimSpace(input.BaseURL),
-		Username:                    strings.TrimSpace(input.Username),
-		Password:                    pass,
-		AppFolder:                   strings.TrimSpace(input.AppFolder),
-		AtomicUpload:                input.AtomicUpload,
-		AllowCrossOriginGetRedirect: true,
-		Timeout:                     25 * time.Second,
-	})
+	client, err := newWebDAVClient(profile, password, 25*time.Second)
 	if err != nil {
 		s.LogEvent("webdav", "test connection failed (host=%s): %v", sanitizeBaseURLForDiag(input.BaseURL), err)
 		return nil, err
@@ -1051,25 +1052,13 @@ func (s *Service) TestWebDAVConnection(ctx context.Context, input WebDAVConfigIn
 }
 
 // SaveWebDAVConfig 保存 WebDAV 非敏感配置到本地 JSON，密码仅写入系统级安全存储。
-// 若切换地址、目录或账号，自动重置发布代次并重新入队本机仍保留缓存文件的诗集。
+// 切换工作区时记录待迁移诗集，由下一轮串行同步验证或上传资产。
 func (s *Service) SaveWebDAVConfig(ctx context.Context, input WebDAVConfigInput) error {
-	baseURL := strings.TrimSpace(input.BaseURL)
-	if parsed, err := url.Parse(baseURL); err != nil {
+	profile := webDAVProfileFromInput(input)
+	if parsed, err := url.Parse(profile.BaseURL); err != nil {
 		return fmt.Errorf("WebDAV 地址无效：%w", err)
 	} else if parsed.User != nil {
 		return errors.New("WebDAV 地址中不可内嵌账号密码，请在下方账号密码框中单独填写")
-	}
-
-	folder := strings.TrimSpace(input.AppFolder)
-	if folder == "" {
-		folder = webdav.DefaultAppFolder
-	}
-	profile := WebDAVProfile{
-		Enabled:      input.Enabled,
-		BaseURL:      baseURL,
-		Username:     strings.TrimSpace(input.Username),
-		AppFolder:    folder,
-		AtomicUpload: input.AtomicUpload,
 	}
 
 	workspaceChanged, err := s.saveWebDAVProfile(ctx, profile, input.Password)
@@ -1089,29 +1078,51 @@ func (s *Service) saveWebDAVProfile(ctx context.Context, profile WebDAVProfile, 
 		return false, errors.New("app: service closed")
 	}
 	prev := s.profile
-	workspaceChanged := strings.TrimRight(prev.BaseURL, "/") != strings.TrimRight(profile.BaseURL, "/") ||
-		strings.Trim(prev.AppFolder, "/") != strings.Trim(profile.AppFolder, "/") || prev.Username != profile.Username
-
+	workspaceChanged := webDAVWorkspaceID(prev) != webDAVWorkspaceID(profile)
+	sources := s.migrationSources
 	if workspaceChanged {
-		// 先清除旧工作区代次，确保新配置落盘后重启也不会复用旧状态。
-		if err := s.store.ResetWorkspaceSyncState(ctx); err != nil {
+		sources = migrationSourcesAfterSwitch(sources, prev, profile)
+	}
+	if !s.workspacePasswords && prev.BaseURL != "" && workspaceChanged {
+		previousPassword, err := s.activeWebDAVPasswordLocked()
+		if err != nil {
+			return false, err
+		}
+		if err := s.saveWebDAVPassword(webDAVWorkspacePasswordKey(prev), previousPassword); err != nil {
 			return false, err
 		}
 	}
-	if password != "" {
-		if err := s.secrets.Set(webdavPasswordKey, []byte(password)); err != nil {
-			return false, fmt.Errorf("保存 WebDAV 密码到系统安全存储失败：%w", err)
+	if password != "" || !s.workspacePasswords || workspaceChanged {
+		if password == "" {
+			var err error
+			password, err = s.webDAVPasswordForInputLocked(profile)
+			if err != nil {
+				return false, err
+			}
 		}
-		// 即使配置文件写入失败，下次也应读取已保存的新凭据。
-		s.releaseWebDAVClientLocked()
+		if err := s.saveWebDAVPassword(webDAVWorkspacePasswordKey(profile), password); err != nil {
+			return false, err
+		}
+		if !workspaceChanged {
+			// A same-workspace password can already have changed even if writing the profile fails.
+			s.releaseWebDAVClientLocked()
+		}
 	}
-	if err := writeJSONAtomic(filepath.Join(s.dataDir, webdavProfileFilename), profile); err != nil {
+	if workspaceChanged {
+		// 先持久化发布屏障，重启时也不会在未验证资产前向新工作区发布书目。
+		if err := s.store.PrepareWorkspaceSwitch(ctx); err != nil {
+			return false, err
+		}
+	}
+	if err := s.writeWebDAVConfig(profile, sources); err != nil {
 		return false, err
 	}
 
+	s.workspacePasswords = true
+	s.migrationSources = sources
 	s.setWebDAVProfileLocked(profile, workspaceChanged || !profile.Enabled)
-	if workspaceChanged {
-		s.requeueLocalCachedBooksForWorkspace(ctx)
+	if err := s.deleteWebDAVPassword(webdavPasswordKey); err != nil {
+		s.LogEvent("webdav", "legacy credential cleanup failed: %v", err)
 	}
 	return workspaceChanged, nil
 }
@@ -1132,36 +1143,6 @@ func (s *Service) releaseWebDAVClientLocked() {
 	if s.webdavClient != nil {
 		s.webdavClient.CloseIdleConnections()
 		s.webdavClient = nil
-	}
-}
-
-func (s *Service) requeueLocalCachedBooksForWorkspace(ctx context.Context) {
-	books, err := s.store.ListBooks(ctx, "")
-	if err != nil {
-		return
-	}
-	for _, b := range books {
-		spPath := filepath.Join(s.dataDir, "cache", "spbook", b.ID+".spbook.json.gz")
-		rawPath := filepath.Join(s.dataDir, "cache", "raw", b.ID+"_"+b.RawFilename)
-		if _, err1 := os.Stat(spPath); err1 != nil {
-			continue
-		}
-		if _, err2 := os.Stat(rawPath); err2 != nil {
-			continue
-		}
-		coverPath := filepath.Join(s.dataDir, "cache", "covers", b.ID+".img")
-		if _, err := os.Stat(coverPath); err != nil {
-			coverPath = ""
-		}
-		_ = s.store.UpsertPendingUpload(ctx, storage.PendingUpload{
-			BookID:          b.ID,
-			RawFilename:     b.RawFilename,
-			LocalRawPath:    rawPath,
-			LocalSPBookPath: spPath,
-			LocalCoverPath:  coverPath,
-			ContentHash:     b.ContentHash,
-			State:           storage.UploadPending,
-		})
 	}
 }
 
@@ -1186,14 +1167,15 @@ func (s *Service) clearWebDAVProfile(ctx context.Context) (secretErr, err error)
 		return nil, err
 	}
 	profile := WebDAVProfile{AppFolder: webdav.DefaultAppFolder}
-	if err := writeJSONAtomic(filepath.Join(s.dataDir, webdavProfileFilename), profile); err != nil {
+	if err := s.writeWebDAVConfig(profile, nil); err != nil {
 		return nil, err
 	}
+	secretErr = errors.Join(s.deleteWebDAVPassword(webdavPasswordKey),
+		s.deleteWebDAVPassword(webDAVWorkspacePasswordKey(s.profile)), s.deleteWebDAVSourcePasswords())
+	s.workspacePasswords = true
+	s.migrationSources = nil
 	s.setWebDAVProfileLocked(profile, true)
-	if err := s.secrets.Delete(webdavPasswordKey); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("清除系统安全存储中的密码失败：%w", err), nil
-	}
-	return nil, nil
+	return secretErr, nil
 }
 
 // GetSyncOverview 返回本机同步状态、待上传数量和最近发现的远端设备列表（轻量查元表，不导出 5 张全库表，P2-1）。
@@ -1279,7 +1261,7 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 	if pending, pErr := s.store.ListPendingUploads(runCtx); pErr == nil && len(pending) > 0 {
 		s.emitSyncToast(SyncToastState{
 			Phase:   SyncToastSyncing,
-			Message: fmt.Sprintf("正在上传待同步诗集（%d 本）…", len(pending)),
+			Message: fmt.Sprintf("正在同步待上传诗集（%d 本）…", len(pending)),
 		})
 	}
 	uploadedAny, uploadFailed := s.flushPendingUploads(runCtx, engine, startEpoch)
@@ -1297,30 +1279,15 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 	for _, p := range remainingPending {
 		blockedBooks[p.BookID] = struct{}{}
 	}
-	outgoingData := localData
-	knownRemoteRevs := meta.KnownRemoteRevs
-	if len(blockedBooks) > 0 {
-		// 过滤书目后，已落库代次的内容可能未完整进入待发布快照。
-		// 重新合并远端已发布书目，维持强制发布时的退役覆盖证明。
-		knownRemoteRevs = nil
-		filtered := make([]domain.Book, 0, len(localData.Books))
-		for _, b := range localData.Books {
-			if _, blocked := blockedBooks[b.ID]; blocked {
-				continue
-			}
-			filtered = append(filtered, b)
-		}
-		outgoingData.Books = filtered
-	}
-
 	res, err := engine.Sync(runCtx, booksync.SyncRequest{
 		InstallID:       meta.InstallID,
 		LocalRev:        meta.LocalRev,
 		LocalCounter:    meta.LamportCounter,
-		LocalData:       outgoingData,
+		LocalData:       localData,
 		HasDirty:        meta.Dirty || uploadedAny,
 		ForcePush:       forcePush || meta.LocalRev == 0,
-		KnownRemoteRevs: knownRemoteRevs,
+		KnownRemoteRevs: meta.KnownRemoteRevs,
+		PendingBooks:    blockedBooks,
 	})
 	if err != nil {
 		release()
@@ -1352,6 +1319,11 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 	err = s.store.ApplyMergedSnapshotEx(runCtx, res.MergedData, meta.DirtySeq, res.MaxCounter, res.PublishedRev, res.Published, keepDirty, remoteDeviceRevs)
 	if err == nil {
 		s.remoteDevices = slices.Clone(res.RemoteDevices)
+		if !keepDirty {
+			if cleanupErr := s.finishWebDAVMigrationLocked(); cleanupErr != nil {
+				s.LogEvent("webdav", "migration source cleanup failed: %v", cleanupErr)
+			}
+		}
 	}
 	s.mu.Unlock()
 	if err != nil {
@@ -1390,6 +1362,9 @@ func (s *Service) RetireRemoteDevice(ctx context.Context, targetInstallID string
 	}
 	if !syncRes.Published || syncRes.PublishedRev == 0 {
 		return errors.New("退役前未能确认现役设备已发布新代次快照，已中止退役")
+	}
+	if syncRes.PendingBookUploads > 0 {
+		return errors.New("仍有诗集待上传，请同步完成后再退役旧设备")
 	}
 	if syncRes.IncompleteDevices[targetInstallID] {
 		return fmt.Errorf("设备 %s 的最新远端快照在本轮读取失败或已损坏，为防止数据丢失已拒绝退役", targetInstallID)
@@ -1443,6 +1418,16 @@ func (s *Service) flushPendingUploads(ctx context.Context, engine *booksync.Engi
 	}
 	uploadedAny := false
 	anyFailed := false
+	var sources []*webdav.Client
+	var sourceErr error
+	if slices.ContainsFunc(pending, isWorkspaceMigration) {
+		sources, sourceErr = s.migrationClients(epoch)
+		defer func() {
+			for _, source := range sources {
+				source.CloseIdleConnections()
+			}
+		}()
+	}
 
 	for _, item := range pending {
 		if ctx.Err() != nil {
@@ -1451,7 +1436,11 @@ func (s *Service) flushPendingUploads(ctx context.Context, engine *booksync.Engi
 		book, bookErr := s.store.GetBook(ctx, item.BookID)
 		var uploadErr error
 		if bookErr == nil {
-			uploadErr = uploadPendingBook(ctx, engine, book, item)
+			if isWorkspaceMigration(item) {
+				uploadErr = s.uploadMigratingBook(ctx, engine, sources, sourceErr, book)
+			} else {
+				uploadErr = uploadPendingBook(ctx, engine, book, item)
+			}
 		}
 
 		s.mu.Lock()
@@ -1461,15 +1450,19 @@ func (s *Service) flushPendingUploads(ctx context.Context, engine *booksync.Engi
 		}
 		switch {
 		case errors.Is(bookErr, storage.ErrNotFound):
-			_ = s.store.DeletePendingUpload(ctx, item.BookID)
+			anyFailed = s.store.DeletePendingUpload(ctx, item.BookID) != nil || anyFailed
 		case bookErr != nil:
 			anyFailed = true
 		case uploadErr != nil:
+			s.LogEvent("sync", "book upload %s failed: %v", item.BookID, uploadErr)
 			_ = s.store.UpdatePendingUploadState(ctx, item.BookID, storage.UploadFailed, uploadErr.Error())
 			anyFailed = true
 		default:
-			_ = s.store.DeletePendingUpload(ctx, item.BookID)
-			uploadedAny = true
+			if err := s.store.DeletePendingUpload(ctx, item.BookID); err != nil {
+				anyFailed = true
+			} else {
+				uploadedAny = true
+			}
 		}
 		s.mu.Unlock()
 	}
@@ -1477,16 +1470,11 @@ func (s *Service) flushPendingUploads(ctx context.Context, engine *booksync.Engi
 }
 
 func uploadPendingBook(ctx context.Context, engine *booksync.Engine, book domain.Book, item storage.PendingUpload) error {
-	spBytes, spErr := os.ReadFile(item.LocalSPBookPath)
-	rawBytes, rawErr := os.ReadFile(item.LocalRawPath)
-	if spErr != nil || rawErr != nil {
-		return errors.New("本地待上传文件缺失")
+	spBytes, rawBytes, coverBytes, err := readLocalBookAssets(book, item)
+	if err != nil {
+		return err
 	}
-	var coverBytes []byte
-	if item.LocalCoverPath != "" {
-		coverBytes, _ = os.ReadFile(item.LocalCoverPath)
-	}
-	_, err := engine.UploadBookAssets(ctx, book, spBytes, rawBytes, coverBytes)
+	_, err = engine.UploadBookAssets(ctx, book, spBytes, rawBytes, coverBytes)
 	return err
 }
 
@@ -1509,20 +1497,15 @@ func (s *Service) newWebDAVClientWithEpoch() (*webdav.Client, uint64, error) {
 	if !p.Enabled || strings.TrimSpace(p.BaseURL) == "" {
 		return nil, epoch, errors.New("尚未配置并启用 WebDAV 同步")
 	}
-	passBytes, secretErr := s.secrets.Get(webdavPasswordKey)
-	c, err := webdav.NewClient(webdav.Config{
-		BaseURL:                     p.BaseURL,
-		Username:                    p.Username,
-		Password:                    string(passBytes),
-		AppFolder:                   p.AppFolder,
-		AtomicUpload:                p.AtomicUpload,
-		AllowCrossOriginGetRedirect: true,
-		Timeout:                     60 * time.Second,
-	})
-	if err == nil && (secretErr == nil || errors.Is(secretErr, os.ErrNotExist)) {
-		s.webdavClient = c
+	password, err := s.activeWebDAVPasswordLocked()
+	if err != nil {
+		return nil, epoch, err
 	}
-	return c, epoch, err
+	client, err := newWebDAVClient(p, password, 60*time.Second)
+	if err == nil {
+		s.webdavClient = client
+	}
+	return client, epoch, err
 }
 
 func (s *Service) loadWebDAVProfileFromDisk() {
@@ -1530,12 +1513,14 @@ func (s *Service) loadWebDAVProfileFromDisk() {
 	if err != nil {
 		return
 	}
-	var p WebDAVProfile
-	if err := json.Unmarshal(raw, &p); err == nil {
-		if p.AppFolder == "" {
-			p.AppFolder = webdav.DefaultAppFolder
+	var config webDAVConfigFile
+	if err := json.Unmarshal(raw, &config); err == nil {
+		if config.AppFolder == "" {
+			config.AppFolder = webdav.DefaultAppFolder
 		}
-		s.profile = p
+		s.profile = config.WebDAVProfile
+		s.workspacePasswords = config.WorkspacePasswords
+		s.migrationSources = config.MigrationSources
 	}
 }
 

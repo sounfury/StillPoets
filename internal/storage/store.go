@@ -146,17 +146,30 @@ func (s *Store) GetSyncMeta(ctx context.Context) (SyncMeta, error) {
 	return s.syncMeta(ctx)
 }
 
-// ResetWorkspaceSyncState 切换到全新 WebDAV 工作区时重置本地发布代次，并标记待重新发布。
+// ResetWorkspaceSyncState 重置本地发布代次，并标记待重新发布。
 func (s *Store) ResetWorkspaceSyncState(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.transact(ctx, workspaceResetStatements(domain.NowMillis()))
+}
+
+// PrepareWorkspaceSwitch 为每本现有诗集记录新工作区待验证任务，保留已存在的导书任务。
+func (s *Store) PrepareWorkspaceSwitch(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	now := domain.NowMillis()
-	return s.transact(ctx, []sqlite.Statement{
+	return s.transact(ctx, append(workspaceResetStatements(now), stmt(`INSERT INTO pending_uploads (`+pendingUploadColumns+`)
+		SELECT id, raw_filename, '', '', '', content_hash, ?, '', ?, ? FROM books WHERE deleted = 0
+		ON CONFLICT(book_id) DO NOTHING`, UploadPending, now, now)))
+}
+
+func workspaceResetStatements(now int64) []sqlite.Statement {
+	return []sqlite.Statement{
 		setSyncState("local_rev", "0", now),
 		setSyncState("last_sync_at", "0", now),
 		setSyncState("dirty", "1", now),
 		stmt(`DELETE FROM sync_state WHERE key = 'remote_device_revs'`),
-	})
+	}
 }
 
 func (s *Store) syncMeta(ctx context.Context) (SyncMeta, error) {

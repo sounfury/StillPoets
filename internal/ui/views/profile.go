@@ -661,7 +661,7 @@ func (a *AppUI) renderWebDAVSubpage(c *ui.Context, pal theme.Palette, isTablet b
 
 							passHint := "应用专用密码"
 							if hasSecret && a.davPass == "" {
-								passHint = "已保存在系统密钥链（留空则沿用原密码）"
+								passHint = "已保存当前密码，更换服务器或账号时请填写"
 							}
 							ui.TextInput(c.Key("dav-pass"), &a.davPass).Password().Placeholder(passHint).Label("密码")
 							ui.TextInput(c.Key("dav-folder"), &a.davFolder).Placeholder("StillPoets").Label("专属目录名")
@@ -1784,7 +1784,7 @@ func (a *AppUI) verifyAndSaveWebDAV() {
 				if syncErr != nil {
 					msg = "配置已保存，但首次同步失败：" + syncErr.Error()
 				} else if syncRes.PartialSync {
-					msg = fmt.Sprintf("首次同步部分完成（%d 条远端警告或待补传资产，可点击「立即同步」重试）", len(syncRes.Warnings))
+					msg = fmt.Sprintf("首次同步部分完成（待上传诗集 %d 本，远端快照警告 %d 条）", syncRes.PendingBookUploads, len(syncRes.Warnings))
 				} else {
 					msg = fmt.Sprintf("连接并首次同步成功！（远端设备 %d 台）", len(syncRes.RemoteDevices))
 				}
@@ -1817,7 +1817,7 @@ func (a *AppUI) triggerManualSync() {
 		if err != nil {
 			msg = "同步失败：" + err.Error()
 		} else if res.PartialSync {
-			msg = fmt.Sprintf("部分同步完成（发现 %d 条远端快照警告或待补传资产）", len(res.Warnings))
+			msg = fmt.Sprintf("部分同步完成（待上传诗集 %d 本，远端快照警告 %d 条）", res.PendingBookUploads, len(res.Warnings))
 		} else {
 			msg = fmt.Sprintf("云同步成功（远端设备 %d 台）", len(res.RemoteDevices))
 		}

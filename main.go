@@ -23,7 +23,14 @@ type mygoSecretsAdapter struct {
 	mod mygo.SecretsModule
 }
 
-func (s mygoSecretsAdapter) Get(key string) ([]byte, error)     { return s.mod.Get(key) }
+func (s mygoSecretsAdapter) Get(key string) ([]byte, error) {
+	value, err := s.mod.Get(key)
+	if errors.Is(err, mygo.ErrSecretNotFound) {
+		return nil, os.ErrNotExist
+	}
+	return value, err
+}
+
 func (s mygoSecretsAdapter) Set(key string, value []byte) error { return s.mod.Set(key, value) }
 func (s mygoSecretsAdapter) Delete(key string) error            { return s.mod.Delete(key) }
 

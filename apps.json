@@ -22,17 +22,25 @@
       "type": "0",
       "lock": "0",
       "isLanZouCloud": "0",
-      "version": "0.1.4",
-      "versionDate": "2026-11-24T15:35:35Z",
-      "versionDescription": "• Android 应用内自动更新与更新小弹窗：每次进入应用（冷启动及切回前台）自动检测 GitHub Releases 新版本，发现新版本时弹出轻量纸书风小弹窗，支持预览 Markdown 更新日志与包体大小。\n• 应用内流式下载、完整性校验与无缝安装：点击「立即更新」后弹窗原地展示下载进度条与实时网速，自动完成 SHA-256 校验并拉起 Android 系统安装器；首次授权「允许安装未知应用」返回应用后自动衔接安装，无需重复下载。\n• 固定正式 Release 签名与校验产物：Android 构建工作流接入固定 Keystore 正式签名，并随 Release 同步发布 .sha256 / SHA256SUMS.txt 校验文件。",
-      "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.4/StillPoets-0.1.4-ios-arm64-unsigned.ipa",
-      "size": 9612959,
+      "version": "0.1.5",
+      "versionDate": "2026-11-24T16:44:34Z",
+      "versionDescription": "• 修复切换 WebDAV 后诗集正文迁移：更换 WebDAV 网盘或同步目录时，自动迁移诗集正文与原文件至新工作区，并为不同工作区独立保管系统密钥链凭据，解决换盘后拉取异常。\n• 内置默认文案焕新（致敬《死亡诗社》）：将设置页排版预览、空书架引导、关于页扉页、平板空阅读器以及 iOS / Android 双端桌面小组件空态与预览文案统一替换为《死亡诗社》经典台词（含梭罗《瓦尔登湖》开场白，4×4 大号组件同步适配）。\n• 排版试看体验与隐秘巧思：优化自定义字体预览的中英对照体验；另外在应用里悄悄藏了一两处留给有缘人的小惊喜，等你偶然遇见。",
+      "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.5/StillPoets-0.1.5-ios-arm64-unsigned.ipa",
+      "size": 9632143,
       "screenshotURLs": [
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-shelf-fragments.png",
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-editorial.png",
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-settings.png"
       ],
       "versions": [
+        {
+          "version": "0.1.5",
+          "date": "2026-11-24T16:44:34Z",
+          "localizedDescription": "• 修复切换 WebDAV 后诗集正文迁移：更换 WebDAV 网盘或同步目录时，自动迁移诗集正文与原文件至新工作区，并为不同工作区独立保管系统密钥链凭据，解决换盘后拉取异常。\n• 内置默认文案焕新（致敬《死亡诗社》）：将设置页排版预览、空书架引导、关于页扉页、平板空阅读器以及 iOS / Android 双端桌面小组件空态与预览文案统一替换为《死亡诗社》经典台词（含梭罗《瓦尔登湖》开场白，4×4 大号组件同步适配）。\n• 排版试看体验与隐秘巧思：优化自定义字体预览的中英对照体验；另外在应用里悄悄藏了一两处留给有缘人的小惊喜，等你偶然遇见。",
+          "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.5/StillPoets-0.1.5-ios-arm64-unsigned.ipa",
+          "size": 9632143,
+          "minOSVersion": "17.0"
+        },
         {
           "version": "0.1.4",
           "date": "2026-11-24T15:35:35Z",

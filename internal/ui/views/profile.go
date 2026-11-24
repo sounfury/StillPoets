@@ -486,22 +486,48 @@ func (a *AppUI) renderTypographySummarySection(c *ui.Context, pal theme.Palette)
 			Background(pal.Surface).
 			Border(1, pal.Border).
 			Children(func() {
-				// 紧凑实时诗句预览条（只读展示，低频字号/行距调节收敛进二级页防误触）
-				ui.Box(c.Key("typo-inline-preview")).
+				// 紧凑实时诗句预览条（轻点可轮换中英对照台词，便于直接预览中英文字形）
+				spec := inlinePreviewSpecimen(a.inlineSpecimenIdx)
+				previewBox := ui.Column(c.Key("typo-inline-preview")).
 					FillWidth().
 					Padding(12, 14).
+					Gap(6).
 					Radius(8).
 					Background(pal.Background).
 					Border(1, pal.Border).
-					Children(func() {
-						ui.Text(c, "纸上有风，留一首诗给自己。").
+					Cursor(ui.CursorPointer)
+				theme.ApplyPressScale(previewBox, 0.985)
+				previewBox.Children(func() {
+					ui.Text(c, spec.ZH).
+						Font(poetryFont).
+						FontSize(float32(a.fontSizeSlider)).
+						FontWeight(curWeight).
+						LineHeight(float32(a.lineHeightSlider)).
+						TextColor(pal.TextPrimary).
+						MaxLines(3)
+					if spec.EN != "" {
+						ui.Text(c, spec.EN).
 							Font(poetryFont).
-							FontSize(float32(a.fontSizeSlider)).
+							FontSize(max(12, float32(a.fontSizeSlider)-2)).
 							FontWeight(curWeight).
 							LineHeight(float32(a.lineHeightSlider)).
-							TextColor(pal.TextPrimary).
-							MaxLines(2)
-					})
+							Italic().
+							TextColor(pal.TextSecondary).
+							MaxLines(3)
+					}
+					if spec.ShowOrigin {
+						ui.Row(c).FillWidth().Justify(ui.End).Children(func() {
+							ui.Text(c, dpsWeltonFootprint).
+								Font(theme.FontMono).
+								FontSize(10).
+								LetterSpacing(0.4).
+								TextColor(pal.TextMuted)
+						})
+					}
+				})
+				if previewBox.Clicked() {
+					a.inlineSpecimenIdx = (a.inlineSpecimenIdx + 1) % len(dpsInlineSpecimens)
+				}
 
 				a.renderSettingsDivider(c, pal)
 
@@ -893,7 +919,8 @@ func (a *AppUI) renderFontsSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 		ui.Scroll(c.Key("subpage-fonts-scroll")).Grow(1).FillWidth().Children(func() {
 			ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(16, 20, 48, 20).Children(func() {
 				ui.Column(c).FillWidth().MaxWidth(layout.ReadingMaxWidthDIP + 80).Gap(18).Children(func() {
-					// 1. 实时诗句标本预览卡
+					// 1. 实时诗句标本预览卡（默认梭罗 7 行开场誓词；轻点切换中英对照台词试字体）
+					spec := fontsPreviewSpecimen(a.fontsSpecimenIdx)
 					ui.Column(c.Key("fonts-specimen-card")).
 						FillWidth().
 						Padding(16, 18, 14, 18).
@@ -902,15 +929,44 @@ func (a *AppUI) renderFontsSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 						Background(pal.Surface).
 						Border(1, pal.Border).
 						Children(func() {
-							ui.Text(c, "实时排版预览").FontSize(11).TextColor(pal.TextMuted)
-							ui.Column(c).FillWidth().Padding(14, 16).Radius(8).Background(pal.Background).Border(1, pal.Border).Gap(6).Children(func() {
-								ui.Text(c, "那里，一切皆有序而美，\n奢华、安宁，与欢愉。").
+							ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+								ui.Text(c, "实时排版预览").FontSize(11).TextColor(pal.TextMuted).Grow(1)
+								hint := "轻点切换中英对照"
+								if spec.ShowOrigin {
+									hint = dpsWeltonFootprint
+								}
+								ui.Text(c, hint).Font(theme.FontMono).FontSize(10).TextColor(pal.TextMuted)
+							})
+							specBox := ui.Column(c.Key("fonts-specimen-box")).
+								FillWidth().
+								Padding(14, 16).
+								Radius(8).
+								Background(pal.Background).
+								Border(1, pal.Border).
+								Gap(10).
+								Cursor(ui.CursorPointer)
+							theme.ApplyPressScale(specBox, 0.99)
+							specBox.Children(func() {
+								ui.Text(c, spec.ZH).
 									Font(poetryFont).
 									FontSize(float32(a.fontSizeSlider)).
 									FontWeight(curWeight).
 									LineHeight(float32(a.lineHeightSlider)).
 									TextColor(pal.TextPrimary)
+								if spec.EN != "" {
+									ui.Box(c).Width(24).Height(1).Background(pal.Border)
+									ui.Text(c, spec.EN).
+										Font(poetryFont).
+										FontSize(max(12.5, float32(a.fontSizeSlider)-1.5)).
+										FontWeight(curWeight).
+										LineHeight(float32(a.lineHeightSlider)).
+										Italic().
+										TextColor(pal.TextSecondary)
+								}
 							})
+							if specBox.Clicked() {
+								a.fontsSpecimenIdx = (a.fontsSpecimenIdx + 1) % len(dpsFontsSpecimens)
+							}
 							ui.Textf(c, "%s · %s · %.0f pt · %.2f×", curFontName, formatFontWeightLabel(curWeight), a.fontSizeSlider, a.lineHeightSlider).
 								Font(theme.FontMono).FontSize(11).TextColor(pal.TextSecondary).MaxLines(1)
 						})
@@ -1335,8 +1391,8 @@ func (a *AppUI) renderWidgetSubpage(c *ui.Context, pal theme.Palette, isTablet b
 }
 
 func (a *AppUI) renderWidgetPreviewCard(c *ui.Context, pal theme.Palette, preview *domain.WidgetTimeline) {
-	poemText := "纸上有风，留一首诗给自己。"
-	metaText := "导入诗集或记一张散页后将自动轮播"
+	poemText := dpsShortDefaultQuote
+	metaText := dpsShortDefaultMeta
 	tagText := "诗笺"
 	hintText := "读全诗 ›"
 	if preview != nil && len(preview.Entries) > 0 {

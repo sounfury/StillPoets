@@ -180,6 +180,9 @@ type AppUI struct {
 
 	// 「我的」设置页二级导航与表单状态
 	profileSub        profileSubpage
+	inlineSpecimenIdx int
+	fontsSpecimenIdx  int
+	nowFn             func() time.Time
 	cacheSizeBytes    int64
 	diagLogSizeBytes  int64
 	davURL            string

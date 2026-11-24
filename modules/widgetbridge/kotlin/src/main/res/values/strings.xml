@@ -1,7 +1,8 @@
 <resources>
     <string name="stillpoets_widget_name">StillPoets 诗笺</string>
     <string name="stillpoets_widget_desc">在桌面轻遇一首诗，点击直达整诗阅读</string>
-    <string name="stillpoets_widget_empty_poem">纸上有风，留一首诗给自己。</string>
-    <string name="stillpoets_widget_empty_meta">打开 StillPoets 导入诗集或记一张散页</string>
+    <string name="stillpoets_widget_empty_poem">诗歌、美丽、浪漫、爱情，才是我们活着的意义。</string>
+    <string name="stillpoets_widget_empty_poem_large">我步入丛林，&#10;因为我希望生活得有意义，&#10;我希望活得深刻，&#10;吸取生命中所有的精华，&#10;把非生命的一切都击溃，&#10;以免当我生命终结，&#10;发现自己从没有活过。</string>
+    <string name="stillpoets_widget_empty_meta">《死亡诗社》 · 打开 StillPoets 导入诗集</string>
     <string name="stillpoets_widget_next_cd">换一首诗</string>
 </resources>

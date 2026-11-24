@@ -88,11 +88,11 @@ struct WidgetEntryPayload: Codable, Equatable {
 
     static let emptyPlaceholder = WidgetEntryPayload(
         entryType: "poem",
-        displayText: "纸上有风，留一首诗给自己。",
-        largeText: nil,
+        displayText: "诗歌、美丽、浪漫、爱情，才是我们活着的意义。",
+        largeText: "我步入丛林，\n因为我希望生活得有意义，\n我希望活得深刻，\n吸取生命中所有的精华，\n把非生命的一切都击溃，\n以免当我生命终结，\n发现自己从没有活过。",
         poemTitle: nil,
-        author: nil,
-        sourceTitle: "打开 StillPoets 导入诗集或记一张散页",
+        author: "打开 StillPoets 导入诗集",
+        sourceTitle: "死亡诗社",
         deeplink: "stillpoets://shelf"
     )
 }

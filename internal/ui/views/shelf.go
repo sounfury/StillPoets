@@ -227,6 +227,11 @@ func (a *AppUI) renderBooksSubTab(c *ui.Context, pal theme.Palette, isTablet boo
 func (a *AppUI) renderTodayRereadHero(c *ui.Context, pal theme.Palette) {
 	today := a.todayReread
 	poetryFont := theme.PoetryFont(a.settings.FontFamily)
+	midnight := a.isMidnightCave()
+	heroLabel := "今日重读"
+	if midnight {
+		heroLabel = dpsMidnightCaveLabel
+	}
 
 	if today == nil {
 		// 空书库引导卡
@@ -244,9 +249,13 @@ func (a *AppUI) renderTodayRereadHero(c *ui.Context, pal theme.Palette) {
 				theme.DrawPaperTexture(p, r, 6, isDark, 0.045)
 			})
 		}
+		emptyQuote := dpsEmptyHeroQuote
+		if midnight {
+			emptyQuote = dpsMidnightHeroQuote
+		}
 		emptyCard.Children(func() {
-			ui.Text(c, "今日重读  ·  静候第一卷诗集").Font(theme.FontSans).FontSize(11).LetterSpacing(0.6).TextColor(pal.TextSecondary)
-			ui.Text(c, "不急着读完，\n给一句诗多一点时间。").
+			ui.Text(c, heroLabel+"  ·  静候第一卷诗集").Font(theme.FontSans).FontSize(11).LetterSpacing(0.6).TextColor(pal.TextSecondary)
+			ui.Text(c, emptyQuote).
 				Font(poetryFont).FontSize(19).FontWeight(500).LineHeight(1.55).TextColor(pal.TextPrimary)
 			ui.Row(c).Gap(10).Padding(4, 0, 0, 0).Children(func() {
 				if ui.PrimaryButton(c, "导入 EPUB 诗集").Clicked() {
@@ -277,7 +286,7 @@ func (a *AppUI) renderTodayRereadHero(c *ui.Context, pal theme.Palette) {
 			ui.Box(c).Width(2.5).FillHeight().Background(pal.HeroCorner).Radius(1.5)
 			ui.Column(c).Grow(1).Gap(7).Children(func() {
 				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, "今日重读").Font(theme.FontSans).FontSize(11).FontWeight(600).LetterSpacing(0.8).TextColor(pal.TextSecondary)
+					ui.Text(c, heroLabel).Font(theme.FontSans).FontSize(11).FontWeight(600).LetterSpacing(0.8).TextColor(pal.TextSecondary)
 					ui.Text(c, "·").Font(theme.FontSans).FontSize(11).TextColor(pal.TextMuted)
 					ui.Text(c, "来自我的诗集").Font(theme.FontNote).FontSize(11).TextColor(pal.TextMuted)
 				})
@@ -311,7 +320,7 @@ func (a *AppUI) renderTodayRereadHero(c *ui.Context, pal theme.Palette) {
 		})
 	hero.Children(func() {
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "今日重读").Font(theme.FontSans).FontSize(11).FontWeight(600).LetterSpacing(0.8).TextColor(pal.TextSecondary)
+			ui.Text(c, heroLabel).Font(theme.FontSans).FontSize(11).FontWeight(600).LetterSpacing(0.8).TextColor(pal.TextSecondary)
 			ui.Text(c, "·").Font(theme.FontSans).FontSize(11).TextColor(pal.TextSecondary)
 			ui.Text(c, "来自我的诗集").Font(theme.FontNote).FontSize(11).TextColor(pal.TextSecondary)
 		})
@@ -714,6 +723,10 @@ func (a *AppUI) renderQuotesSubTab(c *ui.Context, pal theme.Palette, isTablet bo
 						Font(theme.FontSans).FontSize(13).TextColor(pal.TextMuted)
 					if ui.PrimaryButton(c, "+ 记一张散页").Clicked() {
 						a.openNewQuoteModal()
+					}
+					if a.isMidnightCave() {
+						ui.Text(c, dpsMidnightQuietLine).
+							Font(theme.FontNote).FontSize(12).Italic().TextColor(pal.TextMuted).Padding(6, 0, 0, 0)
 					}
 				})
 			return

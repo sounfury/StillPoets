@@ -41,7 +41,7 @@
             android:maxLines="3"
             android:paddingTop="4dp"
             android:paddingBottom="4dp"
-            android:text="从明天起，做一个幸福的人&#10;喂马、劈柴，周游世界"
+            android:text="诗歌、美丽、浪漫、爱情，&#10;才是我们活着的意义。"
             android:textColor="#1F2320"
             android:textSize="15sp" />
 
@@ -56,7 +56,7 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:maxLines="1"
-                android:text="《面朝大海，春暖花开》 · 海子"
+                android:text="《死亡诗社》 · 约翰·基汀"
                 android:textColor="#6B7069"
                 android:textSize="11sp" />
 

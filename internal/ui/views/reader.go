@@ -29,10 +29,33 @@ func (a *AppUI) renderReaderPane(c *ui.Context, pal theme.Palette, isTablet bool
 	}
 	pane.Children(func() {
 		if !hasBook {
-			ui.Column(c).Fill().Center().Gap(12).Padding(32).Children(func() {
+			ui.Column(c).Fill().Center().Gap(18).Padding(36).Children(func() {
 				ui.Text(c, "StillPoets").Font(theme.FontBrand).FontSize(26).Bold().TextColor(pal.TextPrimary)
+				ui.Column(c.Key("reader-empty-thoreau")).
+					MaxWidth(360).
+					Padding(18, 22).
+					Gap(10).
+					Radius(8).
+					Background(pal.Surface).
+					Border(1, pal.Border).
+					Children(func() {
+						ui.Text(c, dpsThoreauOpening).
+							Font(theme.PoetryFont(a.settings.FontFamily)).
+							FontSize(15).
+							LineHeight(1.85).
+							TextColor(pal.TextPrimary)
+						attr := "—— " + dpsThoreauAttribution
+						if a.isMidnightCave() {
+							attr += " · " + dpsMidnightCaveLabel
+						}
+						ui.Text(c, attr).
+							Font(theme.FontNote).
+							FontSize(11.5).
+							Italic().
+							TextColor(pal.TextMuted)
+					})
 				ui.Text(c, "在左侧选择一本诗集，或点右上角 + 导入新的 EPUB。").
-					Font(theme.FontNote).FontSize(14).TextColor(pal.TextMuted)
+					Font(theme.FontNote).FontSize(13).TextColor(pal.TextMuted)
 			})
 			return
 		}

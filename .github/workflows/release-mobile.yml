@@ -360,14 +360,13 @@ jobs:
           printf '## StillPoets %s\n\n' "${TAG}" > "${RUNNER_TEMP}/release-notes.md"
           cat >> "${RUNNER_TEMP}/release-notes.md" <<'EOF'
           ### 安装包说明
-          - **Android (APK)**：内置桌面小组件（`StillPoetsWidgetProvider`）与应用内自动更新，采用**固定正式发布签名**，可直接安装在 Android 手机 / 平板（ARM64）。
-            > 首次从早期测试版升级为正式签名版时，请先确保 WebDAV 已同步并卸载旧版后安装；自本版本起后续均可直接在应用内覆盖更新。
+          - **Android (APK)**：内置桌面小组件（`StillPoetsWidgetProvider`）与应用内自动更新，采用**固定正式发布签名**，可直接覆盖安装升级（ARM64）。
           - **iOS (IPA)**：内嵌 WidgetKit 桌面小组件（`StillPoetsWidget.appex`），免证书未签名真机包，可使用全能签 / 轻松签 / AltStore / SideStore 自签安装。
 
           ### 本次核心更新
-          - **Android 应用内自动更新与更新小弹窗**：每次进入应用（冷启动及切回前台）自动检测 GitHub Releases 新版本，发现新版本时弹出轻量纸书风小弹窗，支持预览 Markdown 更新日志与包体大小。
-          - **应用内流式下载、完整性校验与无缝安装**：点击「立即更新」后弹窗原地展示下载进度条与实时网速，自动完成 SHA-256 校验并拉起 Android 系统安装器；首次授权「允许安装未知应用」返回应用后自动衔接安装，无需重复下载。
-          - **固定正式 Release 签名与校验产物**：Android 构建工作流接入固定 Keystore 正式签名，并随 Release 同步发布 `.sha256` / `SHA256SUMS.txt` 校验文件。
+          - **修复切换 WebDAV 后诗集正文迁移**：更换 WebDAV 网盘或同步目录时，自动迁移诗集正文与原文件至新工作区，并为不同工作区独立保管系统密钥链凭据，解决换盘后拉取异常。
+          - **内置默认文案焕新（致敬《死亡诗社》）**：将设置页排版预览、空书架引导、关于页扉页、平板空阅读器以及 iOS / Android 双端桌面小组件空态与预览文案统一替换为《死亡诗社》经典台词（含梭罗《瓦尔登湖》开场白，4×4 大号组件同步适配）。
+          - **排版试看体验与隐秘巧思**：优化自定义字体预览的中英对照体验；另外在应用里悄悄藏了一两处留给有缘人的小惊喜，等你偶然遇见。
           EOF
 
           if gh release view "${TAG}" >/dev/null 2>&1; then

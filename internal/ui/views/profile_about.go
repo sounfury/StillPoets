@@ -77,6 +77,29 @@ func (a *AppUI) renderAboutSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 							})
 							ui.Text(c, "私有化多端现代诗阅读、独立散页与诗笺小组件。一切藏书与笔记归属于你的设备与网盘。").
 								FontSize(12).LineHeight(1.55).TextColor(pal.TextMuted)
+							// 扉页题记：梭罗《瓦尔登湖》死亡诗社开场誓词
+							ui.Row(c.Key("about-thoreau-epigraph")).
+								FillWidth().
+								Padding(12, 14).
+								Gap(12).
+								Radius(8).
+								Background(pal.Background).
+								Border(1, pal.Border).
+								Children(func() {
+									ui.Box(c).Width(2).FillHeight().Radius(1).Background(pal.Accent.Alpha(0.55))
+									ui.Column(c).Grow(1).Gap(8).Children(func() {
+										ui.Text(c, dpsThoreauOpening).
+											Font(theme.PoetryFont(a.settings.FontFamily)).
+											FontSize(13.5).
+											LineHeight(1.75).
+											TextColor(pal.TextPrimary)
+										ui.Text(c, "—— "+dpsThoreauAttribution).
+											Font(theme.FontNote).
+											FontSize(11).
+											Italic().
+											TextColor(pal.TextMuted)
+									})
+								})
 						})
 
 					// 2. 版本与检查更新卡

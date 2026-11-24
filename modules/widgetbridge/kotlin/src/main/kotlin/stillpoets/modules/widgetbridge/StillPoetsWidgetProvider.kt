@@ -227,7 +227,11 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
                 deeplink = entry.deeplink
                 views.setViewVisibility(R.id.widget_next_btn, if (entries.size > 1) View.VISIBLE else View.GONE)
             } else {
-                poemText = context.getString(R.string.stillpoets_widget_empty_poem)
+                poemText = if (isLargeCard) {
+                    context.getString(R.string.stillpoets_widget_empty_poem_large)
+                } else {
+                    context.getString(R.string.stillpoets_widget_empty_poem)
+                }
                 poemTitleText = ""
                 metaText = context.getString(R.string.stillpoets_widget_empty_meta)
                 tagText = "StillPoets"

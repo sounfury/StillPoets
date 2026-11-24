@@ -21,7 +21,7 @@ import (
 
 const (
 	DefaultAppFolder       = "StillPoets"
-	DefaultUserAgent       = "StillPoets/0.1.1"
+	DefaultUserAgent       = "StillPoets/0.1.2"
 	DefaultConcurrency     = 2
 	DefaultMaxRetries      = 3
 	DefaultMaxRetryDelay   = 60 * time.Second
@@ -54,12 +54,12 @@ type Config struct {
 	AtomicUpload                bool          // 是否先 PUT 临时文件再 MOVE 覆盖（AList/115 如不兼容可关闭）
 	AllowCrossOriginGetRedirect bool          // 允许 GET 跟随跨域 HTTPS 直链重定向（如 OpenList/115 302），并剥离凭据头
 	AllowInsecureTLS            bool          // 仅允许局域网自签名 NAS 时显式开启
-	MaxConcurrency   int           // 默认 2，避免触发坚果云/115 429 频控
-	MaxRetries       int           // 遇 429/502/503/504/临时网络错误的最大重试次数
-	Timeout          time.Duration // 单次请求超时
-	RetryBaseDelay   time.Duration // 退避基础延迟（单元测试可设为极小值）
-	MaxRetryDelay    time.Duration // 退避与 Retry-After 最大等待上限
-	MaxDownloadBytes int64         // 默认 GET 最大下载字节数，默认 64 MiB
+	MaxConcurrency              int           // 默认 2，避免触发坚果云/115 429 频控
+	MaxRetries                  int           // 遇 429/502/503/504/临时网络错误的最大重试次数
+	Timeout                     time.Duration // 单次请求超时
+	RetryBaseDelay              time.Duration // 退避基础延迟（单元测试可设为极小值）
+	MaxRetryDelay               time.Duration // 退避与 Retry-After 最大等待上限
+	MaxDownloadBytes            int64         // 默认 GET 最大下载字节数，默认 64 MiB
 }
 
 // Entry 表示 PROPFIND 返回的单个远端直接子项（已排除目录自身）。

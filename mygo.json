@@ -2,7 +2,8 @@
   "name": "StillPoets",
   "slug": "stillpoets",
   "identifier": "app.stillpoets.client",
-  "version": "0.1.1",
+  "version": "0.1.2",
+  "icon": "resources/icon.png",
   "urlSchemes": ["stillpoets"],
   "ios": {
     "minimumSystemVersion": "17.0",
@@ -13,6 +14,10 @@
   },
   "android": {
     "minSdk": 26,
+    "adaptiveIcon": {
+      "foreground": "resources/icon-adaptive-foreground.png",
+      "background": "#C8D3BE"
+    },
     "splash": "#F4F4EF"
   }
 }

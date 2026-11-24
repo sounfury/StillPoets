@@ -309,6 +309,23 @@ func (s *Store) SetBookStarred(ctx context.Context, bookID string, starred bool)
 	})
 }
 
+// UpdateBookParsedContentMeta 在重建并上传 .spbook.json.gz 后原子更新书籍正文哈希、体积与 ContentVer，
+// 同步维护 local_content_hash 保持本机已下载态，并由 Lamport 合并广播给其他端。
+func (s *Store) UpdateBookParsedContentMeta(ctx context.Context, bookID, contentHash string, contentSize int64) error {
+	if bookID == "" || contentHash == "" || contentSize <= 0 {
+		return errors.New("storage: invalid parsed content metadata")
+	}
+	return s.mutate(ctx, func(v domain.Version, _ int64) ([]sqlite.Statement, error) {
+		if err := s.requireActiveBook(ctx, bookID); err != nil {
+			return nil, err
+		}
+		return []sqlite.Statement{
+			stmt(`UPDATE books SET content_hash = ?, content_size = ?, content_ver_c = ?, content_ver_i = ?, local_content_hash = ? WHERE id = ? AND deleted = 0`,
+				contentHash, contentSize, v.Counter, v.InstallID, contentHash, bookID),
+		}, nil
+	})
+}
+
 func (s *Store) DeleteBook(ctx context.Context, bookID string) error {
 	return s.mutate(ctx, func(v domain.Version, now int64) ([]sqlite.Statement, error) {
 		err := s.requireActiveBook(ctx, bookID)

@@ -163,6 +163,53 @@ func (s *Store) PrepareWorkspaceSwitch(ctx context.Context) error {
 		ON CONFLICT(book_id) DO NOTHING`, UploadPending, now, now)))
 }
 
+// EnqueueBookMigrations 为指定的现存未删除诗集补充待验证/补传任务，已存在于队列中的记录保持不变。
+func (s *Store) EnqueueBookMigrations(ctx context.Context, bookIDs []string) (int, error) {
+	if len(bookIDs) == 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := domain.NowMillis()
+	enqueued := 0
+	var statements []sqlite.Statement
+	seen := make(map[string]struct{}, len(bookIDs))
+	for _, id := range bookIDs {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		_, err := s.firstRow(ctx, `SELECT book_id FROM pending_uploads WHERE book_id = ?`, id)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return 0, err
+		}
+		r, err := s.firstRow(ctx, `SELECT raw_filename, content_hash FROM books WHERE id = ? AND deleted = 0`, id)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		statements = append(statements, stmt(`INSERT INTO pending_uploads (`+pendingUploadColumns+`)
+			VALUES (?, ?, '', '', '', ?, ?, '', ?, ?) ON CONFLICT(book_id) DO NOTHING`,
+			id, r.text(0), r.text(1), UploadPending, now, now))
+		enqueued++
+	}
+	if len(statements) == 0 {
+		return 0, nil
+	}
+	if err := s.transact(ctx, statements); err != nil {
+		return 0, err
+	}
+	return enqueued, nil
+}
+
 func workspaceResetStatements(now int64) []sqlite.Statement {
 	return []sqlite.Statement{
 		setSyncState("local_rev", "0", now),

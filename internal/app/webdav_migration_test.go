@@ -284,3 +284,176 @@ func seedMigrationBook(t *testing.T, cfg WebDAVConfigInput) (domain.Book, domain
 	}
 	return book, poem
 }
+
+func TestWebDAVReconcilesMissingRemoteBooksAfterPreUpgradeSwitch(t *testing.T) {
+	ctx := t.Context()
+	oldServer := migrationTestServer(t, "old-pass", nil)
+	newServer := migrationTestServer(t, "new-pass", nil)
+
+	oldCfg := syncTestConfig(oldServer.URL)
+	oldCfg.Password = "old-pass"
+	newCfg := syncTestConfig(newServer.URL)
+	newCfg.Password = "new-pass"
+
+	book, poem := seedMigrationBook(t, oldCfg)
+
+	// 1. iOS 从旧 WebDAV 同步并按需下载正文，随后模拟旧版只落 SQLite（磁盘无 cache/spbook 与 cache/raw）
+	iosDir, iosSecrets := t.TempDir(), NewMemorySecretStore()
+	ios := openMigrationTestService(t, iosDir, iosSecrets)
+	if err := ios.SaveWebDAVConfig(ctx, oldCfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ios.SyncNow(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := ios.EnsureBookContent(ctx, book.ID); err != nil {
+		t.Fatalf("iOS download from old workspace failed: %v", err)
+	}
+	ios.removeLocalBookCacheFiles(book.ID)
+	if err := ios.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. 模拟用户在升版前（v0.1.4）直接改配新 WebDAV（坚果云）：无 migrationSources、无 pending_uploads，
+	// 且新工作区只有 iOS 推上去的元数据快照，完全没有 books/ 目录。
+	if err := writeJSONAtomic(filepath.Join(iosDir, webdavProfileFilename), webDAVProfileFromInput(newCfg)); err != nil {
+		t.Fatal(err)
+	}
+	if err := iosSecrets.Set(webdavPasswordKey, []byte(newCfg.Password)); err != nil {
+		t.Fatal(err)
+	}
+	newClient, err := webdav.NewClient(webdav.Config{
+		BaseURL: newCfg.BaseURL, Username: newCfg.Username, Password: newCfg.Password, AppFolder: newCfg.AppFolder,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer newClient.CloseIdleConnections()
+	if _, err := booksync.NewEngine(newClient).Sync(ctx, booksync.SyncRequest{
+		InstallID: "legacy-ios-pre-upgrade",
+		ForcePush: true,
+		LocalData: booksync.SnapshotData{Books: []domain.Book{book}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. 新安卓端先同步了只有元数据的坚果云，此时无法下载正文
+	android := openMigrationTestService(t, t.TempDir(), NewMemorySecretStore())
+	if err := android.SaveWebDAVConfig(ctx, newCfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := android.SyncNow(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := android.EnsureBookContent(ctx, book.ID); err == nil {
+		t.Fatalf("expected android download to fail before iOS reconciles missing books/")
+	}
+
+	// 4. iOS 升级重启后触发一次普通同步：应自动发现远端 books/ 缺失、从本地 SQLite 重建并上传正文包，更新 ContentHash/ContentVer 并发布快照
+	ios = openMigrationTestService(t, iosDir, iosSecrets)
+	if ov, err := ios.GetSyncOverview(ctx); err != nil || ov.PendingCount != 0 {
+		t.Fatalf("expected 0 pending uploads before reconcile, got %+v, %v", ov, err)
+	}
+	res, err := ios.SyncNow(ctx, false)
+	if err != nil || !res.Published || res.PartialSync || res.PendingBookUploads != 0 {
+		t.Fatalf("reconcile sync = %+v, %v", res, err)
+	}
+
+	// 再次同步应保持幂等，不重复上传/发布
+	res2, err := ios.SyncNow(ctx, false)
+	if err != nil || res2.Published || res2.PartialSync || res2.PendingBookUploads != 0 {
+		t.Fatalf("second sync should be idempotent, got %+v, %v", res2, err)
+	}
+
+	// 5. 新安卓端再次同步后即可正常按需下载并读取全本诗篇
+	if _, err := android.SyncNow(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := android.EnsureBookContent(ctx, book.ID); err != nil {
+		t.Fatalf("android could not open reconciled book: %v", err)
+	}
+	poems, err := android.ListPoems(ctx, book.ID)
+	if err != nil || len(poems) != 1 || poems[0].ID != poem.ID || poems[0].Title != poem.Title {
+		t.Fatalf("android poems = %+v, %v", poems, err)
+	}
+}
+
+func TestWebDAVMigrationFallbackAndPendingErrorOverview(t *testing.T) {
+	ctx := t.Context()
+	var oldDown atomic.Bool
+	oldServer := migrationTestServer(t, "old-pass", func(*http.Request) bool {
+		return oldDown.Load()
+	})
+	newServer := migrationTestServer(t, "new-pass", nil)
+
+	oldCfg := syncTestConfig(oldServer.URL)
+	oldCfg.Password = "old-pass"
+	newCfg := syncTestConfig(newServer.URL)
+	newCfg.Password = "new-pass"
+
+	book, poem := seedMigrationBook(t, oldCfg)
+
+	t.Run("rescues downloaded book from sqlite when old workspace is unreachable", func(t *testing.T) {
+		oldDown.Store(false)
+		dev := openMigrationTestService(t, t.TempDir(), NewMemorySecretStore())
+		if err := dev.SaveWebDAVConfig(ctx, oldCfg); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := dev.SyncNow(ctx, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := dev.EnsureBookContent(ctx, book.ID); err != nil {
+			t.Fatal(err)
+		}
+		dev.removeLocalBookCacheFiles(book.ID)
+
+		// 旧工作区彻底下线后再切到新工作区
+		oldDown.Store(true)
+		if err := dev.SaveWebDAVConfig(ctx, newCfg); err != nil {
+			t.Fatal(err)
+		}
+		if res, err := dev.SyncNow(ctx, true); err != nil || res.PartialSync || res.PendingBookUploads != 0 {
+			t.Fatalf("fallback migration sync = %+v, %v", res, err)
+		}
+
+		reader := openMigrationTestService(t, t.TempDir(), NewMemorySecretStore())
+		if err := reader.SaveWebDAVConfig(ctx, newCfg); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reader.SyncNow(ctx, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := reader.EnsureBookContent(ctx, book.ID); err != nil {
+			t.Fatalf("reader failed to open rescued book: %v", err)
+		}
+		if poems, err := reader.ListPoems(ctx, book.ID); err != nil || len(poems) != 1 || poems[0].ID != poem.ID {
+			t.Fatalf("reader poems = %+v, %v", poems, err)
+		}
+	})
+
+	t.Run("exposes pending upload error in overview when neither local nor old workspace has content", func(t *testing.T) {
+		oldDown.Store(false)
+		dev := openMigrationTestService(t, t.TempDir(), NewMemorySecretStore())
+		if err := dev.SaveWebDAVConfig(ctx, oldCfg); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := dev.SyncNow(ctx, false); err != nil {
+			t.Fatal(err)
+		}
+		// 不下载正文（保持 LocalStateRemote），旧工作区下线后切盘
+		oldDown.Store(true)
+		emptyServer := migrationTestServer(t, "empty-pass", nil)
+		emptyCfg := syncTestConfig(emptyServer.URL)
+		emptyCfg.Password = "empty-pass"
+		if err := dev.SaveWebDAVConfig(ctx, emptyCfg); err != nil {
+			t.Fatal(err)
+		}
+		if res, err := dev.SyncNow(ctx, true); err != nil || !res.PartialSync || res.PendingBookUploads != 1 {
+			t.Fatalf("expected partial sync with 1 pending upload, got %+v, %v", res, err)
+		}
+		ov, err := dev.GetSyncOverview(ctx)
+		if err != nil || ov.PendingCount != 1 || ov.PendingError == "" {
+			t.Fatalf("expected SyncOverview to expose PendingError, got %+v, %v", ov, err)
+		}
+	})
+}

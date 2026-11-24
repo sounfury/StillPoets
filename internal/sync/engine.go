@@ -427,6 +427,67 @@ func (e *Engine) UploadBookAssets(
 	return result, nil
 }
 
+// UploadBookParsedAssets 仅上传已解析的 .spbook.json.gz 正文包（及可选封面）并回读校验，
+// 用于本机仅持有已下载正文（无原始 EPUB 备份且旧 WebDAV 源不可达）时的跨工作区救援迁移。
+func (e *Engine) UploadBookParsedAssets(
+	ctx context.Context,
+	book domain.Book,
+	spbookCompressed []byte,
+	coverWebP []byte,
+) (*BookAssetUploadResult, error) {
+	if book.ID == "" {
+		return nil, errors.New("sync: book id is empty")
+	}
+	if book.ContentHash == "" {
+		return nil, errors.New("sync: book contentHash is empty")
+	}
+	if len(spbookCompressed) == 0 {
+		return nil, errors.New("sync: spbook bytes are required")
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	bookDir := fmt.Sprintf("%s/%s", BooksDir, book.ID)
+	if err := e.client.EnsureDir(ctx, bookDir); err != nil {
+		return nil, fmt.Errorf("sync: ensure book dir %s: %w", bookDir, err)
+	}
+
+	parsedPath := BookParsedPath(book.ID)
+	if _, err := e.client.Put(ctx, parsedPath, spbookCompressed, ContentTypeGzip); err != nil {
+		return nil, fmt.Errorf("sync: put parsed spbook %s: %w", parsedPath, err)
+	}
+	readBackParsed, err := e.readBackWithRetry(ctx, parsedPath, MaxSPBookCompressedBytes)
+	if err != nil {
+		return nil, fmt.Errorf("sync: verify parsed spbook %s: %w", parsedPath, err)
+	}
+	if _, err := DecodeSPBook(readBackParsed, book.ContentHash, book.ID); err != nil {
+		return nil, fmt.Errorf("sync: verify decoded spbook %s: %w", parsedPath, err)
+	}
+
+	result := &BookAssetUploadResult{}
+	if len(coverWebP) > 0 {
+		coverPath := BookCoverPath(book.ID)
+		if _, err := e.client.Put(ctx, coverPath, coverWebP, "image/webp"); err != nil {
+			result.CoverWarning = err
+		}
+	}
+	return result, nil
+}
+
+// VerifyBookParsedAsset 确认目标工作区已存在且可解码该版本的 parsed.spbook.json.gz。
+func (e *Engine) VerifyBookParsedAsset(ctx context.Context, book domain.Book) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	parsed, _, err := e.client.GetWithLimit(ctx, BookParsedPath(book.ID), MaxSPBookCompressedBytes)
+	if err != nil {
+		return err
+	}
+	_, err = DecodeSPBook(parsed, book.ContentHash, book.ID)
+	return err
+}
+
 // VerifyBookAssets 确认目标工作区已有该版本的正文与原始文件，可跳过重复迁移。
 func (e *Engine) VerifyBookAssets(ctx context.Context, book domain.Book) error {
 	e.mu.Lock()

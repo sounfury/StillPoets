@@ -146,6 +146,7 @@ type SyncOverview struct {
 	Dirty         bool
 	LastSyncAt    int64
 	PendingCount  int
+	PendingError  string
 	RemoteDevices []string
 }
 
@@ -557,6 +558,10 @@ func (s *Service) EnsureBookContent(ctx context.Context, bookID string) error {
 
 	if err := s.store.SaveBookContent(ctx, book.ID, book.ContentHash, sp); err != nil {
 		return err
+	}
+	// 顺手保留已校验的 .spbook.json.gz 离线副本，方便后续换盘无损补传或清理后瞬时恢复
+	if mkErr := os.MkdirAll(filepath.Dir(localSPPath), 0o755); mkErr == nil {
+		_ = os.WriteFile(localSPPath, raw, 0o600)
 	}
 	if book.CoverHash != "" {
 		_, _ = s.EnsureBookCover(ctx, book.ID)
@@ -1192,6 +1197,13 @@ func (s *Service) GetSyncOverview(ctx context.Context) (SyncOverview, error) {
 	configured := s.profile.Enabled && s.profile.BaseURL != ""
 	devices := slices.Clone(s.remoteDevices)
 	s.mu.Unlock()
+	pendingErr := ""
+	for _, p := range pending {
+		if msg := strings.TrimSpace(p.LastError); msg != "" {
+			pendingErr = SanitizeLogText(msg)
+			break
+		}
+	}
 	return SyncOverview{
 		Configured:    configured,
 		InstallID:     meta.InstallID,
@@ -1199,6 +1211,7 @@ func (s *Service) GetSyncOverview(ctx context.Context) (SyncOverview, error) {
 		Dirty:         meta.Dirty,
 		LastSyncAt:    meta.LastSyncAt,
 		PendingCount:  len(pending),
+		PendingError:  pendingErr,
 		RemoteDevices: devices,
 	}, nil
 }
@@ -1256,6 +1269,9 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 	s.LogEvent("sync", "sync started (forcePush=%v)", forcePush)
 
 	engine := booksync.NewEngine(client)
+
+	// 0. 巡检当前远端 books/ 目录，若发现本机已下载/持有正文的诗集在远端缺失（例如升版前已切盘），自动补入待上传队列
+	s.reconcileRemoteMissingBooks(runCtx, client, startEpoch)
 
 	// 1. 先处理 pending_uploads（遵守「先传资产、回读确认、再发布书目元数据」铁律）
 	if pending, pErr := s.store.ListPendingUploads(runCtx); pErr == nil && len(pending) > 0 {
@@ -1437,7 +1453,7 @@ func (s *Service) flushPendingUploads(ctx context.Context, engine *booksync.Engi
 		var uploadErr error
 		if bookErr == nil {
 			if isWorkspaceMigration(item) {
-				uploadErr = s.uploadMigratingBook(ctx, engine, sources, sourceErr, book)
+				uploadErr = s.uploadMigratingBook(ctx, engine, sources, sourceErr, book, epoch)
 			} else {
 				uploadErr = uploadPendingBook(ctx, engine, book, item)
 			}

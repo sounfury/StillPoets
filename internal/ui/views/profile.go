@@ -788,6 +788,10 @@ func (a *AppUI) renderWebDAVSubpage(c *ui.Context, pal theme.Palette, isTablet b
 								Font(theme.FontMono).FontSize(11).TextColor(pal.TextMuted)
 							ui.Textf(c, "上次同步：%s · 待上传诗集：%d 本", lastSync, ov.PendingCount).
 								FontSize(12).TextColor(pal.TextSecondary)
+							if ov.PendingError != "" {
+								ui.Textf(c, "最近上传异常：%s", ov.PendingError).
+									FontSize(11).LineHeight(1.45).TextColor(pal.Accent).MaxLines(3)
+							}
 						})
 
 					// 远端设备管理卡片

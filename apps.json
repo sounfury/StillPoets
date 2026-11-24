@@ -22,17 +22,25 @@
       "type": "0",
       "lock": "0",
       "isLanZouCloud": "0",
-      "version": "0.1.2",
-      "versionDate": "2026-11-24T13:40:39Z",
-      "versionDescription": "• 全新正式版 App 图标（展开的诗集与秋叶）：采用画册风鼠尾草绿底、赤陶精装书壳、暖棉纸双页与轻栖赤陶秋叶\n• 双端原生图标规范适配：同步配置 iOS 无透明通道 AppIcon 与 Android 8.0+ 自适应图标（108dp 透明前景层 + #C8D3BE 背景层）",
-      "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.2/StillPoets-0.1.2-ios-arm64-unsigned.ipa",
-      "size": 9271890,
+      "version": "0.1.3",
+      "versionDate": "2026-11-24T15:13:02Z",
+      "versionDescription": "• WebDAV / OpenList + 115 同步链路大幅提速：优先 ListDir 并缓存已确认目录（避免每次重复 MKCOL/PROPFIND）、持久化远端设备已合并代次跳过未变化快照重复 GET（常规无变更同步压缩至 1 次请求）、清理旧代次复用本机已校验 LocalRev、原始大文件 .epub 改用轻量 PROPFIND Depth:0 属性校验，并按工作区复用 HTTP 连接池。\n• 更新日志升级为三级底部抽屉 + 原生 Markdown 渲染：「关于 StillPoets」页内收敛为「更新日志」入口，点击弹出可拖拽底部抽屉，使用原生 Markdown 排版完整展示历次更新说明。\n• 修复 iOS 二级页面顶部大面积空白：移除二级页顶栏对顶部安全区的重复叠加，与主顶栏保持一致高度。\n• 阅读排版与字体防误触重排：将「正文字号」与「行距倍数」滑块收纳进「阅读排版与字体」二级页，设置主页仅保留只读预览条与入口摘要。",
+      "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.3/StillPoets-0.1.3-ios-arm64-unsigned.ipa",
+      "size": 9575472,
       "screenshotURLs": [
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-shelf-fragments.png",
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-editorial.png",
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-settings.png"
       ],
       "versions": [
+        {
+          "version": "0.1.3",
+          "date": "2026-11-24T15:13:02Z",
+          "localizedDescription": "• WebDAV / OpenList + 115 同步链路大幅提速：优先 ListDir 并缓存已确认目录（避免每次重复 MKCOL/PROPFIND）、持久化远端设备已合并代次跳过未变化快照重复 GET（常规无变更同步压缩至 1 次请求）、清理旧代次复用本机已校验 LocalRev、原始大文件 .epub 改用轻量 PROPFIND Depth:0 属性校验，并按工作区复用 HTTP 连接池。\n• 更新日志升级为三级底部抽屉 + 原生 Markdown 渲染：「关于 StillPoets」页内收敛为「更新日志」入口，点击弹出可拖拽底部抽屉，使用原生 Markdown 排版完整展示历次更新说明。\n• 修复 iOS 二级页面顶部大面积空白：移除二级页顶栏对顶部安全区的重复叠加，与主顶栏保持一致高度。\n• 阅读排版与字体防误触重排：将「正文字号」与「行距倍数」滑块收纳进「阅读排版与字体」二级页，设置主页仅保留只读预览条与入口摘要。",
+          "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.3/StillPoets-0.1.3-ios-arm64-unsigned.ipa",
+          "size": 9575472,
+          "minOSVersion": "17.0"
+        },
         {
           "version": "0.1.2",
           "date": "2026-11-24T13:40:39Z",

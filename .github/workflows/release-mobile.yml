@@ -307,7 +307,7 @@ jobs:
 
           ls -lh release-assets/
 
-          cat > release-notes.md <<EOF
+          cat > "${RUNNER_TEMP}/release-notes.md" <<EOF
           ## StillPoets ${TAG}
 
           ### 安装包说明
@@ -316,15 +316,39 @@ jobs:
 
           ### 本次核心更新
           - **全新正式版 App 图标（展开的诗集与秋叶）**：采用 StillPoets 画册风招牌配色（鼠尾草绿底 + 赤陶精装书壳 + 暖棉纸双页 + 轻栖赤陶秋叶），已完成 1024×1024 高精光栅化与光学居中调优。
-          - **双端原生图标规范适配**：同步配置 iOS 无透明通道 `AppIcon` 与 Android 8.0+ 自适应图标（Adaptive Icon 108dp 透明前景层 + `#C8D3BE` 鼠尾草绿背景层），兼容圆形、圆角矩形及视差动效且不裁切主体。
+          - **双端原生图标规范适配**：同步配置 iOS 无透明通道 \`AppIcon\` 与 Android 8.0+ 自适应图标（Adaptive Icon 108dp 透明前景层 + \`#C8D3BE\` 鼠尾草绿背景层），兼容圆形、圆角矩形及视差动效且不裁切主体。
           EOF
 
           if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release edit "${TAG}" --title "StillPoets ${TAG}" --notes-file release-notes.md
+            gh release edit "${TAG}" --title "StillPoets ${TAG}" --notes-file "${RUNNER_TEMP}/release-notes.md"
             gh release upload "${TAG}" release-assets/* --clobber
           else
             gh release create "${TAG}" release-assets/* \
               --title "StillPoets ${TAG}" \
-              --notes-file release-notes.md \
+              --notes-file "${RUNNER_TEMP}/release-notes.md" \
               --target "${GITHUB_SHA}"
+          fi
+
+          IPA_FILE=$(ls release-assets/*.ipa | head -n 1)
+          IPA_NAME=$(basename "${IPA_FILE}")
+          IPA_SIZE=$(stat -c%s "${IPA_FILE}")
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          git fetch origin main
+          git checkout -B main origin/main
+          python3 scripts/update_apps_source.py \
+            --output apps.json \
+            --version "${APP_VER}" \
+            --tag "${TAG}" \
+            --ipa-name "${IPA_NAME}" \
+            --size "${IPA_SIZE}" \
+            --date "${PUB_DATE}" \
+            --notes-file "${RUNNER_TEMP}/release-notes.md"
+
+          if ! git diff --quiet apps.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add apps.json
+            git commit -m "chore(release): 更新 iOS 软件源 apps.json (${TAG}) [skip ci]"
+            git push origin HEAD:main
           fi

@@ -91,8 +91,11 @@
 
 ### iOS（iPhone）
 - 最低要求：**iOS 17.0+**。
-- Release 默认提供免证书未签名真机包 `StillPoets-<version>-ios-arm64-unsigned.ipa`（已内置 `StillPoetsWidget.appex` 桌面小组件）。
-- 可使用 **全能签 / 轻松签 / AltStore / SideStore** 等工具自签安装；如需云端直接签名，可 Fork 本仓库后在 GitHub Actions 中运行 `Build iOS IPA (with WidgetKit)`（`signed` 模式）并配置签名 Secrets。
+- Release 默认提供免证书未签名真机包 `StillPoets-<version>-ios-arm64-unsigned.ipa`（已内置 `StillPoetsWidget.appex` 桌面小组件），可使用 **全能签 / 轻松签 / AltStore / SideStore** 等工具自签安装。
+- **第三方软件源订阅**（推荐，在全能签 / 轻松签 / AltStore / SideStore 中「添加软件源」粘贴以下任一地址，发新版本后可直接刷新更新）：
+  - GitHub Raw：`https://raw.githubusercontent.com/sounfury/StillPoets/main/apps.json`
+  - jsDelivr CDN：`https://cdn.jsdelivr.net/gh/sounfury/StillPoets@main/apps.json`
+- 如需云端直接签名，可 Fork 本仓库后在 GitHub Actions 中运行 `Build iOS IPA (with WidgetKit)`（`signed` 模式）并配置签名 Secrets。
 
 ---
 

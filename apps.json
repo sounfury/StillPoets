@@ -1,0 +1,63 @@
+{
+  "name": "StillPoets 官方源",
+  "subtitle": "让你记住，自己依然是诗人（Still a Poet）",
+  "description": "StillPoets 私有化（BYOD）多端现代诗集阅读、独立散页与桌面小组件官方软件源。",
+  "message": "StillPoets 官方 iOS 自签软件源\n免费开源，仅分发未签名原包，请使用全能签 / 轻松签 / AltStore / SideStore 自签安装。",
+  "identifier": "app.stillpoets.source",
+  "sourceURL": "https://raw.githubusercontent.com/sounfury/StillPoets/main/apps.json",
+  "sourceicon": "https://raw.githubusercontent.com/sounfury/StillPoets/main/resources/icon.png",
+  "iconURL": "https://raw.githubusercontent.com/sounfury/StillPoets/main/resources/icon.png",
+  "website": "https://github.com/sounfury/StillPoets",
+  "tintColor": "BC5B46",
+  "apps": [
+    {
+      "name": "StillPoets",
+      "bundleIdentifier": "app.stillpoets.client",
+      "developerName": "sounfury",
+      "subtitle": "私有诗集阅读、独立散页与桌面诗笺小组件",
+      "localizedDescription": "让你记住，自己依然是诗人（Still a Poet）。\n\nStillPoets 是一款私有化（BYOD）现代诗集阅读、独立散页管理与桌面小组件联动应用：\n• 双入口结构：EPUB 诗集解析导入与独立散页摘录互不污染\n• 沉浸阅读体验：左右跟手滑切诗、自定义字体与四档字重、偶遇进度保护\n• 三套出版主题：画册风 / 刊物风 / 暗夜极简（支持跟随系统深色模式）\n• 原生桌面小组件：iOS WidgetKit 小/中/大号卡片 + 原地换诗 + 点击高亮直达原诗\n• 私有 WebDAV 同步：兼容坚果云、Nextcloud、群晖 NAS 与 AList/115，凭据仅存系统 Keychain",
+      "iconURL": "https://raw.githubusercontent.com/sounfury/StillPoets/main/resources/icon.png",
+      "tintColor": "BC5B46",
+      "category": "books",
+      "type": "0",
+      "lock": "0",
+      "isLanZouCloud": "0",
+      "version": "0.1.2",
+      "versionDate": "2026-11-24T13:40:39Z",
+      "versionDescription": "• 全新正式版 App 图标（展开的诗集与秋叶）：采用画册风鼠尾草绿底、赤陶精装书壳、暖棉纸双页与轻栖赤陶秋叶\n• 双端原生图标规范适配：同步配置 iOS 无透明通道 AppIcon 与 Android 8.0+ 自适应图标（108dp 透明前景层 + #C8D3BE 背景层）",
+      "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.2/StillPoets-0.1.2-ios-arm64-unsigned.ipa",
+      "size": 9271890,
+      "screenshotURLs": [
+        "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-shelf-fragments.png",
+        "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-editorial.png",
+        "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-settings.png"
+      ],
+      "versions": [
+        {
+          "version": "0.1.2",
+          "date": "2026-11-24T13:40:39Z",
+          "localizedDescription": "• 全新正式版 App 图标（展开的诗集与秋叶）：采用画册风鼠尾草绿底、赤陶精装书壳、暖棉纸双页与轻栖赤陶秋叶\n• 双端原生图标规范适配：同步配置 iOS 无透明通道 AppIcon 与 Android 8.0+ 自适应图标（108dp 透明前景层 + #C8D3BE 背景层）",
+          "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.2/StillPoets-0.1.2-ios-arm64-unsigned.ipa",
+          "size": 9271890,
+          "minOSVersion": "17.0"
+        },
+        {
+          "version": "0.1.1",
+          "date": "2026-11-24T08:35:47Z",
+          "localizedDescription": "• 新增 WebDAV 同步等待动画与实时阶段提示\n• 设置页重排与二级页面架构\n• 新增 4 档正文字重与自定义字体管理\n• 新增「关于 StillPoets」页、版本检查与脱敏诊断日志\n• 修复大号桌面小组件长摘要排版",
+          "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.1/StillPoets-0.1.1-ios-arm64-unsigned.ipa",
+          "size": 7365876,
+          "minOSVersion": "17.0"
+        },
+        {
+          "version": "0.1.0",
+          "date": "2026-11-23T15:07:03Z",
+          "localizedDescription": "• StillPoets V1.0 首个双端发布版：EPUB 诗集解析、独立散页、WebDAV 同步与 iOS/Android 原生桌面小组件。",
+          "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.0/StillPoets-0.1.0-ios-arm64-unsigned.ipa",
+          "size": 7265056,
+          "minOSVersion": "17.0"
+        }
+      ]
+    }
+  ]
+}

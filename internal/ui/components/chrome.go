@@ -127,7 +127,7 @@ func ShelfSubTabs(c *ui.Context, pal theme.Palette, active ShelfSubTab, slidePro
 
 			// 跟手滑动的主题短下划线轨道
 			ui.Box(c.Key("subtab-track")).
-				Width(itemW*2+gapW).
+				Width(itemW*2 + gapW).
 				Height(2).
 				Draw(func(p *ui.Painter, r ui.Rect) {
 					p.Fill(ui.Rect{X: r.X + barX, Y: r.Y, W: barW, H: r.H}, pal.Accent, 1)
@@ -325,8 +325,17 @@ func TabletNavRail(c *ui.Context, pal theme.Palette, active NavTab, onSelect fun
 		})
 }
 
-// SyncToastPill 渲染瞬态云同步轻胶囊（同步成功约 2 秒后自动淡出，平时不占位）。
-func SyncToastPill(c *ui.Context, pal theme.Palette, message string, onClick func()) {
+// ToastKind 表示底部瞬态轻胶囊的视觉图标类型。
+type ToastKind int
+
+const (
+	ToastInfo ToastKind = iota
+	ToastLoading
+	ToastWarning
+)
+
+// SyncToastPill 渲染瞬态云同步轻胶囊（同步中带原生旋转等待动画，同步成功约 2 秒后自动淡出，平时不占位）。
+func SyncToastPill(c *ui.Context, pal theme.Palette, kind ToastKind, message string, onClick func()) {
 	if message == "" {
 		return
 	}
@@ -341,7 +350,14 @@ func SyncToastPill(c *ui.Context, pal theme.Palette, message string, onClick fun
 		Cursor(ui.CursorPointer)
 	theme.ApplyPressScale(pill, 0.96)
 	pill.Children(func() {
-		ui.Icon(c, IconCloudCheck).Width(15).Height(15).TextColor(pal.Accent)
+		switch kind {
+		case ToastLoading:
+			ui.Spinner(c.Key("toast-spinner")).FontSize(14).TextColor(pal.Accent).Label(message)
+		case ToastWarning:
+			ui.Icon(c, IconAlertCircle).Width(15).Height(15).TextColor(pal.Accent)
+		default:
+			ui.Icon(c, IconCloudCheck).Width(15).Height(15).TextColor(pal.Accent)
+		}
 		ui.Text(c, message).Font(theme.FontSans).FontSize(12).TextColor(pal.TextSecondary)
 	})
 	if pill.Clicked() && onClick != nil {

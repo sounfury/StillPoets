@@ -82,11 +82,13 @@ func (s *Store) loadSettingsLocked(ctx context.Context) (domain.Settings, error)
 	settings := domain.Settings{
 		ThemePreset:          "artbook",
 		FontSize:             18,
+		FontWeight:           domain.DefaultFontWeight,
 		LineHeight:           1.85,
 		WidgetMode:           domain.WidgetModeGlobalRandom,
 		WidgetRefreshMinutes: domain.DefaultWidgetRefreshMinutes,
 		WidgetTheme: domain.WidgetThemeConfig{
 			Preset: "artbook", BgColor: "#F4F4EF", TextColor: "#1A1A1A", AccentColor: "#BC5B46",
+			FontWeight: domain.DefaultFontWeight,
 		},
 	}
 	row, err := s.firstRow(ctx, `SELECT value FROM sync_state WHERE key = 'local_settings'`)
@@ -99,6 +101,7 @@ func (s *Store) loadSettingsLocked(ctx context.Context) (domain.Settings, error)
 	if err := json.Unmarshal([]byte(row.text(0)), &settings); err != nil {
 		return domain.Settings{}, fmt.Errorf("storage: decode settings: %w", err)
 	}
+	settings.FontWeight = domain.NormalizeFontWeight(settings.FontWeight)
 	settings.WidgetRefreshMinutes = domain.NormalizeWidgetRefreshMinutes(settings.WidgetRefreshMinutes)
 	return settings, nil
 }

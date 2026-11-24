@@ -21,7 +21,7 @@ import (
 
 const (
 	DefaultAppFolder       = "StillPoets"
-	DefaultUserAgent       = "StillPoets/0.1.0"
+	DefaultUserAgent       = "StillPoets/0.1.1"
 	DefaultConcurrency     = 2
 	DefaultMaxRetries      = 3
 	DefaultMaxRetryDelay   = 60 * time.Second

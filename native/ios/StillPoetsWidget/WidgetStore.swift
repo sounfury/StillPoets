@@ -9,6 +9,7 @@ struct WidgetThemePayload: Codable, Equatable {
     var followSystemDark: Bool?
     var fontFamily: String?
     var fontFile: String?
+    var fontWeight: Int?
     var bgColor: String?
     var textColor: String?
     var accentColor: String?
@@ -21,6 +22,7 @@ struct WidgetThemePayload: Codable, Equatable {
         followSystemDark: true,
         fontFamily: nil,
         fontFile: nil,
+        fontWeight: 400,
         bgColor: "#F4F4EF",
         textColor: "#1A1A1A",
         accentColor: "#BC5B46",
@@ -33,10 +35,20 @@ struct WidgetThemePayload: Codable, Equatable {
 struct WidgetEntryPayload: Codable, Equatable {
     var entryType: String?
     var displayText: String?
+    var largeText: String?
     var poemTitle: String?
     var author: String?
     var sourceTitle: String?
     var deeplink: String?
+
+    func effectiveText(forLarge: Bool) -> String {
+        if forLarge,
+           let large = largeText?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !large.isEmpty {
+            return large
+        }
+        return (displayText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var isQuote: Bool {
         (entryType ?? "").lowercased() == "quote"
@@ -52,11 +64,15 @@ struct WidgetEntryPayload: Codable, Equatable {
     }
 
     var metaLine: String {
+        metaLine(omittingPoemTitle: false)
+    }
+
+    func metaLine(omittingPoemTitle: Bool) -> String {
         var parts: [String] = []
         let title = (poemTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let source = (sourceTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let writer = (author ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !title.isEmpty {
+        if !omittingPoemTitle && !title.isEmpty {
             parts.append("《\(title)》")
         } else if !source.isEmpty {
             parts.append("《\(source)》")
@@ -64,12 +80,16 @@ struct WidgetEntryPayload: Codable, Equatable {
         if !writer.isEmpty {
             parts.append(writer)
         }
+        if parts.isEmpty && !title.isEmpty {
+            parts.append("《\(title)》")
+        }
         return parts.isEmpty ? "StillPoets" : parts.joined(separator: " · ")
     }
 
     static let emptyPlaceholder = WidgetEntryPayload(
         entryType: "poem",
         displayText: "纸上有风，留一首诗给自己。",
+        largeText: nil,
         poemTitle: nil,
         author: nil,
         sourceTitle: "打开 StillPoets 导入诗集或记一张散页",

@@ -133,6 +133,7 @@ type LocalFont struct {
 	Family   string
 	Filename string
 	Path     string
+	Size     int64
 }
 
 // SyncOverview 聚合「我的」页面展示的同步元状态与远端设备列表。
@@ -152,6 +153,7 @@ type Service struct {
 	dataDir string
 	store   *storage.Store
 	secrets SecretStore
+	diag    *diagLogger
 
 	mu             sync.Mutex
 	widgetMu       sync.Mutex
@@ -177,7 +179,7 @@ func Open(ctx context.Context, dataDir string, secrets SecretStore) (*Service, e
 	if strings.TrimSpace(dataDir) == "" {
 		return nil, errors.New("app: dataDir is required")
 	}
-	for _, sub := range []string{"", "cache/raw", "cache/spbook", "cache/covers", "fonts"} {
+	for _, sub := range []string{"", "cache/raw", "cache/spbook", "cache/covers", "fonts", "logs"} {
 		if err := os.MkdirAll(filepath.Join(dataDir, sub), 0o755); err != nil {
 			return nil, fmt.Errorf("app: create dir %s: %w", sub, err)
 		}
@@ -196,6 +198,7 @@ func Open(ctx context.Context, dataDir string, secrets SecretStore) (*Service, e
 		dataDir:       dataDir,
 		store:         store,
 		secrets:       secrets,
+		diag:          newDiagLogger(dataDir),
 		syncSem:       make(chan struct{}, 1),
 		lifeCtx:       lifeCtx,
 		lifeCancel:    lifeCancel,
@@ -205,6 +208,7 @@ func Open(ctx context.Context, dataDir string, secrets SecretStore) (*Service, e
 		},
 	}
 	svc.loadWebDAVProfileFromDisk()
+	svc.LogEvent("lifecycle", "service opened (webdavEnabled=%v, folder=%s)", svc.profile.Enabled, svc.profile.AppFolder)
 	return svc, nil
 }
 
@@ -304,14 +308,18 @@ func (s *Service) ImportFont(srcPath string) (LocalFont, []byte, error) {
 	if family == "" {
 		family = "CustomFont"
 	}
+	if err := os.MkdirAll(filepath.Join(s.dataDir, "fonts"), 0o755); err != nil {
+		return LocalFont{}, nil, err
+	}
 	dst := filepath.Join(s.dataDir, "fonts", base)
 	if err := os.WriteFile(dst, raw, 0o600); err != nil {
 		return LocalFont{}, nil, err
 	}
-	return LocalFont{Family: family, Filename: base, Path: dst}, raw, nil
+	s.LogEvent("font", "imported font family=%s file=%s sizeBytes=%d", family, base, len(raw))
+	return LocalFont{Family: family, Filename: base, Path: dst, Size: int64(len(raw))}, raw, nil
 }
 
-// ListLocalFonts 列出本地私有字体目录中所有已导入的字体文件。
+// ListLocalFonts 列出本地私有字体目录中所有已导入的字体文件（按名称稳定排序）。
 func (s *Service) ListLocalFonts() []LocalFont {
 	entries, err := os.ReadDir(filepath.Join(s.dataDir, "fonts"))
 	if err != nil {
@@ -326,13 +334,73 @@ func (s *Service) ListLocalFonts() []LocalFont {
 		if ext != ".ttf" && ext != ".otf" {
 			continue
 		}
+		var sz int64
+		if info, err := e.Info(); err == nil {
+			sz = info.Size()
+		}
 		out = append(out, LocalFont{
 			Family:   strings.TrimSuffix(e.Name(), filepath.Ext(e.Name())),
 			Filename: e.Name(),
 			Path:     filepath.Join(s.dataDir, "fonts", e.Name()),
+			Size:     sz,
 		})
 	}
+	slices.SortFunc(out, func(a, b LocalFont) int {
+		if cmp := strings.Compare(strings.ToLower(a.Family), strings.ToLower(b.Family)); cmp != 0 {
+			return cmp
+		}
+		return strings.Compare(a.Filename, b.Filename)
+	})
 	return out
+}
+
+// DeleteFont 删除本地私有字体目录中的指定自定义字体；若当前正启用该字体则自动回退到系统默认字体。
+func (s *Service) DeleteFont(ctx context.Context, filename string) error {
+	name := strings.TrimSpace(filename)
+	if name == "" || filepath.Base(name) != name || strings.ContainsAny(name, `/\`) {
+		return errors.New("app: invalid font filename")
+	}
+	ext := strings.ToLower(filepath.Ext(name))
+	if ext != ".ttf" && ext != ".otf" {
+		return fmt.Errorf("app: unsupported font extension %q", ext)
+	}
+	target := filepath.Join(s.dataDir, "fonts", name)
+	if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("app: remove font: %w", err)
+	}
+	s.LogEvent("font", "deleted font file=%s", name)
+
+	deletedFamily := strings.TrimSuffix(name, filepath.Ext(name))
+	st, err := s.store.LoadSettings(ctx)
+	if err == nil && (st.FontFamily == deletedFamily || st.WidgetTheme.FontFile == name || st.WidgetTheme.FontFamily == deletedFamily) {
+		_, err = s.UpdateSettings(ctx, func(cur *domain.Settings) {
+			if cur.FontFamily == deletedFamily {
+				cur.FontFamily = ""
+			}
+			if cur.WidgetTheme.FontFile == name || cur.WidgetTheme.FontFamily == deletedFamily {
+				cur.WidgetTheme.FontFile = ""
+				cur.WidgetTheme.FontFamily = cur.FontFamily
+			}
+		})
+		return err
+	}
+	s.notifyDataChanged()
+	return nil
+}
+
+// CacheSizeBytes 统计本地离线缓存目录（raw / spbook / covers）的磁盘占用总字节数。
+func (s *Service) CacheSizeBytes() int64 {
+	var total int64
+	_ = filepath.WalkDir(filepath.Join(s.dataDir, "cache"), func(_ string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if info, statErr := d.Info(); statErr == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
 }
 
 // --- 诗集导入、缓存与管理 ---
@@ -960,9 +1028,17 @@ func (s *Service) TestWebDAVConnection(ctx context.Context, input WebDAVConfigIn
 		Timeout:                     25 * time.Second,
 	})
 	if err != nil {
+		s.LogEvent("webdav", "test connection failed (host=%s): %v", sanitizeBaseURLForDiag(input.BaseURL), err)
 		return nil, err
 	}
-	return booksync.EnsureWorkspace(ctx, client)
+	res, err := booksync.EnsureWorkspace(ctx, client)
+	if err != nil {
+		s.LogEvent("webdav", "ensure workspace failed (host=%s folder=%s): %v", sanitizeBaseURLForDiag(input.BaseURL), input.AppFolder, err)
+		return nil, err
+	}
+	s.LogEvent("webdav", "test connection ok (host=%s folder=%s existingRemote=%v devices=%d legacy=%v)",
+		sanitizeBaseURLForDiag(input.BaseURL), input.AppFolder, res.ExistingRemote, res.DeviceCount, res.LegacyWorkspace)
+	return res, nil
 }
 
 // SaveWebDAVConfig 保存 WebDAV 非敏感配置到本地 JSON，密码仅写入系统级安全存储。
@@ -1015,6 +1091,8 @@ func (s *Service) SaveWebDAVConfig(ctx context.Context, input WebDAVConfigInput)
 		s.remoteDevices = nil
 	}
 	s.mu.Unlock()
+	s.LogEvent("webdav", "saved config (host=%s folder=%s atomic=%v workspaceChanged=%v)",
+		sanitizeBaseURLForDiag(profile.BaseURL), profile.AppFolder, profile.AtomicUpload, workspaceChanged)
 	s.notifyDataChanged()
 	return nil
 }
@@ -1064,6 +1142,7 @@ func (s *Service) ClearWebDAVConfig() error {
 	s.workspaceEpoch++
 	s.remoteDevices = nil
 	s.mu.Unlock()
+	s.LogEvent("webdav", "disconnected webdav and cleared keychain secret (secretErr=%v)", secretErr != nil)
 	s.notifyDataChanged()
 	return secretErr
 }
@@ -1137,11 +1216,20 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 	}
 
 	s.emitSyncToast(SyncToastState{Phase: SyncToastSyncing, Message: "同步中…"})
+	s.LogEvent("sync", "sync started (forcePush=%v)", forcePush)
 
 	engine := booksync.NewEngine(client)
 
 	// 1. 先处理 pending_uploads（遵守「先传资产、回读确认、再发布书目元数据」铁律）
+	if pending, pErr := s.store.ListPendingUploads(runCtx); pErr == nil && len(pending) > 0 {
+		s.emitSyncToast(SyncToastState{
+			Phase:   SyncToastSyncing,
+			Message: fmt.Sprintf("正在上传待同步诗集（%d 本）…", len(pending)),
+		})
+	}
 	uploadedAny, uploadFailed := s.flushPendingUploads(runCtx, engine)
+
+	s.emitSyncToast(SyncToastState{Phase: SyncToastSyncing, Message: "正在拉取并合并远端快照…"})
 
 	// 2. 在同一 Store.mu 快照内同时读取元数据与最新待上传队列，彻底消除导书夹塞导致的幽灵书目（P0-3）
 	localData, meta, remainingPending, err := s.store.ExportSnapshotWithPending(runCtx)
@@ -1176,6 +1264,7 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 	})
 	if err != nil {
 		release()
+		s.LogEvent("sync", "sync failed: %v", err)
 		s.emitSyncToast(SyncToastState{Phase: SyncToastError, Message: "云同步失败"})
 		return nil, err
 	}
@@ -1196,6 +1285,7 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 	}
 	if err := s.store.ApplyMergedSnapshotEx(runCtx, res.MergedData, meta.DirtySeq, res.MaxCounter, res.PublishedRev, res.Published, keepDirty); err != nil {
 		release()
+		s.LogEvent("sync", "apply merged snapshot failed: %v", err)
 		s.emitSyncToast(SyncToastState{Phase: SyncToastError, Message: "同步写库失败"})
 		return nil, err
 	}
@@ -1211,8 +1301,12 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 	s.notifyDataChanged()
 
 	if res.PartialSync {
+		s.LogEvent("sync", "partial sync finished (published=%v rev=%d remoteDevices=%d warnings=%d remainingPending=%d)",
+			res.Published, res.PublishedRev, len(res.RemoteDevices), len(res.Warnings), len(remainingPending))
 		s.emitSyncToast(SyncToastState{Phase: SyncToastPartial, Message: "部分同步"})
 	} else {
+		s.LogEvent("sync", "sync succeeded (published=%v rev=%d remoteDevices=%d)",
+			res.Published, res.PublishedRev, len(res.RemoteDevices))
 		s.emitSyncToast(SyncToastState{Phase: SyncToastSuccess, Message: "云同步成功"})
 	}
 	return res, nil
@@ -1254,8 +1348,10 @@ func (s *Service) RetireRemoteDevice(ctx context.Context, targetInstallID string
 	err = engine.RetireDeviceCovered(runCtx, meta.InstallID, syncRes.PublishedRev, targetInstallID, coveredRev)
 	if err != nil {
 		release()
+		s.LogEvent("sync", "retire device %s failed: %v", targetInstallID, err)
 		return err
 	}
+	s.LogEvent("sync", "retired remote device %s (coveredRev=%d)", targetInstallID, coveredRev)
 	s.mu.Lock()
 	s.remoteDevices = slices.DeleteFunc(s.remoteDevices, func(id string) bool { return id == targetInstallID })
 	s.mu.Unlock()

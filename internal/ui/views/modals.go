@@ -609,7 +609,7 @@ func (a *AppUI) renderTOCModal(c *ui.Context, pal theme.Palette) {
 }
 
 func (a *AppUI) renderTypographyModal(c *ui.Context, pal theme.Palette) {
-	components.AnimatedSheet(c, &a.showTypoModal, pal, []float32{0.50}, "排版与外观", func() {
+	components.AnimatedSheet(c, &a.showTypoModal, pal, []float32{0.62, 0.85}, "排版与外观", func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "排版与外观").FontSize(17).Bold().TextColor(pal.TextPrimary).Grow(1)
 			closeBtn := ui.Box(c.Key("typo-close")).Padding(4).Cursor(ui.CursorPointer)
@@ -620,68 +620,110 @@ func (a *AppUI) renderTypographyModal(c *ui.Context, pal theme.Palette) {
 			}
 		})
 
-		ui.Row(c.Key("typo-themes")).FillWidth().Gap(8).Children(func() {
-			for _, preset := range theme.Presets() {
-				active := pal.ID == preset.ID
-				btn := ui.Box(c.Key("tp-"+string(preset.ID))).
-					Grow(1).
-					Padding(8).
-					Center().
-					Radius(8).
-					Background(preset.Background).
-					Cursor(ui.CursorPointer).
-					Transition(theme.ColorTransition())
-				theme.ApplyPressScale(btn, 0.95)
-				if active {
-					btn.Border(2, pal.Accent)
-				} else {
-					btn.Border(1, preset.Border)
-				}
-				btn.Children(func() {
-					ui.Text(c, preset.Name).FontSize(12).Bold().TextColor(preset.TextPrimary)
+		ui.Scroll(c.Key("typo-modal-scroll")).Grow(1).FillWidth().Children(func() {
+			ui.Column(c).FillWidth().Gap(12).Padding(0, 0, 8, 0).Children(func() {
+				ui.Row(c.Key("typo-themes")).FillWidth().Gap(8).Children(func() {
+					for _, preset := range theme.Presets() {
+						active := pal.ID == preset.ID
+						btn := ui.Box(c.Key("tp-" + string(preset.ID))).
+							Grow(1).
+							Padding(8).
+							Center().
+							Radius(8).
+							Background(preset.Background).
+							Cursor(ui.CursorPointer).
+							Transition(theme.ColorTransition())
+						theme.ApplyPressScale(btn, 0.95)
+						if active {
+							btn.Border(2, pal.Accent)
+						} else {
+							btn.Border(1, preset.Border)
+						}
+						btn.Children(func() {
+							ui.Text(c, preset.Name).FontSize(12).Bold().TextColor(preset.TextPrimary)
+						})
+						if btn.Clicked() {
+							a.applyThemePreset(preset)
+						}
+					}
 				})
-				if btn.Clicked() {
-					a.applyThemePreset(preset)
-				}
-			}
-		})
 
-		ui.Row(c.Key("typo-follow-dark")).FillWidth().AlignItems(ui.Center).Children(func() {
-			followDark := a.settings.ShouldFollowSystemDark()
-			ui.Column(c).Grow(1).Gap(2).Children(func() {
-				ui.Text(c, "跟随系统深色模式").FontSize(13).TextColor(pal.TextSecondary)
-				hint := "深色模式自动切换为「暗夜极简」"
-				if followDark && a.systemDark {
-					hint = "当前已随系统切换为「暗夜极简」"
-				} else if !followDark {
-					hint = "已关闭自动切换"
-				}
-				ui.Text(c, hint).FontSize(11).TextColor(pal.TextMuted)
+				ui.Row(c.Key("typo-follow-dark")).FillWidth().AlignItems(ui.Center).Children(func() {
+					followDark := a.settings.ShouldFollowSystemDark()
+					ui.Column(c).Grow(1).Gap(2).Children(func() {
+						ui.Text(c, "跟随系统深色模式").FontSize(13).TextColor(pal.TextSecondary)
+						hint := "深色模式自动切换为「暗夜极简」"
+						if followDark && a.systemDark {
+							hint = "当前已随系统切换为「暗夜极简」"
+						} else if !followDark {
+							hint = "已关闭自动切换"
+						}
+						ui.Text(c, hint).FontSize(11).TextColor(pal.TextMuted)
+					})
+					if mobile.Switch(c.Key("sw-typo-follow-dark"), &followDark).Changed() {
+						a.toggleFollowSystemDark(followDark)
+					}
+				})
+
+				ui.Column(c).Gap(6).Children(func() {
+					ui.Textf(c, "字号：%.0f pt", a.fontSizeSlider).FontSize(13).TextColor(pal.TextSecondary)
+					if ui.Slider(c.Key("typo-fs"), &a.fontSizeSlider, 14, 28).Changed() {
+						a.saveTypography(float32(a.fontSizeSlider), float32(a.lineHeightSlider))
+					}
+				})
+
+				ui.Column(c).Gap(6).Children(func() {
+					ui.Textf(c, "行距：%.2f", a.lineHeightSlider).FontSize(13).TextColor(pal.TextSecondary)
+					if ui.Slider(c.Key("typo-lh"), &a.lineHeightSlider, 1.4, 2.4).Changed() {
+						a.saveTypography(float32(a.fontSizeSlider), float32(a.lineHeightSlider))
+					}
+				})
+
+				// 正文字重四档快选
+				ui.Column(c).FillWidth().Gap(6).Children(func() {
+					curWeight := a.settings.EffectiveFontWeight()
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+						ui.Text(c, "正文字重").FontSize(13).TextColor(pal.TextSecondary).Grow(1)
+						ui.Text(c, formatFontWeightLabel(curWeight)).Font(theme.FontMono).FontSize(11).TextColor(pal.Accent)
+					})
+					a.renderFontWeightSegmented(c, pal, "typo-fw")
+				})
+
+				// 字体快选 + 导入
+				ui.Column(c).FillWidth().Gap(8).Children(func() {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+						ui.Text(c, "阅读字体").FontSize(13).TextColor(pal.TextSecondary).Grow(1)
+						if ui.Button(c, "+ 导入字体").Clicked() {
+							a.triggerImportFont()
+						}
+					})
+					ui.Row(c.Key("typo-font-chips")).Gap(8).Wrap().Children(func() {
+						renderChip := func(family, label string) {
+							active := a.settings.FontFamily == family
+							bg, fg, bd := pal.Background, pal.TextSecondary, pal.Border
+							if active {
+								bg, fg, bd = pal.Accent, pal.AccentText, pal.Accent
+							}
+							chip := ui.Box(c.Key("tf-"+label)).Padding(5, 10).Radius(999).Background(bg).Border(1, bd).Cursor(ui.CursorPointer).
+								Transition(theme.ColorTransition())
+							theme.ApplyPressScale(chip, 0.96)
+							chip.Children(func() {
+								el := ui.Text(c, label).FontSize(12).TextColor(fg)
+								if family != "" {
+									el.Font(family)
+								}
+							})
+							if chip.Clicked() {
+								a.applyFontFamily(family)
+							}
+						}
+						renderChip("", "系统默认")
+						for _, lf := range a.localFonts {
+							renderChip(lf.Family, lf.Family)
+						}
+					})
+				})
 			})
-			if mobile.Switch(c.Key("sw-typo-follow-dark"), &followDark).Changed() {
-				a.toggleFollowSystemDark(followDark)
-			}
-		})
-
-		ui.Column(c).Gap(6).Children(func() {
-			ui.Textf(c, "字号：%.0f pt", a.fontSizeSlider).FontSize(13).TextColor(pal.TextSecondary)
-			if ui.Slider(c.Key("typo-fs"), &a.fontSizeSlider, 14, 28).Changed() {
-				a.saveTypography(float32(a.fontSizeSlider), float32(a.lineHeightSlider))
-			}
-		})
-
-		ui.Column(c).Gap(6).Children(func() {
-			ui.Textf(c, "行距：%.2f", a.lineHeightSlider).FontSize(13).TextColor(pal.TextSecondary)
-			if ui.Slider(c.Key("typo-lh"), &a.lineHeightSlider, 1.4, 2.4).Changed() {
-				a.saveTypography(float32(a.fontSizeSlider), float32(a.lineHeightSlider))
-			}
-		})
-
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "自定义字体").FontSize(13).TextColor(pal.TextSecondary).Grow(1)
-			if ui.Button(c, "导入字体").Clicked() {
-				a.triggerImportFont()
-			}
 		})
 	})
 }

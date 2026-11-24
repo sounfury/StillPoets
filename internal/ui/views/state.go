@@ -32,11 +32,11 @@ type PickFileFunc func(title string, extensions []string) (string, error)
 type readerEntrySource string
 
 const (
-	entryMainline readerEntrySource = ""       // 书架封面 / 继续阅读 / 统计页 / 默认选中
+	entryMainline readerEntrySource = ""     // 书架封面 / 继续阅读 / 统计页 / 默认选中
 	entryWidget   readerEntrySource = "小组件"  // 桌面小组件 Deeplink
 	entryToday    readerEntrySource = "今日重读" // 书架首页「今日重读」
-	entryQuote    readerEntrySource = "散页"    // 散页列表/详情「读完整首」
-	entrySearch   readerEntrySource = "检索"    // 全局检索命中诗篇
+	entryQuote    readerEntrySource = "散页"   // 散页列表/详情「读完整首」
+	entrySearch   readerEntrySource = "检索"   // 全局检索命中诗篇
 )
 
 func (s readerEntrySource) isPeek() bool {
@@ -58,12 +58,27 @@ type horizontalPagerState struct {
 	progress   float32
 }
 
+// profileSubpage 表示「我的」设置页的二级子页面（点击设置项从右侧推入，左上角返回）。
+type profileSubpage int
+
+const (
+	profileSubpageNone profileSubpage = iota
+	profileSubpageWebDAV
+	profileSubpageFonts
+	profileSubpageWidget
+	profileSubpageAbout
+)
+
 // AppUI 持有 StillPoets V3 界面的全部视图状态与交互调度。
 type AppUI struct {
-	svc             *app.Service
-	pickFile        PickFileFunc
-	repaintFn       func()
-	uiDispatch      func(func())
+	svc              *app.Service
+	pickFile         PickFileFunc
+	openURLFn        func(string) error
+	exportFileFn     func(path string) (string, error)
+	copyTextFn       func(string)
+	appVersion       string
+	repaintFn        func()
+	uiDispatch       func(func())
 	windowBgFn       func(string)
 	lastWindowBgHex  string
 	systemBarStyleFn func(darkContent bool)
@@ -127,7 +142,10 @@ type AppUI struct {
 
 	// 瞬态云同步胶囊与操作提示
 	toastMessage string
+	toastPhase   app.SyncToastPhase
 	toastTimer   *time.Timer
+	syncInFlight bool
+	syncStageMsg string
 	bannerMsg    string
 
 	// 弹窗/抽屉开关与表单状态
@@ -154,15 +172,32 @@ type AppUI struct {
 	searchQuery   string
 	searchResults app.SearchResults
 
-	// 「我的」WebDAV 表单状态
-	davURL       string
-	davUser      string
-	davPass      string
-	davFolder    string
-	davAtomic    bool
-	davStatus    string
-	davBusy      bool
-	davHasSecret bool
+	// 「我的」设置页二级导航与表单状态
+	profileSub        profileSubpage
+	cacheSizeBytes    int64
+	diagLogSizeBytes  int64
+	davURL            string
+	davUser           string
+	davPass           string
+	davFolder         string
+	davAtomic         bool
+	davStatus         string
+	davBusy           bool
+	davRetiringID     string
+	davHasSecret      bool
+	confirmDisconnect bool
+	confirmDeleteFont string
+
+	// 「关于 StillPoets」二级页状态（检查更新 / 更新日志 / 分析日志导出）
+	updateChecking  bool
+	updateResult    *app.UpdateCheckResult
+	updateError     string
+	releasesLoading bool
+	releasesLoaded  bool
+	releases        []app.ReleaseInfo
+	releasesError   string
+	exportingLog    bool
+	exportLogStatus string
 
 	// 阅读器与双入口手势分页状态
 	poemPager          horizontalPagerState
@@ -185,6 +220,7 @@ func NewAppUI(svc *app.Service, pickFile PickFileFunc, repaint func()) *AppUI {
 	a := &AppUI{
 		svc:              svc,
 		pickFile:         pickFile,
+		appVersion:       app.DefaultAppVersion,
 		repaintFn:        repaint,
 		registerFn:       ui.RegisterFont,
 		progressMap:      map[string]domain.ReadingProgress{},
@@ -235,6 +271,38 @@ func (a *AppUI) SetUIDispatch(fn func(func())) {
 func (a *AppUI) SetRepaint(fn func()) {
 	a.mu.Lock()
 	a.repaintFn = fn
+	a.mu.Unlock()
+}
+
+// SetAppVersion 注入当前应用打包版本号（生产环境来自 mygo.App.Version）。
+func (a *AppUI) SetAppVersion(version string) {
+	v := strings.TrimSpace(version)
+	if v == "" {
+		return
+	}
+	a.mu.Lock()
+	a.appVersion = v
+	a.mu.Unlock()
+}
+
+// SetOpenURLFunc 注入外部浏览器 / 邮件客户端拉起能力（生产环境对接 mygo.Shell.OpenExternal）。
+func (a *AppUI) SetOpenURLFunc(fn func(string) error) {
+	a.mu.Lock()
+	a.openURLFn = fn
+	a.mu.Unlock()
+}
+
+// SetExportFileFunc 注入分析日志文件导出/系统分享能力（移动端对接 mygo.Share，桌面端回退 mygo.Dialog.SaveCopy）。
+func (a *AppUI) SetExportFileFunc(fn func(path string) (string, error)) {
+	a.mu.Lock()
+	a.exportFileFn = fn
+	a.mu.Unlock()
+}
+
+// SetCopyTextFunc 注入系统剪贴板写入能力（用于快捷复制联系邮箱等）。
+func (a *AppUI) SetCopyTextFunc(fn func(string)) {
+	a.mu.Lock()
+	a.copyTextFn = fn
 	a.mu.Unlock()
 }
 
@@ -341,6 +409,8 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 	stats, statsErr := a.svc.GetStatsOverview(ctx)
 	syncOv, syncOvErr := a.svc.GetSyncOverview(ctx)
 	localFonts := a.svc.ListLocalFonts()
+	cacheSize := a.svc.CacheSizeBytes()
+	diagLogSize := a.svc.DiagnosticLogSizeBytes()
 	widgetTL, widgetErr := a.svc.ReadWidgetTimeline()
 	activeWidgets := widgetbridge.ActiveWidgetCount()
 	hasSecret := a.svc.HasWebDAVPassword()
@@ -408,6 +478,8 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 			a.syncOverview = syncOv
 		}
 		a.localFonts = localFonts
+		a.cacheSizeBytes = cacheSize
+		a.diagLogSizeBytes = diagLogSize
 		a.activeWidgetCount = activeWidgets
 		if widgetErr == nil {
 			cp := widgetTL
@@ -620,6 +692,9 @@ func (a *AppUI) renderTabletShell(c *ui.Context, pal theme.Palette) {
 		components.TabletNavRail(c, pal, a.activeTab, func(tab components.NavTab) {
 			a.activeTab = tab
 			a.readerMobile = false
+			a.profileSub = profileSubpageNone
+			a.confirmDisconnect = false
+			a.confirmDeleteFont = ""
 		})
 
 		ui.Box(c.Key("tablet-content")).Grow(1).FillHeight().Clip().Children(func() {
@@ -690,6 +765,9 @@ func (a *AppUI) renderPhoneShell(c *ui.Context, pal theme.Palette) {
 			components.FloatingBottomNavBar(c, pal, a.activeTab, func(tab components.NavTab) {
 				a.activeTab = tab
 				a.readerMobile = false
+				a.profileSub = profileSubpageNone
+				a.confirmDisconnect = false
+				a.confirmDeleteFont = ""
 			})
 		} else {
 			ui.Column(c.Key("phone-root")).Fill().Children(func() {
@@ -697,8 +775,16 @@ func (a *AppUI) renderPhoneShell(c *ui.Context, pal theme.Palette) {
 				components.BottomNavBar(c, pal, a.activeTab, func(tab components.NavTab) {
 					a.activeTab = tab
 					a.readerMobile = false
+					a.profileSub = profileSubpageNone
+					a.confirmDisconnect = false
+					a.confirmDeleteFont = ""
 				})
 			})
+		}
+
+		// 手机端设置二级页面以右侧推入转场叠在底栏之上，返回时保留设置主页滚动位置
+		if a.activeTab == components.TabProfile && a.profileSub != profileSubpageNone {
+			a.renderProfileSubpageLayer(c, pal, false)
 		}
 
 		// 手机端全屏阅读器以右侧推入转场叠在书架之上，返回时保留书架滚动位置
@@ -718,6 +804,7 @@ func (a *AppUI) renderPhoneShell(c *ui.Context, pal theme.Palette) {
 func (a *AppUI) renderSyncToastOverlay(c *ui.Context, pal theme.Palette, isTablet bool) {
 	a.mu.Lock()
 	msg := a.toastMessage
+	phase := a.toastPhase
 	a.mu.Unlock()
 	if msg == "" {
 		return
@@ -731,12 +818,22 @@ func (a *AppUI) renderSyncToastOverlay(c *ui.Context, pal theme.Palette, isTable
 	if a.useFloatingBottomNav() {
 		bottom = 84 + safeBottom
 	}
+	if !isTablet && a.activeTab == components.TabProfile && a.profileSub != profileSubpageNone {
+		bottom = 24 + safeBottom
+	}
 	left := float32(0)
 	width := w
 	if isTablet {
 		bottom = 20 + safeBottom
 		left = layout.NavRailWidthDIP
 		width = layout.MasterPaneWidthDIP
+	}
+	toastKind := components.ToastInfo
+	switch phase {
+	case app.SyncToastSyncing:
+		toastKind = components.ToastLoading
+	case app.SyncToastPartial, app.SyncToastError:
+		toastKind = components.ToastWarning
 	}
 	ui.Overlay(c, func() {
 		ui.Row(c.Key("toast-overlay")).
@@ -747,7 +844,7 @@ func (a *AppUI) renderSyncToastOverlay(c *ui.Context, pal theme.Palette, isTable
 			Justify(ui.Center).
 			Transition(theme.ToastTransition()).
 			Children(func() {
-				components.SyncToastPill(c, pal, msg, func() {
+				components.SyncToastPill(c, pal, toastKind, msg, func() {
 					a.activeTab = components.TabProfile
 				})
 			})
@@ -873,6 +970,7 @@ func (a *AppUI) setToastState(st app.SyncToastState, notifyRepaint bool) {
 	a.toastSeq++
 	seq := a.toastSeq
 	a.toastMessage = st.Message
+	a.toastPhase = st.Phase
 	if st.Phase == app.SyncToastSuccess || st.Phase == app.SyncToastPartial || st.Phase == app.SyncToastError {
 		delay := 2200 * time.Millisecond
 		if st.Phase != app.SyncToastSuccess {
@@ -883,6 +981,7 @@ func (a *AppUI) setToastState(st app.SyncToastState, notifyRepaint bool) {
 			match := a.toastSeq == seq
 			if match {
 				a.toastMessage = ""
+				a.toastPhase = app.SyncToastIdle
 			}
 			a.mu.Unlock()
 			if match {
@@ -898,6 +997,15 @@ func (a *AppUI) setToastState(st app.SyncToastState, notifyRepaint bool) {
 }
 
 func (a *AppUI) handleSyncToast(st app.SyncToastState) {
+	a.mu.Lock()
+	if st.Phase == app.SyncToastSyncing {
+		a.syncInFlight = true
+		a.syncStageMsg = st.Message
+	} else {
+		a.syncInFlight = false
+		a.syncStageMsg = ""
+	}
+	a.mu.Unlock()
 	a.setToastState(st, true)
 }
 

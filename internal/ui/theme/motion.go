@@ -69,6 +69,18 @@ func MobileReaderTransition() ui.ElementTransition {
 	}
 }
 
+// SubpagePushTransition 返回设置页等二级页面从右侧推入/返回的平滑转场。
+func SubpagePushTransition() ui.ElementTransition {
+	anim := ReaderSlideSpring
+	return ui.ElementTransition{
+		Animation:    &anim,
+		ExitDuration: 220 * time.Millisecond,
+		ExitEase:     ui.EaseOut,
+		Enter:        &ui.Motion{XPercent: 100, Opacity: 0.94},
+		Exit:         &ui.Motion{XPercent: 100, Opacity: 0.94},
+	}
+}
+
 // BackdropTransition 返回弹层半透明遮罩的淡入淡出过渡。
 func BackdropTransition() ui.ElementTransition {
 	return ui.ElementTransition{

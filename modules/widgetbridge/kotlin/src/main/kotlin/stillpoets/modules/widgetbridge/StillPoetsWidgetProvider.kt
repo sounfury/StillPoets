@@ -15,12 +15,15 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.text.TextUtils
+import android.util.SizeF
 import android.util.TypedValue
+import android.view.Gravity
 import android.view.View
 import android.widget.RemoteViews
 import java.io.File
@@ -154,8 +157,8 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
             val theme = timeline?.theme ?: WidgetTheme.defaultArtbook()
 
             val options = manager.getAppWidgetOptions(appWidgetId)
-            val widthDp = max(options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 280), 180)
-            val heightDp = max(options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 128), 96)
+            val (widthDp, heightDp) = resolveWidgetDimensionsDp(context, options)
+            val isLargeCard = heightDp >= 200
 
             val useDark = theme.followSystemDark && isSystemDarkMode(context)
             val bgColor = if (useDark) {
@@ -204,20 +207,28 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
             }
 
             val poemText: String
+            val poemTitleText: String
             val metaText: String
             val tagText: String
             val hintText: String
             val deeplink: String
 
             if (entry != null) {
-                poemText = entry.displayText.trim()
-                metaText = formatMeta(entry)
+                val rawBody = if (isLargeCard && entry.largeText.isNotBlank()) {
+                    entry.largeText.trim()
+                } else {
+                    entry.displayText.trim()
+                }
+                poemText = rawBody
+                poemTitleText = if (isLargeCard) entry.poemTitle.trim() else ""
+                metaText = formatMeta(entry, omitPoemTitle = poemTitleText.isNotEmpty())
                 tagText = if (entry.entryType == "quote") "散页" else "诗笺"
                 hintText = if (entry.deeplink.startsWith("stillpoets://quote/")) "看散页 ›" else "读全诗 ›"
                 deeplink = entry.deeplink
                 views.setViewVisibility(R.id.widget_next_btn, if (entries.size > 1) View.VISIBLE else View.GONE)
             } else {
                 poemText = context.getString(R.string.stillpoets_widget_empty_poem)
+                poemTitleText = ""
                 metaText = context.getString(R.string.stillpoets_widget_empty_meta)
                 tagText = "StillPoets"
                 hintText = "打开 ›"
@@ -229,22 +240,44 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
             views.setTextViewText(R.id.widget_meta_text, metaText)
             views.setTextViewText(R.id.widget_hint_text, hintText)
 
-            // 4. 自适应字号与行数：大尺寸平板卡片更舒展，小卡片更紧凑
+            if (poemTitleText.isNotEmpty()) {
+                views.setViewVisibility(R.id.widget_poem_title, View.VISIBLE)
+                views.setTextViewText(R.id.widget_poem_title, poemTitleText)
+                views.setTextColor(R.id.widget_poem_title, textColor)
+                val titleSizeSp = if (heightDp >= 280 && widthDp >= 280) 18f else 16.5f
+                views.setTextViewTextSize(R.id.widget_poem_title, TypedValue.COMPLEX_UNIT_SP, titleSizeSp)
+            } else {
+                views.setViewVisibility(R.id.widget_poem_title, View.GONE)
+            }
+
+            // 4. 自适应字号、行数与对齐方式：
+            //    - 4×4 大号卡片按真实可用高度动态计算最大行数，多诗节顶部舒展排布，不再缩成中间小块；
+            //    - 仅 1~3 行短金句在大号卡片上自动放大字号，避免四周空洞。
+            val lineCount = poemText.split('\n').size
             val textSizeSp = when {
-                heightDp >= 210 && widthDp >= 320 -> 18f
-                heightDp >= 160 -> 16.5f
+                isLargeCard && lineCount <= 3 && poemText.length <= 72 -> 19.5f
+                isLargeCard && heightDp >= 290 && widthDp >= 270 -> 16.5f
+                isLargeCard -> 15.5f
+                heightDp >= 160 -> 15.5f
                 widthDp <= 210 -> 13.5f
                 else -> 15f
             }
+            val titleOverheadDp = if (poemTitleText.isNotEmpty()) 34 else 0
+            val chromeOverheadDp = 64 + titleOverheadDp
+            val availBodyHeightDp = max(heightDp - chromeOverheadDp, 48)
+            val lineMultiplier = if (isLargeCard) 1.42f else 1.38f
+            val estLineHeightDp = textSizeSp * lineMultiplier
             val maxLines = when {
-                heightDp >= 220 -> 7
-                heightDp >= 170 -> 5
+                isLargeCard -> (availBodyHeightDp / estLineHeightDp).toInt().coerceIn(5, 18)
+                heightDp >= 165 -> (availBodyHeightDp / estLineHeightDp).toInt().coerceIn(4, 7)
                 heightDp <= 110 -> 3
                 else -> 4
             }
+            // 大号卡片中多行诗文（≥4 行）从顶部自然展开，短金句或小卡片保持垂直居中
+            val alignTop = isLargeCard && lineCount >= 4
 
-            // 5. 若配置了本地自定义 .ttf/.otf 字体，使用高清 StaticLayout 渲染以呈现真实字形；否则走原生清晰衬线 TextView
-            val customTypeface = resolveCustomTypeface(context, theme.fontFile)
+            // 5. 若配置了本地自定义 .ttf/.otf 字体，或设置页选择了非默认字重，使用高清 StaticLayout 渲染以呈现真实字形与字重
+            val customTypeface = resolveWidgetTypeface(context, theme.fontFile, theme.fontWeight)
             val renderedPoemBmp = if (customTypeface != null) {
                 renderCustomFontText(
                     context = context,
@@ -252,9 +285,11 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
                     typeface = customTypeface,
                     textColor = textColor,
                     textSizeSp = textSizeSp,
+                    lineMultiplier = lineMultiplier,
                     maxLines = maxLines,
+                    alignTop = alignTop,
                     contentWidthDp = max(widthDp - 36, 120),
-                    contentHeightDp = max(heightDp - 64, 48),
+                    contentHeightDp = availBodyHeightDp,
                 )
             } else {
                 null
@@ -271,6 +306,12 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
                 views.setTextColor(R.id.widget_poem_text, textColor)
                 views.setTextViewTextSize(R.id.widget_poem_text, TypedValue.COMPLEX_UNIT_SP, textSizeSp)
                 views.setInt(R.id.widget_poem_text, "setMaxLines", maxLines)
+                val gravity = if (alignTop) {
+                    Gravity.TOP or Gravity.START
+                } else {
+                    Gravity.CENTER_VERTICAL or Gravity.START
+                }
+                views.setInt(R.id.widget_poem_text, "setGravity", gravity)
             }
 
             // 6. 绑定主体点击（stillpoets:// Deeplink 直达原诗/散页）
@@ -313,13 +354,53 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
             )
         }
 
-        private fun formatMeta(entry: WidgetEntry): String {
+        private fun resolveWidgetDimensionsDp(context: Context, options: Bundle): Pair<Int, Int> {
+            val isPortrait = context.resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+            val minW = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0)
+            val maxW = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, 0)
+            val minH = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0)
+            val maxH = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 0)
+
+            var widthDp = if (isPortrait) {
+                if (minW > 0) minW else maxW
+            } else {
+                if (maxW > 0) maxW else minW
+            }
+            var heightDp = if (isPortrait) {
+                if (maxH > 0) maxH else minH
+            } else {
+                if (minH > 0) minH else maxH
+            }
+
+            // Android 12+ 桌面可直接提供真实布局尺寸集合，用于纠正个别定制 ROM 的 min/max 偏差
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                @Suppress("DEPRECATION")
+                val sizes = options.getParcelableArrayList<SizeF>(AppWidgetManager.OPTION_APPWIDGET_SIZES)
+                if (!sizes.isNullOrEmpty()) {
+                    val chosen = if (isPortrait) {
+                        sizes.maxByOrNull { it.height }
+                    } else {
+                        sizes.maxByOrNull { it.width }
+                    }
+                    if (chosen != null && chosen.width > 0f && chosen.height > 0f) {
+                        widthDp = max(widthDp, chosen.width.roundToInt())
+                        heightDp = max(heightDp, chosen.height.roundToInt())
+                    }
+                }
+            }
+
+            if (widthDp <= 0) widthDp = 280
+            if (heightDp <= 0) heightDp = 128
+            return Pair(max(widthDp, 160), max(heightDp, 96))
+        }
+
+        private fun formatMeta(entry: WidgetEntry, omitPoemTitle: Boolean = false): String {
             val parts = mutableListOf<String>()
             val title = entry.poemTitle.trim()
             val author = entry.author.trim()
             val source = entry.sourceTitle.trim()
 
-            if (title.isNotEmpty()) {
+            if (!omitPoemTitle && title.isNotEmpty()) {
                 parts.add("《$title》")
             } else if (source.isNotEmpty()) {
                 parts.add("《$source》")
@@ -327,8 +408,8 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
             if (author.isNotEmpty()) {
                 parts.add(author)
             }
-            if (parts.isEmpty() && source.isNotEmpty()) {
-                parts.add("《$source》")
+            if (parts.isEmpty() && title.isNotEmpty()) {
+                parts.add("《$title》")
             }
             return if (parts.isEmpty()) "StillPoets" else parts.joinToString(" · ")
         }
@@ -350,6 +431,7 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
                     darkAccentColor = themeObj?.optString("darkAccentColor").orEmpty(),
                     fontFamily = themeObj?.optString("fontFamily").orEmpty(),
                     fontFile = themeObj?.optString("fontFile").orEmpty(),
+                    fontWeight = themeObj?.optInt("fontWeight", 400) ?: 400,
                 )
                 val arr = root.optJSONArray("entries")
                 val entries = mutableListOf<WidgetEntry>()
@@ -362,6 +444,7 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
                             WidgetEntry(
                                 entryType = o.optString("entryType", "poem"),
                                 displayText = text,
+                                largeText = o.optString("largeText", "").trim(),
                                 poemTitle = o.optString("poemTitle", ""),
                                 author = o.optString("author", ""),
                                 sourceTitle = o.optString("sourceTitle", ""),
@@ -472,6 +555,29 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
             return null
         }
 
+        private fun resolveWidgetTypeface(context: Context, fontFileName: String, fontWeight: Int): Typeface? {
+            val base = resolveCustomTypeface(context, fontFileName)
+            val normalizedWeight = if (fontWeight in 100..900) fontWeight else 400
+            if (base == null) {
+                if (normalizedWeight == 400 || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+                    return null
+                }
+                return try {
+                    Typeface.create(Typeface.SERIF, normalizedWeight, false)
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+            if (normalizedWeight != 400 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                return try {
+                    Typeface.create(base, normalizedWeight, false)
+                } catch (_: Throwable) {
+                    base
+                }
+            }
+            return base
+        }
+
         private fun resolveCustomTypeface(context: Context, fontFileName: String): Typeface? {
             val clean = fontFileName.trim()
             if (clean.isEmpty()) return null
@@ -501,8 +607,8 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
             borderColor: Int,
         ): Bitmap {
             val density = min(context.resources.displayMetrics.density, 2.0f)
-            val w = max(180, min(720, (widthDp * density).roundToInt()))
-            val h = max(100, min(540, (heightDp * density).roundToInt()))
+            val w = max(180, min(960, (widthDp * density).roundToInt()))
+            val h = max(100, min(960, (heightDp * density).roundToInt()))
             val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bmp)
             val radius = 20f * density
@@ -531,15 +637,21 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
             typeface: Typeface,
             textColor: Int,
             textSizeSp: Float,
+            lineMultiplier: Float,
             maxLines: Int,
+            alignTop: Boolean,
             contentWidthDp: Int,
             contentHeightDp: Int,
         ): Bitmap? {
             return try {
                 val dm = context.resources.displayMetrics
-                val scale = min(dm.density, 2.25f)
-                val maxW = max(160, min(720, (contentWidthDp * scale).roundToInt()))
-                val maxH = max(64, min(420, (contentHeightDp * scale).roundToInt()))
+                var scale = min(dm.density, 2.25f)
+                val estPixels = (contentWidthDp * scale) * (contentHeightDp * scale)
+                if (estPixels > 1_100_000f) {
+                    scale *= kotlin.math.sqrt(1_100_000f / estPixels)
+                }
+                val maxW = max(160, min(1080, (contentWidthDp * scale).roundToInt()))
+                val maxH = max(64, min(1100, (contentHeightDp * scale).roundToInt()))
 
                 val paint = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
                     color = textColor
@@ -549,16 +661,20 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
 
                 val layout = StaticLayout.Builder.obtain(text, 0, text.length, paint, maxW)
                     .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                    .setLineSpacing(0f, 1.38f)
+                    .setLineSpacing(0f, lineMultiplier)
                     .setIncludePad(false)
                     .setMaxLines(maxLines)
                     .setEllipsize(TextUtils.TruncateAt.END)
                     .build()
 
-                val bmpH = max(1, min(maxH, layout.height + 4))
+                val bmpH = maxH
                 val bmp = Bitmap.createBitmap(maxW, bmpH, Bitmap.Config.ARGB_8888)
                 val canvas = Canvas(bmp)
-                val dy = max(0f, (bmpH - layout.height) / 2f)
+                val dy = if (alignTop) {
+                    0f
+                } else {
+                    max(0f, (bmpH - layout.height) / 2f)
+                }
                 canvas.save()
                 canvas.translate(0f, dy)
                 layout.draw(canvas)
@@ -612,6 +728,7 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
         val darkAccentColor: String,
         val fontFamily: String,
         val fontFile: String,
+        val fontWeight: Int = 400,
     ) {
         companion object {
             fun defaultArtbook() = WidgetTheme(
@@ -625,6 +742,7 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
                 darkAccentColor = "#D0735E",
                 fontFamily = "",
                 fontFile = "",
+                fontWeight = 400,
             )
         }
     }
@@ -632,6 +750,7 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
     private data class WidgetEntry(
         val entryType: String,
         val displayText: String,
+        val largeText: String = "",
         val poemTitle: String,
         val author: String,
         val sourceTitle: String,

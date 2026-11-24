@@ -145,7 +145,7 @@ func (a *AppUI) renderPoemSwipePager(c *ui.Context, pal theme.Palette, book doma
 		// 避免右栏随画布平移经过初始触点时触发 MyGo draggableAlong 抢占外层手势。
 		if isTablet && a.shelfDragging {
 			poem := poems[idx]
-			ui.Scroll(c.Key("poem-scroll-"+poem.ID)).Fill().Children(func() {
+			ui.Scroll(c.Key("poem-scroll-" + poem.ID)).Fill().Children(func() {
 				ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(28, 28, 48, 28).Children(func() {
 					a.renderPoemContent(c, pal, book, poem, true)
 				})
@@ -164,7 +164,7 @@ func (a *AppUI) renderPoemSwipePager(c *ui.Context, pal theme.Palette, book doma
 			})
 			locked.Children(func() {
 				poem := poems[idx]
-				ui.Scroll(c.Key("poem-scroll-"+poem.ID)).Fill().Children(func() {
+				ui.Scroll(c.Key("poem-scroll-" + poem.ID)).Fill().Children(func() {
 					ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(28, 28, 48, 28).Children(func() {
 						a.renderPoemContent(c, pal, book, poem, true)
 					})
@@ -210,13 +210,13 @@ func (a *AppUI) renderPoemSwipePager(c *ui.Context, pal theme.Palette, book doma
 			for i := lo; i <= hi; i++ {
 				poem := poems[i]
 				isCurrent := i == a.activePoemIdx
-				ui.Box(c.Key("poem-page-"+poem.ID)).
+				ui.Box(c.Key("poem-page-" + poem.ID)).
 					Absolute().
 					Left(float32(i) * width).
 					Top(0).Bottom(0).
 					Width(width).
 					Children(func() {
-						ui.Scroll(c.Key("poem-scroll-"+poem.ID)).Fill().Children(func() {
+						ui.Scroll(c.Key("poem-scroll-" + poem.ID)).Fill().Children(func() {
 							ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(28, 28, 48, 28).Children(func() {
 								a.renderPoemContent(c, pal, book, poem, isCurrent)
 							})
@@ -521,6 +521,7 @@ func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.
 		lineHeight = 1.85
 	}
 	poetryFont := theme.PoetryFont(a.settings.FontFamily)
+	fontWeight := a.settings.EffectiveFontWeight()
 	noteFont := theme.FontNote
 	if strings.TrimSpace(a.settings.FontFamily) != "" {
 		noteFont = poetryFont
@@ -585,6 +586,7 @@ func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.
 								ui.Text(c, line).
 									Font(poetryFont).
 									FontSize(fontSize).
+									FontWeight(fontWeight).
 									LineHeight(lineHeight).
 									TextColor(pal.TextPrimary)
 							})

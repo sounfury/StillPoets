@@ -53,6 +53,7 @@ func (s *Service) RebuildWidgetTimeline(ctx context.Context) (domain.WidgetTimel
 	if wTheme.FontFamily == "" {
 		wTheme.FontFamily = settings.FontFamily
 	}
+	wTheme.FontWeight = settings.EffectiveFontWeight()
 	darkPal := theme.DarkMinimal()
 	wTheme.FollowSystemDark = settings.ShouldFollowSystemDark()
 	wTheme.DarkBgColor = darkPal.BgHex
@@ -158,13 +159,23 @@ func (s *Service) buildFavoriteWidgetEntries(ctx context.Context, bookID string)
 	entries := make([]domain.WidgetEntry, 0, len(favs))
 	for _, f := range favs {
 		text := strings.TrimSpace(f.Excerpt)
-		if text == "" {
+		largeText := ""
+		// 仅当用户未手动划选特定金句行（HighlightLines 为空）时，尝试为 4×4 大号小组件展开多诗节正文
+		if text == "" || strings.TrimSpace(f.HighlightLines) == "" {
 			if p, err := s.store.GetPoem(ctx, f.BookID, f.PoemID); err == nil {
-				text = parser.BuildDefaultExcerpt(p)
+				if text == "" {
+					text = parser.BuildDefaultExcerpt(p)
+				}
+				if strings.TrimSpace(f.HighlightLines) == "" {
+					largeText = parser.BuildLargeExcerpt(p)
+				}
 			}
 		}
 		if text == "" {
 			continue
+		}
+		if largeText == text {
+			largeText = ""
 		}
 		link := fmt.Sprintf("stillpoets://poem/%s/%s", f.BookID, f.PoemID)
 		if f.HighlightLines != "" {
@@ -173,6 +184,7 @@ func (s *Service) buildFavoriteWidgetEntries(ctx context.Context, bookID string)
 		entries = append(entries, domain.WidgetEntry{
 			EntryType:   "poem",
 			DisplayText: text,
+			LargeText:   largeText,
 			PoemTitle:   f.PoemTitle,
 			Author:      f.Author,
 			SourceTitle: bookTitles[f.BookID],
@@ -255,15 +267,25 @@ func poemsToWidgetEntries(book domain.Book, poems []domain.Poem, favByPoem map[s
 
 func buildSinglePoemWidgetEntry(book domain.Book, p domain.Poem, fav domain.FavoritePoem, hasFav bool) (domain.WidgetEntry, bool) {
 	text := ""
+	largeText := ""
 	lines := ""
-	if hasFav && strings.TrimSpace(fav.Excerpt) != "" {
+	manualSelection := hasFav && strings.TrimSpace(fav.Excerpt) != "" && strings.TrimSpace(fav.HighlightLines) != ""
+	if manualSelection {
 		text = strings.TrimSpace(fav.Excerpt)
 		lines = fav.HighlightLines
 	} else {
-		text = parser.BuildDefaultExcerpt(p)
+		if hasFav && strings.TrimSpace(fav.Excerpt) != "" {
+			text = strings.TrimSpace(fav.Excerpt)
+		} else {
+			text = parser.BuildDefaultExcerpt(p)
+		}
+		largeText = parser.BuildLargeExcerpt(p)
 	}
 	if text == "" {
 		return domain.WidgetEntry{}, false
+	}
+	if largeText == text {
+		largeText = ""
 	}
 	author := p.Author
 	if author == "" {
@@ -276,6 +298,7 @@ func buildSinglePoemWidgetEntry(book domain.Book, p domain.Poem, fav domain.Favo
 	return domain.WidgetEntry{
 		EntryType:   "poem",
 		DisplayText: text,
+		LargeText:   largeText,
 		PoemTitle:   p.Title,
 		Author:      author,
 		SourceTitle: book.Title,

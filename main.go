@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -98,6 +99,34 @@ func main() {
 		}
 
 		uiInst := views.NewAppUI(svc, pickFile, nil)
+		uiInst.SetAppVersion(mygo.App.Version())
+		uiInst.SetOpenURLFunc(func(rawURL string) error {
+			return mygo.Shell.OpenExternal(rawURL)
+		})
+		uiInst.SetExportFileFunc(func(filePath string) (string, error) {
+			err := mygo.Share(mygo.ShareOptions{
+				Text:  "StillPoets 诊断分析日志",
+				Files: []string{filePath},
+			})
+			if err == nil {
+				return filePath, nil
+			}
+			if errors.Is(err, errors.ErrUnsupported) {
+				saved, saveErr := mygo.Dialog.SaveCopy(filePath, filepath.Base(filePath))
+				if saveErr != nil {
+					return "", saveErr
+				}
+				return saved, nil
+			}
+			// 移动端若系统分享不可用，回退到系统文件保存器（iOS Files / Android SAF）
+			if saved, saveErr := mygo.Dialog.SaveCopy(filePath, filepath.Base(filePath)); saveErr == nil {
+				return saved, nil
+			}
+			return "", err
+		})
+		uiInst.SetCopyTextFunc(func(text string) {
+			mygo.Clipboard.WriteText(text)
+		})
 		uiInst.SetInitialSystemDark(initialDark)
 		win = mygo.NewWindow(mygo.WindowOptions{
 			Title:           "StillPoets",

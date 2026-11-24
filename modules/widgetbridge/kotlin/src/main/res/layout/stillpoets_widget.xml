@@ -58,6 +58,20 @@
                 android:src="@drawable/stillpoets_ic_refresh" />
         </LinearLayout>
 
+        <TextView
+            android:id="@+id/widget_poem_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:fontFamily="serif"
+            android:maxLines="1"
+            android:paddingTop="6dp"
+            android:paddingBottom="4dp"
+            android:textColor="#1F2320"
+            android:textSize="17sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
         <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
@@ -68,11 +82,11 @@
             <TextView
                 android:id="@+id/widget_poem_text"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_gravity="center_vertical"
+                android:layout_height="match_parent"
                 android:ellipsize="end"
                 android:fontFamily="serif"
-                android:lineSpacingMultiplier="1.38"
+                android:gravity="center_vertical|start"
+                android:lineSpacingMultiplier="1.40"
                 android:maxLines="4"
                 android:text="@string/stillpoets_widget_empty_poem"
                 android:textColor="#1F2320"
@@ -82,7 +96,6 @@
                 android:id="@+id/widget_poem_image"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
-                android:layout_gravity="center_vertical"
                 android:contentDescription="@null"
                 android:scaleType="fitStart"
                 android:visibility="gone" />

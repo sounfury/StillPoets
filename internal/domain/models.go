@@ -184,8 +184,8 @@ type Poem struct {
 	ID         string     `json:"id"`
 	BookID     string     `json:"bookId"`
 	OrderIndex int        `json:"orderIndex"`
-	Kind       EntryKind  `json:"kind,omitempty"`     // poem | prose（空值兼容视为 poem）
-	Section    string     `json:"section,omitempty"`  // 所属分辑/卷名，如 "第一辑 · 抒情诗"
+	Kind       EntryKind  `json:"kind,omitempty"`    // poem | prose（空值兼容视为 poem）
+	Section    string     `json:"section,omitempty"` // 所属分辑/卷名，如 "第一辑 · 抒情诗"
 	Title      string     `json:"title"`
 	Subtitle   string     `json:"subtitle,omitempty"`
 	Author     string     `json:"author,omitempty"`   // 多人合集时覆盖 Book.Author
@@ -251,7 +251,7 @@ const (
 // 若关联诗集被删除，散页文字保留，运行时通过 EffectiveKind(bookActive=false) 自动降级为独立散句。
 type Quote struct {
 	ID             string    `json:"id"`
-	Kind           QuoteKind `json:"kind,omitempty"`           // excerpt | standalone
+	Kind           QuoteKind `json:"kind,omitempty"` // excerpt | standalone
 	Content        string    `json:"content"`
 	Author         string    `json:"author,omitempty"`
 	SourceBook     string    `json:"sourceBook,omitempty"`     // 原书出处（诗集名或外部书名）
@@ -382,12 +382,39 @@ func NormalizeWidgetRefreshMinutes(minutes int) int {
 	return minutes
 }
 
+// FontWeight 档位常量（对应纤细 / 常规 / 中等 / 偏粗）。
+const (
+	FontWeightLight    = 300
+	FontWeightRegular  = 400
+	FontWeightMedium   = 500
+	FontWeightSemiBold = 600
+	DefaultFontWeight  = FontWeightRegular
+)
+
+// NormalizeFontWeight 将字重规范化至支持的 4 个阅读档位（300 / 400 / 500 / 600）。
+func NormalizeFontWeight(weight int) int {
+	if weight <= 0 {
+		return DefaultFontWeight
+	}
+	switch {
+	case weight <= 350:
+		return FontWeightLight
+	case weight <= 450:
+		return FontWeightRegular
+	case weight <= 550:
+		return FontWeightMedium
+	default:
+		return FontWeightSemiBold
+	}
+}
+
 // WidgetThemeConfig 定义小组件视觉主题，与原生 WidgetKit / Glance 共享。
 type WidgetThemeConfig struct {
 	Preset           string `json:"preset"`                     // artbook | editorial | dark_minimal
 	FollowSystemDark bool   `json:"followSystemDark,omitempty"` // 开启后系统进入深色模式时自动切换为暗夜极简配色
 	FontFamily       string `json:"fontFamily,omitempty"`       // 内置或已注册的自定义字体名
 	FontFile         string `json:"fontFile,omitempty"`         // 本地字体文件名
+	FontWeight       int    `json:"fontWeight,omitempty"`       // 正文字重（300 / 400 / 500 / 600）
 	BgColor          string `json:"bgColor"`
 	TextColor        string `json:"textColor"`
 	AccentColor      string `json:"accentColor"`
@@ -399,17 +426,23 @@ type WidgetThemeConfig struct {
 // Settings 保存本机应用外观与小组件偏好（V1.0 仅本机存储，不跨端同步；严禁包含 WebDAV 密码）。
 type Settings struct {
 	ThemePreset          string            `json:"themePreset"`
-	FollowSystemDark     *bool             `json:"followSystemDark,omitempty"`  // nil 表示默认开启：系统进入深色模式自动切换为暗夜极简
+	FollowSystemDark     *bool             `json:"followSystemDark,omitempty"` // nil 表示默认开启：系统进入深色模式自动切换为暗夜极简
 	UseOriginalCover     bool              `json:"useOriginalCover,omitempty"`
 	FloatingBottomBar    *bool             `json:"floatingBottomBar,omitempty"` // nil 表示跟随平台默认（iOS 开启、其他平台关闭）
 	FontFamily           string            `json:"fontFamily"`
 	FontSize             float32           `json:"fontSize"`
+	FontWeight           int               `json:"fontWeight,omitempty"`
 	LineHeight           float32           `json:"lineHeight"`
 	WidgetMode           WidgetSourceMode  `json:"widgetMode"`
 	WidgetBookID         string            `json:"widgetBookId,omitempty"`
 	WidgetRefreshMinutes int               `json:"widgetRefreshMinutes,omitempty"`
 	WidgetTheme          WidgetThemeConfig `json:"widgetTheme"`
 	UpdatedAt            int64             `json:"updatedAt"`
+}
+
+// EffectiveFontWeight 返回规范化后的正文字重（默认 400 常规）。
+func (s Settings) EffectiveFontWeight() int {
+	return NormalizeFontWeight(s.FontWeight)
 }
 
 // ShouldFollowSystemDark 返回是否开启「跟随系统深色模式」（未显式设置时默认开启）。
@@ -432,6 +465,7 @@ type WidgetTimeline struct {
 type WidgetEntry struct {
 	EntryType   string `json:"entryType"` // poem | quote
 	DisplayText string `json:"displayText"`
+	LargeText   string `json:"largeText,omitempty"` // 大尺寸小组件（4×4 / systemLarge）展示的多诗节长正文
 	PoemTitle   string `json:"poemTitle,omitempty"`
 	Author      string `json:"author,omitempty"`
 	SourceTitle string `json:"sourceTitle,omitempty"` // 诗集名或独立句子的原书出处

@@ -168,12 +168,50 @@ struct StillPoetsWidgetView: View {
         textColor.opacity(0.12)
     }
 
+    private var isLargeCard: Bool {
+        family == .systemLarge
+    }
+
+    private var bodyText: String {
+        entry.item.effectiveText(forLarge: isLargeCard)
+    }
+
+    private var bodyLineCount: Int {
+        bodyText.split(separator: "\n", omittingEmptySubsequences: false).count
+    }
+
+    private var largePoemTitle: String {
+        guard isLargeCard else { return "" }
+        return (entry.item.poemTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isShortLargeQuote: Bool {
+        isLargeCard && bodyLineCount <= 3 && bodyText.count <= 72
+    }
+
+    private var alignBodyTop: Bool {
+        isLargeCard && bodyLineCount >= 4
+    }
+
+    private var resolvedFontWeight: Font.Weight {
+        switch entry.theme.fontWeight ?? 400 {
+        case ..<350:
+            return .light
+        case 350..<450:
+            return .regular
+        case 450..<550:
+            return .medium
+        default:
+            return .semibold
+        }
+    }
+
     private var poemFontSize: CGFloat {
         switch family {
         case .systemSmall:
             return 14
         case .systemLarge:
-            return 17
+            return isShortLargeQuote ? 20 : 16.5
         default:
             return 15.5
         }
@@ -184,7 +222,7 @@ struct StillPoetsWidgetView: View {
         case .systemSmall:
             return 4
         case .systemLarge:
-            return 10
+            return largePoemTitle.isEmpty ? 15 : 13
         default:
             return 4
         }
@@ -194,7 +232,14 @@ struct StillPoetsWidgetView: View {
         if let customName = entry.customFontName, !customName.isEmpty {
             return .custom(customName, size: poemFontSize)
         }
-        return .system(size: poemFontSize, weight: .regular, design: .serif)
+        return .system(size: poemFontSize, weight: resolvedFontWeight, design: .serif)
+    }
+
+    private var titleFont: Font {
+        if let customName = entry.customFontName, !customName.isEmpty {
+            return .custom(customName, size: 18)
+        }
+        return .system(size: 18, weight: .semibold, design: .serif)
     }
 
     private var deeplinkURL: URL? {
@@ -231,13 +276,25 @@ struct StillPoetsWidgetView: View {
                 }
             }
 
-            Spacer(minLength: 0)
+            if !largePoemTitle.isEmpty {
+                Text(largePoemTitle)
+                    .font(titleFont)
+                    .foregroundStyle(textColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.top, 2)
+            }
 
-            // 正文：诗句主体
-            Text((entry.item.displayText ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+            if !alignBodyTop {
+                Spacer(minLength: 0)
+            }
+
+            // 正文：4×4 大号卡片展示多诗节并从顶部自然展开，短金句与小卡片适度居中
+            Text(bodyText)
                 .font(poemFont)
+                .fontWeight(entry.customFontName == nil ? nil : resolvedFontWeight)
                 .foregroundStyle(textColor)
-                .lineSpacing(family == .systemLarge ? 7 : 5)
+                .lineSpacing(isLargeCard ? (isShortLargeQuote ? 8 : 6) : 5)
                 .lineLimit(poemLineLimit)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -250,7 +307,7 @@ struct StillPoetsWidgetView: View {
                 .frame(height: 0.5)
 
             HStack(spacing: 8) {
-                Text(entry.item.metaLine)
+                Text(entry.item.metaLine(omittingPoemTitle: !largePoemTitle.isEmpty))
                     .font(.system(size: 11))
                     .foregroundStyle(mutedColor)
                     .lineLimit(1)

@@ -93,7 +93,11 @@ func (a *AppUI) renderAboutSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 								ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
 									ui.Column(c).Grow(1).Gap(2).Children(func() {
 										ui.Text(c, "检查更新").FontSize(14).Bold().TextColor(pal.TextPrimary)
-										ui.Text(c, "仅检测 GitHub Release 是否有新包发布，不自动下载安装").
+										updateDesc := "每次进入应用自动检测 GitHub Release 新版本"
+										if a.canInAppUpdate() {
+											updateDesc = "每次进入应用自动检测新版本，支持应用内下载并更新"
+										}
+										ui.Text(c, updateDesc).
 											FontSize(11).TextColor(pal.TextMuted)
 									})
 									chkBtn := ui.Row(c.Key("about-check-update-btn")).
@@ -171,8 +175,21 @@ func (a *AppUI) renderAboutSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 												if targetURL == "" {
 													targetURL = app.GitHubReleasesURL
 												}
-												if ui.PrimaryButton(c, "前往 Release 下载").Clicked() {
-													a.openExternalURL(targetURL)
+												if a.canInAppUpdate() {
+													a.mu.Lock()
+													isDownloading := a.updateStage == updateStageDownloading
+													a.mu.Unlock()
+													btnLabel := "立即更新"
+													if isDownloading {
+														btnLabel = "查看下载进度"
+													}
+													if ui.PrimaryButton(c, btnLabel).Clicked() {
+														a.openUpdateModalForRelease(*latest, true)
+													}
+												} else {
+													if ui.PrimaryButton(c, "前往 Release 下载").Clicked() {
+														a.openExternalURL(targetURL)
+													}
 												}
 											})
 										})

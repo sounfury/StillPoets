@@ -96,12 +96,56 @@ jobs:
           ls -la "${SDK_ROOT}/ndk"
 
       - name: Build Android APK with MyGo
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           APP_VER=$(python3 -c 'import json; print(json.load(open("mygo.json"))["version"])')
           echo "APP_VERSION=${APP_VER}" >> "$GITHUB_ENV"
 
+          KS_FILE=""
+          cleanup_signing() {
+            if [ -n "${KS_FILE}" ] && [ -f "${KS_FILE}" ]; then
+              rm -f "${KS_FILE}"
+            fi
+            git checkout -- mygo.json 2>/dev/null || true
+          }
+          trap cleanup_signing EXIT
+
+          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            if [ -z "${ANDROID_KEYSTORE_PASSWORD:-}" ]; then
+              echo "::error::ANDROID_KEYSTORE_BASE64 已配置，但缺少 ANDROID_KEYSTORE_PASSWORD Secret"
+              exit 1
+            fi
+            KS_FILE="${RUNNER_TEMP}/stillpoets-release.jks"
+            printf '%s' "${ANDROID_KEYSTORE_BASE64}" | tr -d '\r\n ' | base64 -d > "${KS_FILE}"
+            chmod 600 "${KS_FILE}"
+            KEY_ALIAS="${ANDROID_KEY_ALIAS:-stillpoets}"
+            KEY_PASS="${ANDROID_KEY_PASSWORD:-${ANDROID_KEYSTORE_PASSWORD}}"
+
+            python3 - "${KS_FILE}" "${KEY_ALIAS}" <<'PY'
+          import json, sys
+          ks_path, alias = sys.argv[1], sys.argv[2]
+          with open("mygo.json", "r", encoding="utf-8") as f:
+              cfg = json.load(f)
+          cfg.setdefault("android", {})["keystore"] = ks_path
+          cfg["android"]["keyAlias"] = alias
+          with open("mygo.json", "w", encoding="utf-8") as f:
+              json.dump(cfg, f, indent=2, ensure_ascii=False)
+              f.write("\n")
+          PY
+            export MYGO_ANDROID_KEYSTORE_PASSWORD="${ANDROID_KEYSTORE_PASSWORD}"
+            export MYGO_ANDROID_KEY_PASSWORD="${KEY_PASS}"
+            echo "Using fixed Android release keystore (alias=${KEY_ALIAS})"
+          else
+            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64 Secret，当前将使用临时 debug 密钥签名（无法跨构建覆盖更新）"
+          fi
+
           mygo native check modules/widgetbridge
+          mygo native check modules/appupdater
           ARCH="${{ inputs.android_arch || 'arm64' }}"
           if [ "${ARCH}" = "universal" ]; then
             mygo build -platform android -o build
@@ -113,14 +157,20 @@ jobs:
 
           mkdir -p dist
           APK_SRC=$(ls build/android/*.apk | head -n 1)
-          cp "${APK_SRC}" "dist/StillPoets-${APP_VER}-android-${SUFFIX}.apk"
+          APK_NAME="StillPoets-${APP_VER}-android-${SUFFIX}.apk"
+          cp "${APK_SRC}" "dist/${APK_NAME}"
+          (cd dist && sha256sum "${APK_NAME}" > "${APK_NAME}.sha256" && sha256sum "${APK_NAME}" > SHA256SUMS.txt)
           ls -lh dist/
+          cat dist/SHA256SUMS.txt
 
       - name: Upload Android APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: stillpoets-android-apk
-          path: dist/*.apk
+          path: |
+            dist/*.apk
+            dist/*.sha256
+            dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -310,14 +360,14 @@ jobs:
           printf '## StillPoets %s\n\n' "${TAG}" > "${RUNNER_TEMP}/release-notes.md"
           cat >> "${RUNNER_TEMP}/release-notes.md" <<'EOF'
           ### 安装包说明
-          - **Android (APK)**：内置桌面小组件（`StillPoetsWidgetProvider`），可直接安装在 Android 手机 / 平板（ARM64）。
+          - **Android (APK)**：内置桌面小组件（`StillPoetsWidgetProvider`）与应用内自动更新，采用**固定正式发布签名**，可直接安装在 Android 手机 / 平板（ARM64）。
+            > 首次从早期测试版升级为正式签名版时，请先确保 WebDAV 已同步并卸载旧版后安装；自本版本起后续均可直接在应用内覆盖更新。
           - **iOS (IPA)**：内嵌 WidgetKit 桌面小组件（`StillPoetsWidget.appex`），免证书未签名真机包，可使用全能签 / 轻松签 / AltStore / SideStore 自签安装。
 
           ### 本次核心更新
-          - **WebDAV / OpenList + 115 同步链路大幅提速**：优先 `ListDir` 并缓存已确认目录（避免每次重复 `MKCOL`/`PROPFIND`）、持久化远端设备已合并代次跳过未变化快照重复 `GET`（常规无变更同步压缩至 1 次请求）、清理旧代次复用本机已校验 `LocalRev`、原始大文件 `.epub` 改用轻量 `PROPFIND Depth:0` 属性校验，并按工作区复用 HTTP 连接池。
-          - **更新日志升级为三级底部抽屉 + 原生 Markdown 渲染**：「关于 StillPoets」页内收敛为「更新日志」入口，点击弹出可拖拽底部抽屉，使用原生 Markdown 排版完整展示历次更新说明。
-          - **修复 iOS 二级页面顶部大面积空白**：移除二级页顶栏对顶部安全区的重复叠加，与主顶栏保持一致高度。
-          - **阅读排版与字体防误触重排**：将「正文字号」与「行距倍数」滑块收纳进「阅读排版与字体」二级页，设置主页仅保留只读预览条与入口摘要。
+          - **Android 应用内自动更新与更新小弹窗**：每次进入应用（冷启动及切回前台）自动检测 GitHub Releases 新版本，发现新版本时弹出轻量纸书风小弹窗，支持预览 Markdown 更新日志与包体大小。
+          - **应用内流式下载、完整性校验与无缝安装**：点击「立即更新」后弹窗原地展示下载进度条与实时网速，自动完成 SHA-256 校验并拉起 Android 系统安装器；首次授权「允许安装未知应用」返回应用后自动衔接安装，无需重复下载。
+          - **固定正式 Release 签名与校验产物**：Android 构建工作流接入固定 Keystore 正式签名，并随 Release 同步发布 `.sha256` / `SHA256SUMS.txt` 校验文件。
           EOF
 
           if gh release view "${TAG}" >/dev/null 2>&1; then

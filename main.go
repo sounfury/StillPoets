@@ -15,6 +15,7 @@ import (
 	"stillpoets/internal/app"
 	"stillpoets/internal/ui/theme"
 	"stillpoets/internal/ui/views"
+	"stillpoets/modules/appupdater"
 	"stillpoets/modules/widgetbridge"
 )
 
@@ -25,6 +26,17 @@ type mygoSecretsAdapter struct {
 func (s mygoSecretsAdapter) Get(key string) ([]byte, error)     { return s.mod.Get(key) }
 func (s mygoSecretsAdapter) Set(key string, value []byte) error { return s.mod.Set(key, value) }
 func (s mygoSecretsAdapter) Delete(key string) error            { return s.mod.Delete(key) }
+
+type mygoAppUpdaterAdapter struct{}
+
+func (mygoAppUpdaterAdapter) CanInstallPackages() (bool, error) {
+	return appupdater.CanInstallPackages()
+}
+func (mygoAppUpdaterAdapter) OpenInstallPermissionSettings() error {
+	return appupdater.OpenInstallPermissionSettings()
+}
+func (mygoAppUpdaterAdapter) InstallAPK(apkPath string) error { return appupdater.InstallAPK(apkPath) }
+func (mygoAppUpdaterAdapter) DeviceABIs() []string            { return appupdater.DeviceABIs() }
 
 func main() {
 	var (
@@ -100,6 +112,9 @@ func main() {
 
 		uiInst := views.NewAppUI(svc, pickFile, nil)
 		uiInst.SetAppVersion(mygo.App.Version())
+		if appupdater.Available() {
+			uiInst.SetAppUpdater(mygoAppUpdaterAdapter{})
+		}
 		uiInst.SetOpenURLFunc(func(rawURL string) error {
 			return mygo.Shell.OpenExternal(rawURL)
 		})
@@ -158,6 +173,11 @@ func main() {
 			go widgetbridge.Reload(svc.WidgetTimelinePath(), svc.FontsDir())
 		})
 
+		// 每次用户切回/点进应用时自动检测一次更新（并在授权未知应用安装权限返回后自动衔接安装）
+		mygo.App.OnActivate(func(_ bool) {
+			uiInst.OnAppActivated()
+		})
+
 		mu.Lock()
 		appUI = uiInst
 		queuedURL := pendingURL
@@ -168,6 +188,7 @@ func main() {
 			uiInst.HandleDeeplink(queuedURL)
 		}
 		uiInst.TriggerStartupSync()
+		uiInst.TriggerAutoUpdateCheck()
 	})
 
 	if err := mygo.App.Run(); err != nil {

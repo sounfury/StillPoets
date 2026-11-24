@@ -16,11 +16,16 @@ native/ios/*.xcodeproj/
 *.aab
 *.appex
 
-# Local secrets & test configs (NEVER commit real WebDAV credentials)
+# Local secrets & test configs (NEVER commit real WebDAV credentials or signing keys)
 .env
 .env.*
 !.env.example
 local.webdav.json
+*.jks
+*.keystore
+*.p12
+keystore.properties
+secrets/
 
 # SQLite local databases
 *.db

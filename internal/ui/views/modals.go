@@ -24,6 +24,7 @@ func (a *AppUI) renderModals(c *ui.Context, pal theme.Palette) {
 	a.renderTOCModal(c, pal)
 	a.renderTypographyModal(c, pal)
 	a.renderChangelogModal(c, pal)
+	a.renderUpdateModal(c, pal)
 }
 
 func (a *AppUI) renderAddModal(c *ui.Context, pal theme.Palette) {

@@ -158,6 +158,7 @@ type AppUI struct {
 	showTypoModal      bool
 	showQuoteDetail    bool
 	showChangelogModal bool
+	showUpdateModal    bool
 
 	changelogMDOpts  *markdown.Options
 	changelogMDTheme theme.PresetID
@@ -193,16 +194,29 @@ type AppUI struct {
 	confirmDisconnect bool
 	confirmDeleteFont string
 
-	// 「关于 StillPoets」二级页状态（检查更新 / 更新日志 / 分析日志导出）
-	updateChecking  bool
-	updateResult    *app.UpdateCheckResult
-	updateError     string
-	releasesLoading bool
-	releasesLoaded  bool
-	releases        []app.ReleaseInfo
-	releasesError   string
-	exportingLog    bool
-	exportLogStatus string
+	// 「关于 StillPoets」二级页与自动更新状态（检查更新 / 应用内下载安装 / 更新日志 / 分析日志导出）
+	appUpdater         AppUpdaterBridge
+	updateChecking     bool
+	updateResult       *app.UpdateCheckResult
+	updateError        string
+	lastAutoCheckAt    time.Time
+	dismissedUpdateTag string
+	updateStage        updateInstallStage
+	updateModalRel     *app.ReleaseInfo
+	updateAPKAsset     *app.ReleaseAsset
+	updateDownloaded   int64
+	updateTotal        int64
+	updateSpeedBPS     float64
+	updateAPKPath      string
+	updateVerifiedSHA  bool
+	updateStageError   string
+	updateCancelFn     context.CancelFunc
+	releasesLoading    bool
+	releasesLoaded     bool
+	releases           []app.ReleaseInfo
+	releasesError      string
+	exportingLog       bool
+	exportLogStatus    string
 
 	// 阅读器与双入口手势分页状态
 	poemPager          horizontalPagerState

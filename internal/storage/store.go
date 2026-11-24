@@ -25,12 +25,13 @@ type Store struct {
 }
 
 type SyncMeta struct {
-	InstallID      string
-	LamportCounter uint64
-	LocalRev       uint64
-	Dirty          bool
-	DirtySeq       uint64
-	LastSyncAt     int64
+	InstallID       string
+	LamportCounter  uint64
+	LocalRev        uint64
+	Dirty           bool
+	DirtySeq        uint64
+	LastSyncAt      int64
+	KnownRemoteRevs map[string]uint64
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -154,13 +155,14 @@ func (s *Store) ResetWorkspaceSyncState(ctx context.Context) error {
 		setSyncState("local_rev", "0", now),
 		setSyncState("last_sync_at", "0", now),
 		setSyncState("dirty", "1", now),
+		stmt(`DELETE FROM sync_state WHERE key = 'remote_device_revs'`),
 	})
 }
 
 func (s *Store) syncMeta(ctx context.Context) (SyncMeta, error) {
 	var meta SyncMeta
 	rows, err := s.db.Query(ctx, `SELECT key, value FROM sync_state WHERE key IN
-		('install_id', 'lamport_counter', 'local_rev', 'dirty', 'dirty_seq', 'last_sync_at')`)
+		('install_id', 'lamport_counter', 'local_rev', 'dirty', 'dirty_seq', 'last_sync_at', 'remote_device_revs')`)
 	if err != nil {
 		return meta, err
 	}
@@ -180,6 +182,8 @@ func (s *Store) syncMeta(ctx context.Context) (SyncMeta, error) {
 			meta.LocalRev, err = strconv.ParseUint(value, 10, 64)
 		case "dirty_seq":
 			meta.DirtySeq, err = strconv.ParseUint(value, 10, 64)
+		case "remote_device_revs":
+			err = json.Unmarshal([]byte(value), &meta.KnownRemoteRevs)
 		}
 		if err != nil {
 			return SyncMeta{}, fmt.Errorf("storage: decode sync state %s: %w", key, err)

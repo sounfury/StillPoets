@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/markdown"
 
 	"stillpoets/internal/app"
 	"stillpoets/internal/ui/components"
@@ -154,14 +155,18 @@ func (a *AppUI) renderAboutSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 														Font(theme.FontMono).FontSize(11).TextColor(pal.TextMuted)
 												}
 											})
-											if summary := trimReleaseBody(latest.Body, 4); summary != "" {
-												ui.Text(c, summary).FontSize(12).LineHeight(1.5).TextColor(pal.TextSecondary).MaxLines(4)
+											if mdBody := normalizeReleaseMarkdown(*latest); mdBody != "" {
+												markdown.View(c.Key("upd-found-md-"+latest.TagName), mdBody, a.changelogMarkdownOptions(pal)).
+													FillWidth()
 											}
 											if len(latest.Assets) > 0 {
 												ui.Text(c, "包含安装包："+formatAssetNames(latest.Assets)).
 													Font(theme.FontMono).FontSize(11).TextColor(pal.TextMuted).MaxLines(2)
 											}
-											ui.Row(c).FillWidth().Justify(ui.End).Children(func() {
+											ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Children(func() {
+												if ui.Button(c, "查看更新日志").Clicked() {
+													a.openChangelogSheet()
+												}
 												targetURL := latest.HTMLURL
 												if targetURL == "" {
 													targetURL = app.GitHubReleasesURL
@@ -187,6 +192,40 @@ func (a *AppUI) renderAboutSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 												FontSize(12).TextColor(pal.TextSecondary).Grow(1)
 										})
 								}
+
+								a.renderSettingsDivider(c, pal)
+
+								// 三级入口：更新日志底部抽屉（Markdown 渲染）
+								changelogSub := "查看 GitHub Releases 历次版本更新说明"
+								changelogValue := "查看"
+								switch {
+								case relLoading:
+									changelogSub = "正在获取 GitHub Releases 更新记录…"
+									changelogValue = "加载中"
+								case relErr != "":
+									changelogSub = "上次获取失败，点击进入后可重试"
+									changelogValue = "重试"
+								case len(relList) > 0:
+									latestRel := relList[0]
+									if !latestRel.PublishedAt.IsZero() {
+										changelogSub = fmt.Sprintf("最新 %s · 发布于 %s",
+											formatVersionTag(latestRel.TagName),
+											latestRel.PublishedAt.Local().Format("2006-01-02"))
+									} else {
+										changelogSub = fmt.Sprintf("最新 %s · 共 %d 个版本记录",
+											formatVersionTag(latestRel.TagName), len(relList))
+									}
+									changelogValue = fmt.Sprintf("共 %d 版", len(relList))
+								}
+								a.renderSettingsNavRow(
+									c, pal,
+									"about-changelog-entry",
+									"更新日志",
+									changelogSub,
+									changelogValue,
+									"",
+									func() { a.openChangelogSheet() },
+								)
 							})
 					})
 
@@ -292,124 +331,258 @@ func (a *AppUI) renderAboutSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 							})
 					})
 
-					// 4. 更新日志（来自 GitHub Releases）
-					ui.Column(c.Key("about-changelog-group")).FillWidth().Gap(8).Children(func() {
-						ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-							ui.Text(c, "更新日志（GitHub Releases）").
-								Font(theme.FontSans).FontSize(12).Bold().TextColor(pal.TextMuted).Padding(0, 0, 0, 4).Grow(1)
-							if !relLoading {
-								refBtn := ui.Row(c.Key("changelog-refresh")).
-									Padding(3, 8).
-									Gap(4).
-									Radius(6).
-									AlignItems(ui.Center).
-									Cursor(ui.CursorPointer)
-								refBtn.Children(func() {
-									ui.Icon(c, components.IconRefresh).Width(12).Height(12).TextColor(pal.TextMuted)
-									ui.Text(c, "刷新").FontSize(11).TextColor(pal.TextMuted)
-								})
-								if refBtn.Clicked() {
-									a.loadReleasesAsync(true)
-								}
-							}
-						})
-
-						ui.Column(c.Key("about-changelog-card")).
-							FillWidth().
-							Padding(14, 18).
-							Gap(12).
-							Radius(12).
-							Background(pal.Surface).
-							Border(1, pal.Border).
-							Children(func() {
-								switch {
-								case relLoading:
-									ui.Row(c.Key("rel-loading-row")).FillWidth().Padding(12, 0).Gap(8).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
-										ui.Spinner(c.Key("rel-spin")).FontSize(14).TextColor(pal.Accent).Label("正在获取更新日志")
-										ui.Text(c, "正在拉取 GitHub Release 更新日志…").FontSize(12).TextColor(pal.TextMuted)
-									})
-								case relErr != "":
-									ui.Column(c).FillWidth().Gap(10).Children(func() {
-										ui.Text(c, "拉取更新日志失败："+relErr).FontSize(12).LineHeight(1.5).TextColor(pal.TextMuted)
-										ui.Row(c).Gap(8).Children(func() {
-											if ui.Button(c, "重试").Clicked() {
-												a.loadReleasesAsync(true)
-											}
-											if ui.Button(c, "在浏览器查看 Release").Clicked() {
-												a.openExternalURL(app.GitHubReleasesURL)
-											}
-										})
-									})
-								case len(relList) == 0:
-									ui.Column(c).FillWidth().Gap(10).Padding(6, 0).Children(func() {
-										ui.Text(c, "仓库暂未发布正式 Release 记录。").FontSize(12).TextColor(pal.TextMuted)
-										if ui.Button(c, "前往 GitHub Releases 页面").Clicked() {
-											a.openExternalURL(app.GitHubReleasesURL)
-										}
-									})
-								default:
-									for idx, rel := range relList {
-										rel := rel
-										if idx > 0 {
-											a.renderSettingsDivider(c, pal)
-										}
-										item := ui.Column(c.Key("rel-item-"+rel.TagName)).
-											FillWidth().
-											Padding(6, 2).
-											Gap(6).
-											Cursor(ui.CursorPointer)
-										item.Children(func() {
-											ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-												ui.Box(c).Padding(2, 8).Radius(999).Background(pal.HeroBg).Children(func() {
-													ui.Text(c, formatVersionTag(rel.TagName)).Font(theme.FontMono).FontSize(11).Bold().TextColor(pal.TextPrimary)
-												})
-												if rel.Prerelease {
-													ui.Box(c).Padding(2, 7).Radius(999).Background(pal.HighlightBg).Children(func() {
-														ui.Text(c, "预发布").FontSize(10).TextColor(pal.Accent)
-													})
-												}
-												ui.Box(c).Grow(1)
-												if !rel.PublishedAt.IsZero() {
-													ui.Text(c, rel.PublishedAt.Local().Format("2006-01-02")).
-														Font(theme.FontMono).FontSize(11).TextColor(pal.TextMuted)
-												}
-												ui.Icon(c, components.IconExternalLink).Width(12).Height(12).TextColor(pal.TextMuted)
-											})
-											if title := rel.DisplayTitle(); title != "" && title != rel.TagName {
-												ui.Text(c, title).Font(theme.FontSerif).FontSize(14).Bold().TextColor(pal.TextPrimary)
-											}
-											body := trimReleaseBody(rel.Body, 8)
-											if body == "" {
-												body = "无额外更新说明，点击前往 GitHub Release 查看详情。"
-											}
-											ui.Text(c, body).FontSize(12).LineHeight(1.55).TextColor(pal.TextSecondary)
-											if len(rel.Assets) > 0 {
-												ui.Text(c, "安装包："+formatAssetNames(rel.Assets)).
-													Font(theme.FontMono).FontSize(10).TextColor(pal.TextMuted).MaxLines(2)
-											}
-										})
-										if item.Clicked() {
-											target := rel.HTMLURL
-											if target == "" {
-												target = app.GitHubReleasesURL
-											}
-											a.openExternalURL(target)
-										}
-									}
-
-									a.renderSettingsDivider(c, pal)
-									ui.Row(c).FillWidth().Justify(ui.Center).Padding(4, 0, 0, 0).Children(func() {
-										if ui.Button(c, "在浏览器查看全部 Release").Clicked() {
-											a.openExternalURL(app.GitHubReleasesURL)
-										}
-									})
-								}
-							})
-					})
 				})
 			})
 		})
 	})
+}
+
+func (a *AppUI) openChangelogSheet() {
+	a.showChangelogModal = true
+	a.mu.Lock()
+	needLoad := !a.releasesLoaded && !a.releasesLoading
+	a.mu.Unlock()
+	if needLoad {
+		a.loadReleasesAsync(false)
+	}
+}
+
+// renderChangelogModal 渲染「关于 StillPoets」下的三级底部抽屉，使用 MyGo 原生 Markdown 视图展示完整更新日志。
+func (a *AppUI) renderChangelogModal(c *ui.Context, pal theme.Palette) {
+	components.AnimatedSheet(c, &a.showChangelogModal, pal, []float32{0.72, 0.92}, "更新日志", func() {
+		a.mu.Lock()
+		appVer := a.appVersion
+		relLoading := a.releasesLoading
+		relList := a.releases
+		relErr := a.releasesError
+		a.mu.Unlock()
+
+		// 抽屉顶栏：标题 + 刷新 + 关闭
+		ui.Row(c.Key("changelog-sheet-header")).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Column(c).Grow(1).Gap(2).Children(func() {
+				ui.Text(c, "更新日志").Font(theme.FontSerif).FontSize(18).Bold().TextColor(pal.TextPrimary)
+				ui.Text(c, "GitHub Releases 历次版本记录").FontSize(11).TextColor(pal.TextMuted)
+			})
+			if !relLoading {
+				refBtn := ui.Row(c.Key("changelog-sheet-refresh")).
+					Padding(5, 10).
+					Gap(4).
+					Radius(999).
+					Background(pal.Background).
+					Border(1, pal.Border).
+					AlignItems(ui.Center).
+					Cursor(ui.CursorPointer)
+				theme.ApplyPressScale(refBtn, 0.94)
+				refBtn.Children(func() {
+					ui.Icon(c, components.IconRefresh).Width(12).Height(12).TextColor(pal.TextSecondary)
+					ui.Text(c, "刷新").FontSize(11).TextColor(pal.TextSecondary)
+				})
+				if refBtn.Clicked() {
+					a.loadReleasesAsync(true)
+				}
+			}
+			closeBtn := ui.Box(c.Key("changelog-sheet-close")).Padding(4).Cursor(ui.CursorPointer)
+			theme.ApplyPressScale(closeBtn, 0.90)
+			closeBtn.Children(func() {
+				ui.Icon(c, components.IconClose).Width(16).Height(16).TextColor(pal.TextMuted)
+			})
+			if closeBtn.Clicked() {
+				a.showChangelogModal = false
+			}
+		})
+
+		a.renderSettingsDivider(c, pal)
+
+		ui.Scroll(c.Key("changelog-sheet-scroll")).Grow(1).FillWidth().Children(func() {
+			ui.Column(c).FillWidth().Gap(14).Padding(2, 0, 20, 0).Children(func() {
+				switch {
+				case relLoading:
+					ui.Row(c.Key("rel-loading-row")).FillWidth().Padding(28, 0).Gap(8).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
+						ui.Spinner(c.Key("rel-spin")).FontSize(14).TextColor(pal.Accent).Label("正在获取更新日志")
+						ui.Text(c, "正在拉取 GitHub Release 更新日志…").FontSize(12).TextColor(pal.TextMuted)
+					})
+				case relErr != "":
+					ui.Column(c).FillWidth().Padding(16).Gap(10).Radius(12).Background(pal.Background).Border(1, pal.Border).Children(func() {
+						ui.Text(c, "拉取更新日志失败："+relErr).FontSize(12).LineHeight(1.5).TextColor(pal.TextMuted)
+						ui.Row(c).Gap(8).Children(func() {
+							if ui.Button(c, "重试").Clicked() {
+								a.loadReleasesAsync(true)
+							}
+							if ui.Button(c, "在浏览器查看 Release").Clicked() {
+								a.openExternalURL(app.GitHubReleasesURL)
+							}
+						})
+					})
+				case len(relList) == 0:
+					ui.Column(c).FillWidth().Padding(20, 12).Gap(10).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, "仓库暂未发布正式 Release 记录。").FontSize(12).TextColor(pal.TextMuted)
+						if ui.Button(c, "前往 GitHub Releases 页面").Clicked() {
+							a.openExternalURL(app.GitHubReleasesURL)
+						}
+					})
+				default:
+					mdOpts := a.changelogMarkdownOptions(pal)
+					curTag := formatVersionTag(appVer)
+					for _, rel := range relList {
+						rel := rel
+						relTag := formatVersionTag(rel.TagName)
+						isCurrent := appVer != "" && strings.EqualFold(relTag, curTag)
+
+						ui.Column(c.Key("rel-card-"+rel.TagName)).
+							FillWidth().
+							Padding(14, 16).
+							Gap(10).
+							Radius(12).
+							Background(pal.Background).
+							Border(1, pal.Border).
+							Children(func() {
+								// 版本头：Tag + 当前/预发布胶囊 + 发布日期 + GitHub 外链
+								ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+									ui.Box(c).Padding(2, 9).Radius(999).Background(pal.HeroBg).Children(func() {
+										ui.Text(c, relTag).Font(theme.FontMono).FontSize(11).Bold().TextColor(pal.TextPrimary)
+									})
+									if isCurrent {
+										ui.Box(c).Padding(2, 7).Radius(999).Background(pal.HighlightBg).Children(func() {
+											ui.Text(c, "当前版本").FontSize(10).Bold().TextColor(pal.Accent)
+										})
+									}
+									if rel.Prerelease {
+										ui.Box(c).Padding(2, 7).Radius(999).Background(pal.HighlightBg).Children(func() {
+											ui.Text(c, "预发布").FontSize(10).TextColor(pal.Accent)
+										})
+									}
+									ui.Box(c).Grow(1)
+									if !rel.PublishedAt.IsZero() {
+										ui.Text(c, rel.PublishedAt.Local().Format("2006-01-02")).
+											Font(theme.FontMono).FontSize(11).TextColor(pal.TextMuted)
+									}
+									linkBtn := ui.Row(c.Key("rel-ext-"+rel.TagName)).
+										Padding(3, 7).
+										Gap(3).
+										Radius(999).
+										Background(pal.Surface).
+										Border(1, pal.Border).
+										AlignItems(ui.Center).
+										Cursor(ui.CursorPointer)
+									theme.ApplyPressScale(linkBtn, 0.94)
+									linkBtn.Children(func() {
+										ui.Text(c, "详情").FontSize(10).TextColor(pal.TextSecondary)
+										ui.Icon(c, components.IconExternalLink).Width(11).Height(11).TextColor(pal.TextMuted)
+									})
+									if linkBtn.Clicked() {
+										target := rel.HTMLURL
+										if target == "" {
+											target = app.GitHubReleasesURL
+										}
+										a.openExternalURL(target)
+									}
+								})
+
+								if title := rel.DisplayTitle(); title != "" && title != rel.TagName && title != relTag {
+									ui.Text(c, title).Font(theme.FontSerif).FontSize(15).Bold().TextColor(pal.TextPrimary)
+								}
+
+								mdBody := normalizeReleaseMarkdown(rel)
+								if mdBody == "" {
+									ui.Text(c, "无额外更新说明，可点击右上角「详情」前往 GitHub Release 查看。").
+										FontSize(12).LineHeight(1.55).TextColor(pal.TextMuted)
+								} else {
+									markdown.View(c.Key("rel-md-"+rel.TagName), mdBody, mdOpts).FillWidth()
+								}
+
+								if len(rel.Assets) > 0 {
+									a.renderSettingsDivider(c, pal)
+									ui.Text(c, "安装包："+formatAssetNames(rel.Assets)).
+										Font(theme.FontMono).FontSize(10).LineHeight(1.45).TextColor(pal.TextMuted)
+								}
+							})
+					}
+
+					ui.Row(c).FillWidth().Justify(ui.Center).Padding(4, 0, 0, 0).Children(func() {
+						if ui.Button(c, "在浏览器查看全部 Release").Clicked() {
+							a.openExternalURL(app.GitHubReleasesURL)
+						}
+					})
+				}
+			})
+		})
+	})
+}
+
+func (a *AppUI) changelogMarkdownOptions(pal theme.Palette) *markdown.Options {
+	if a.changelogMDOpts != nil && a.changelogMDTheme == pal.ID {
+		return a.changelogMDOpts
+	}
+	mdTheme := &markdown.Theme{
+		FontSize:            13,
+		Font:                theme.FontSans,
+		CodeFont:            theme.FontMono,
+		LineHeight:          1.55,
+		CodeLineHeight:      1.45,
+		Text:                pal.TextSecondary,
+		Muted:               pal.TextMuted,
+		Link:                pal.Accent,
+		Strong:              pal.TextPrimary,
+		StrongWeight:        600,
+		Code:                pal.TextPrimary,
+		CodeBackground:      pal.Surface,
+		CodeSize:            0.88,
+		BlockSpacing:        0.55,
+		ItemSpacing:         0.28,
+		ListIndent:          1.35,
+		QuoteBar:            pal.Accent,
+		QuoteText:           pal.TextMuted,
+		QuoteBarWidth:       3,
+		Rule:                pal.Border,
+		CodeBlockBackground: pal.Surface,
+		CodeBlockBorder:     pal.Border,
+		CodeBlockRadius:     8,
+		CodeBlockPadding:    0.7,
+		TableBorder:         pal.Border,
+		TableHeader:         pal.Surface,
+		Headings: [6]markdown.HeadingStyle{
+			{Size: 1.18, Weight: 700, Color: pal.TextPrimary, Top: 0.65, Bottom: 0.30},
+			{Size: 1.10, Weight: 700, Color: pal.TextPrimary, Top: 0.60, Bottom: 0.28},
+			{Size: 1.03, Weight: 600, Color: pal.TextPrimary, Top: 0.55, Bottom: 0.25},
+			{Size: 1.00, Weight: 600, Color: pal.TextPrimary, Top: 0.45, Bottom: 0.20},
+			{Size: 0.96, Weight: 600, Color: pal.TextSecondary, Top: 0.40, Bottom: 0.18},
+			{Size: 0.92, Weight: 600, Color: pal.TextMuted, Top: 0.35, Bottom: 0.15},
+		},
+	}
+	if a.changelogMDOpts == nil {
+		a.changelogMDOpts = &markdown.Options{
+			Theme:  mdTheme,
+			OnLink: func(rawURL string) { a.openExternalURL(rawURL) },
+		}
+	} else {
+		a.changelogMDOpts.Theme = mdTheme
+	}
+	a.changelogMDTheme = pal.ID
+	return a.changelogMDOpts
+}
+
+// normalizeReleaseMarkdown 规范化换行并去除首行与卡片标题/Tag 重复的 Markdown 标题（如 `## StillPoets v0.1.2`）。
+func normalizeReleaseMarkdown(rel app.ReleaseInfo) string {
+	body := strings.TrimSpace(strings.ReplaceAll(rel.Body, "\r\n", "\n"))
+	if body == "" {
+		return ""
+	}
+	lines := strings.Split(body, "\n")
+	first := strings.TrimSpace(lines[0])
+	if strings.HasPrefix(first, "#") {
+		heading := strings.TrimSpace(strings.TrimLeft(first, "#"))
+		displayTitle := strings.TrimSpace(rel.DisplayTitle())
+		tag := formatVersionTag(rel.TagName)
+		if strings.EqualFold(heading, displayTitle) ||
+			strings.EqualFold(heading, rel.TagName) ||
+			strings.EqualFold(heading, tag) {
+			rest := strings.TrimSpace(strings.Join(lines[1:], "\n"))
+			if rest != "" {
+				return rest
+			}
+		}
+	}
+	return body
 }
 
 // --- 关于页异步动作 ---
@@ -592,18 +765,6 @@ func (a *AppUI) copyContactEmail() {
 		copyFn(app.ContactEmail)
 	}
 	a.showTransientToastOnUI("已复制联系邮箱：" + app.ContactEmail)
-}
-
-func trimReleaseBody(body string, maxLines int) string {
-	trimmed := strings.TrimSpace(strings.ReplaceAll(body, "\r\n", "\n"))
-	if trimmed == "" {
-		return ""
-	}
-	lines := strings.Split(trimmed, "\n")
-	if maxLines > 0 && len(lines) > maxLines {
-		lines = append(lines[:maxLines], "…")
-	}
-	return strings.Join(lines, "\n")
 }
 
 func formatAssetNames(assets []app.ReleaseAsset) string {

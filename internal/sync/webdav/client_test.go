@@ -5,11 +5,13 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -109,6 +111,136 @@ func TestEnsureDirAndAtomicPut(t *testing.T) {
 	}
 	if string(got) != `{"ok":true}` || etag != `"v2"` {
 		t.Fatalf("got (%q, %q), want (%q, %q)", string(got), etag, `{"ok":true}`, `"v2"`)
+	}
+}
+
+func TestEnsureDirCachesAndInvalidatesAfterPut(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusConflict} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var mkcols atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case "MKCOL":
+					mkcols.Add(1)
+					w.WriteHeader(http.StatusCreated)
+				case http.MethodPut:
+					w.WriteHeader(status)
+				default:
+					t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusMethodNotAllowed)
+				}
+			}))
+			defer srv.Close()
+			client, err := NewClient(Config{BaseURL: srv.URL + "/dav"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := t.Context()
+			var wg sync.WaitGroup
+			for range 8 {
+				wg.Go(func() {
+					if err := client.EnsureDir(ctx, "/state//sub/"); err != nil {
+						t.Errorf("EnsureDir: %v", err)
+					}
+				})
+			}
+			wg.Wait()
+			if got := mkcols.Load(); got != 3 {
+				t.Fatalf("concurrent EnsureDir issued %d MKCOL requests, want 3", got)
+			}
+			if _, err := client.Put(ctx, "state/file.gz", []byte("data"), ""); err == nil {
+				t.Fatal("expected Put failure")
+			}
+			if err := client.EnsureDir(ctx, "state/sub"); err != nil {
+				t.Fatal(err)
+			}
+			if got := mkcols.Load(); got != 6 {
+				t.Fatalf("after Put failure issued %d MKCOL requests, want 6", got)
+			}
+			client.InvalidateDir("state/sub/")
+			if err := client.EnsureDir(ctx, "state/sub"); err != nil {
+				t.Fatal(err)
+			}
+			if got := mkcols.Load(); got != 7 {
+				t.Fatalf("after explicit invalidation issued %d MKCOL requests, want 7", got)
+			}
+		})
+	}
+}
+
+func TestEnsureDirVerifiesCollectionOn301(t *testing.T) {
+	var requested []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		requested = append(requested, r.Method+" "+r.URL.Path)
+		switch r.Method {
+		case "MKCOL":
+			w.Header().Set("Location", "/redirected")
+			w.WriteHeader(http.StatusMovedPermanently)
+		case "PROPFIND":
+			if r.Header.Get("Depth") != "0" {
+				t.Errorf("expected depth 0, got %q", r.Header.Get("Depth"))
+			}
+			w.WriteHeader(http.StatusMultiStatus)
+			fmt.Fprintf(w, `<D:multistatus xmlns:D="DAV:"><D:response><D:href>%s</D:href><D:propstat><D:status>HTTP/1.1 200 OK</D:status><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response></D:multistatus>`, r.URL.EscapedPath())
+		}
+	}))
+	defer srv.Close()
+	client, err := NewClient(Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := client.EnsureDir(t.Context(), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requested) != 2 || requested[0] != "MKCOL /StillPoets/" || requested[1] != "PROPFIND /StillPoets/" {
+		t.Errorf("requests = %v, want MKCOL then PROPFIND for app root", requested)
+	}
+}
+
+func TestStatUsesOnlySuccessfulPropertiesForTarget(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PROPFIND" || r.Header.Get("Depth") != "0" {
+			t.Errorf("unexpected %s depth %q", r.Method, r.Header.Get("Depth"))
+		}
+		if strings.HasSuffix(r.URL.Path, "/gone.epub") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusMultiStatus)
+		fmt.Fprintf(w, `<D:multistatus xmlns:D="DAV:">
+			<D:response><D:href>/dav/StillPoets/books/unrelated.epub</D:href>
+			<D:propstat><D:status>HTTP/1.1 200 OK</D:status><D:prop><D:getcontentlength>999</D:getcontentlength></D:prop></D:propstat></D:response>
+			<D:response><D:href>/dav/StillPoets/books/missing.epub</D:href><D:status>HTTP/1.1 404 Not Found</D:status></D:response>
+			<D:response><D:href>/dav/StillPoets/books/forbidden.epub</D:href><D:status>HTTP/1.1 403 Forbidden</D:status></D:response>
+			<D:response><D:href>%%E8%%AF%%97%%20%%E9%%9B%%86.epub</D:href>
+			<D:propstat><D:status>HTTP/1.1 200 OK</D:status><D:prop><D:getcontentlength>512</D:getcontentlength></D:prop></D:propstat>
+			<D:propstat><D:status>HTTP/1.1 200 OK</D:status><D:prop><D:getetag>"verified"</D:getetag></D:prop></D:propstat>
+			<D:propstat><D:status>HTTP/1.1 404 Not Found</D:status><D:prop><D:getcontentlength>1</D:getcontentlength><D:getetag>"bad"</D:getetag></D:prop></D:propstat></D:response>
+		</D:multistatus>`)
+	}))
+	defer srv.Close()
+	client, err := NewClient(Config{BaseURL: srv.URL + "/dav/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := client.Stat(t.Context(), "books/诗 集.epub")
+	if err != nil || entry.Name != "诗 集.epub" || entry.IsDir || entry.ContentLength != 512 || entry.ETag != `"verified"` {
+		t.Fatalf("Stat: %+v, %v", entry, err)
+	}
+	for _, name := range []string{"gone.epub", "missing.epub", "unlisted.epub"} {
+		if _, err := client.Stat(t.Context(), "books/"+name); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Stat %s = %v, want ErrNotFound", name, err)
+		}
+	}
+	if _, err := client.Stat(t.Context(), "books/forbidden.epub"); !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("Stat forbidden.epub = %v, want ErrUnauthorized", err)
 	}
 }
 

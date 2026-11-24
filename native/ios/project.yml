@@ -19,8 +19,8 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         PRODUCT_BUNDLE_IDENTIFIER: app.stillpoets.client.widget
         PRODUCT_NAME: StillPoetsWidget
-        MARKETING_VERSION: "0.1.2"
-        CURRENT_PROJECT_VERSION: "0.1.2"
+        MARKETING_VERSION: "0.1.3"
+        CURRENT_PROJECT_VERSION: "0.1.3"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO

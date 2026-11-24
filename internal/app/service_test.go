@@ -1,8 +1,12 @@
 package app
 
 import (
+	"context"
 	"encoding/xml"
+	"errors"
 	"io"
+	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,9 +15,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"stillpoets/internal/domain"
 	"stillpoets/internal/storage"
+	booksync "stillpoets/internal/sync"
+	"stillpoets/internal/sync/webdav"
 )
 
 func TestParseDeeplinkAndLineRanges(t *testing.T) {
@@ -309,9 +316,281 @@ func findTestEPUB(t *testing.T) string {
 	return matches[0]
 }
 
+func TestSyncPersistsRemoteDeviceRevsAndSkipsUnchangedGET(t *testing.T) {
+	var mu sync.Mutex
+	requests := make(map[string]int)
+	handler := mockDAVHandler()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests[r.Method+" "+r.URL.Path]++
+		mu.Unlock()
+		handler.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	cfg := syncTestConfig(srv.URL)
+	remote := syncTestRemote(t, cfg, "dev-remote")
+	ctx := t.Context()
+	dataDir, secrets := t.TempDir(), NewMemorySecretStore()
+	svc, err := Open(ctx, dataDir, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+	if err := svc.SaveWebDAVConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := svc.SyncNow(ctx, false); err != nil || !res.Published || res.SyncedDeviceRevs["dev-remote"] != 1 {
+		t.Fatalf("initial sync = %+v, %v", res, err)
+	}
+	assertRemoteRevs := func(want map[string]uint64) {
+		t.Helper()
+		meta, err := svc.Store().GetSyncMeta(ctx)
+		if err != nil || !maps.Equal(meta.KnownRemoteRevs, want) {
+			t.Fatalf("remote revs = %v, %v, want %v", meta.KnownRemoteRevs, err, want)
+		}
+	}
+	assertRemoteRevs(map[string]uint64{"dev-remote": 1})
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	svc, err = Open(ctx, dataDir, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRemoteRevs(map[string]uint64{"dev-remote": 1})
+	mu.Lock()
+	clear(requests)
+	mu.Unlock()
+	if res, err := svc.SyncNow(ctx, false); err != nil || res.Published || len(res.RemoteDevices) != 1 || res.SyncedDeviceRevs["dev-remote"] != 1 {
+		t.Fatalf("unchanged sync = %+v, %v", res, err)
+	}
+	mu.Lock()
+	got := maps.Clone(requests)
+	mu.Unlock()
+	want := map[string]int{"PROPFIND /dav/StillPoets/state/": 1}
+	if !maps.Equal(got, want) {
+		t.Errorf("unchanged sync requests = %v, want %v", got, want)
+	}
+
+	bad, _ := booksync.SnapshotPath("dev-remote", 2)
+	if _, err := remote.Put(ctx, bad, []byte("corrupt"), booksync.ContentTypeGzip); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := svc.SyncNow(ctx, false); err != nil || !res.PartialSync || !res.IncompleteDevices["dev-remote"] || len(res.SyncedDeviceRevs) != 0 {
+		t.Fatalf("sync with corrupt latest rev = %+v, %v", res, err)
+	}
+	assertRemoteRevs(map[string]uint64{"dev-remote": 1})
+	if err := svc.RetireRemoteDevice(ctx, "dev-remote"); err == nil {
+		t.Fatal("retirement accepted an incomplete remote device")
+	}
+	if err := remote.Delete(ctx, bad); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RetireRemoteDevice(ctx, "dev-remote"); err != nil {
+		t.Fatalf("retirement of known verified rev: %v", err)
+	}
+	if res, err := svc.SyncNow(ctx, false); err != nil || len(res.RemoteDevices) != 0 {
+		t.Fatalf("sync after remote deletion = %+v, %v", res, err)
+	}
+	assertRemoteRevs(nil)
+}
+
+func TestSyncWorkspaceClientLifecycle(t *testing.T) {
+	var mu sync.Mutex
+	var connections []string
+	closed := make(chan string, 16)
+	handler := mockDAVHandler()
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		connections = append(connections, r.RemoteAddr)
+		mu.Unlock()
+		handler.ServeHTTP(w, r)
+	}))
+	srv.Config.ConnState = func(c net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			closed <- c.RemoteAddr().String()
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+	cfg := syncTestConfig(srv.URL)
+	syncTestRemote(t, cfg, "dev-remote").CloseIdleConnections()
+	nextCfg := cfg
+	nextCfg.AppFolder = "Other"
+	syncTestRemote(t, nextCfg, "dev-remote").CloseIdleConnections()
+	ctx := t.Context()
+	svc, err := Open(ctx, t.TempDir(), NewMemorySecretStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	if err := svc.SaveWebDAVConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	client, epoch, err := svc.newWebDAVClientWithEpoch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastConnection := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return connections[len(connections)-1]
+	}
+	var firstAddr string
+	for round := range 2 {
+		if res, err := svc.SyncNow(ctx, false); err != nil || res.SyncedDeviceRevs["dev-remote"] != 1 {
+			t.Fatalf("sync = %+v, %v", res, err)
+		}
+		if addr := lastConnection(); round == 0 {
+			firstAddr = addr
+		} else if addr != firstAddr {
+			t.Errorf("second sync used connection %s, want %s", addr, firstAddr)
+		}
+	}
+	if reused, gotEpoch, err := svc.newWebDAVClientWithEpoch(); err != nil || reused != client || gotEpoch != epoch {
+		t.Fatalf("client not reused: %p epoch=%d err=%v, want %p epoch=%d", reused, gotEpoch, err, client, epoch)
+	}
+	assertClosed := func(addr string) {
+		t.Helper()
+		timer := time.NewTimer(3 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case got := <-closed:
+				if got == addr {
+					return
+				}
+			case <-timer.C:
+				t.Fatalf("connection %s stayed open", addr)
+			}
+		}
+	}
+	assertReset := func() {
+		t.Helper()
+		meta, err := svc.Store().GetSyncMeta(ctx)
+		if err != nil || meta.KnownRemoteRevs != nil || meta.LocalRev != 0 {
+			t.Fatalf("workspace sync state not reset: %+v, %v", meta, err)
+		}
+	}
+
+	oldAddr := lastConnection()
+	if err := svc.SaveWebDAVConfig(ctx, nextCfg); err != nil {
+		t.Fatal(err)
+	}
+	assertClosed(oldAddr)
+	assertReset()
+	nextClient, nextEpoch, err := svc.newWebDAVClientWithEpoch()
+	if err != nil || nextClient == client || nextEpoch == epoch {
+		t.Fatalf("workspace reused old client or epoch: %p epoch=%d err=%v", nextClient, nextEpoch, err)
+	}
+	if res, err := svc.SyncNow(ctx, false); err != nil || !res.Published || res.SyncedDeviceRevs["dev-remote"] != 1 {
+		t.Fatalf("new workspace sync = %+v, %v", res, err)
+	}
+	oldAddr = lastConnection()
+	if err := svc.ClearWebDAVConfig(); err != nil {
+		t.Fatal(err)
+	}
+	assertClosed(oldAddr)
+	assertReset()
+	if c, _, err := svc.newWebDAVClientWithEpoch(); err == nil || c != nil {
+		t.Fatalf("disconnected service returned client %p, err=%v", c, err)
+	}
+	if err := svc.SaveWebDAVConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SyncNow(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	oldAddr = lastConnection()
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertClosed(oldAddr)
+	if c, _, err := svc.newWebDAVClientWithEpoch(); err == nil || c != nil {
+		t.Fatalf("closed service returned client %p, err=%v", c, err)
+	}
+}
+
+func TestSyncWorkspaceSwitchCancelsInFlightSync(t *testing.T) {
+	started := make(chan struct{})
+	serverRelease := make(chan struct{})
+	handler := mockDAVHandler()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "PROPFIND" && r.URL.Path == "/dav/StillPoets/state/" {
+			close(started)
+			<-serverRelease
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	defer close(serverRelease)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	svc, err := Open(ctx, t.TempDir(), NewMemorySecretStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	cfg := syncTestConfig(srv.URL)
+	if err := svc.SaveWebDAVConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() {
+		_, err := svc.SyncNow(ctx, false)
+		finished <- err
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("first sync did not start")
+	}
+	cfg.AppFolder = "Other"
+	if err := svc.SaveWebDAVConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-finished; !errors.Is(err, context.Canceled) {
+		t.Fatalf("old workspace sync returned %v, want context.Canceled", err)
+	}
+	meta, err := svc.Store().GetSyncMeta(ctx)
+	if err != nil || meta.KnownRemoteRevs != nil || meta.LocalRev != 0 {
+		t.Fatalf("old workspace left sync state: %+v, %v", meta, err)
+	}
+	if res, err := svc.SyncNow(ctx, false); err != nil || !res.Published || res.PublishedRev != 1 {
+		t.Fatalf("new workspace sync = %+v, %v", res, err)
+	}
+}
+
+func syncTestConfig(baseURL string) WebDAVConfigInput {
+	return WebDAVConfigInput{
+		BaseURL: baseURL + "/dav", AppFolder: "StillPoets", Enabled: true,
+		Username: "poet", Password: "secret-pass",
+	}
+}
+
+func syncTestRemote(t *testing.T, cfg WebDAVConfigInput, id string) *webdav.Client {
+	t.Helper()
+	client, err := webdav.NewClient(webdav.Config{
+		BaseURL: cfg.BaseURL, AppFolder: cfg.AppFolder, Username: cfg.Username, Password: cfg.Password,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.CloseIdleConnections)
+	if _, err := booksync.NewEngine(client).Sync(t.Context(), booksync.SyncRequest{InstallID: id, ForcePush: true}); err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
 // 轻量内存 WebDAV 服务器，支持 OPTIONS / MKCOL / PUT / GET / DELETE / PROPFIND。
 func newMockDAVServer(t *testing.T) *httptest.Server {
 	t.Helper()
+	return httptest.NewServer(mockDAVHandler())
+}
+
+func mockDAVHandler() http.Handler {
 	var mu sync.Mutex
 	dirs := map[string]bool{"/dav": true}
 	files := map[string][]byte{}
@@ -321,7 +600,7 @@ func newMockDAVServer(t *testing.T) *httptest.Server {
 		return strings.TrimSuffix(c, "/")
 	}
 
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
 		if !ok || user != "poet" || pass != "secret-pass" {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -369,7 +648,8 @@ func newMockDAVServer(t *testing.T) *httptest.Server {
 				Collection *struct{} `xml:"D:collection,omitempty"`
 			}
 			type prop struct {
-				ResourceType resType `xml:"D:resourcetype"`
+				ResourceType  resType `xml:"D:resourcetype"`
+				ContentLength int     `xml:"D:getcontentlength,omitempty"`
 			}
 			type propstat struct {
 				Prop   prop   `xml:"D:prop"`
@@ -385,10 +665,17 @@ func newMockDAVServer(t *testing.T) *httptest.Server {
 				Responses []response `xml:"D:response"`
 			}
 			ms := multistatus{XmlnsD: "DAV:"}
-			ms.Responses = append(ms.Responses, response{
-				Href:     p + "/",
-				PropStat: propstat{Prop: prop{ResourceType: resType{Collection: &struct{}{}}}, Status: "HTTP/1.1 200 OK"},
-			})
+			if dirs[p] {
+				ms.Responses = append(ms.Responses, response{
+					Href:     r.URL.EscapedPath(),
+					PropStat: propstat{Prop: prop{ResourceType: resType{Collection: &struct{}{}}}, Status: "HTTP/1.1 200 OK"},
+				})
+			} else {
+				ms.Responses = append(ms.Responses, response{
+					Href:     r.URL.EscapedPath(),
+					PropStat: propstat{Prop: prop{ContentLength: len(files[p])}, Status: "HTTP/1.1 200 OK"},
+				})
+			}
 			prefix := p + "/"
 			for fp := range files {
 				if strings.HasPrefix(fp, prefix) && !strings.Contains(strings.TrimPrefix(fp, prefix), "/") {
@@ -413,5 +700,5 @@ func newMockDAVServer(t *testing.T) *httptest.Server {
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
-	}))
+	})
 }

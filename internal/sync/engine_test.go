@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path"
@@ -18,15 +19,21 @@ import (
 )
 
 type mockWebDAV struct {
-	mu    sync.Mutex
-	dirs  map[string]bool
-	files map[string][]byte
+	mu           sync.Mutex
+	dirs         map[string]bool
+	files        map[string][]byte
+	requests     map[string]int
+	statNotFound map[string]int
+	statLengths  map[string]int64
 }
 
 func newMockWebDAV() *mockWebDAV {
 	return &mockWebDAV{
-		dirs:  map[string]bool{"/dav/": true},
-		files: map[string][]byte{},
+		dirs:         map[string]bool{"/dav/": true},
+		files:        map[string][]byte{},
+		requests:     map[string]int{},
+		statNotFound: map[string]int{},
+		statLengths:  map[string]int64{},
 	}
 }
 
@@ -36,6 +43,7 @@ func (m *mockWebDAV) server() *httptest.Server {
 		defer m.mu.Unlock()
 
 		p := r.URL.Path
+		m.requests[r.Method+" "+p]++
 		switch r.Method {
 		case "MKCOL":
 			dirPath := p
@@ -51,6 +59,20 @@ func (m *mockWebDAV) server() *httptest.Server {
 
 		case "PROPFIND":
 			depth := r.Header.Get("Depth")
+			if data, ok := m.files[p]; depth == "0" && ok {
+				if m.statNotFound[p] > 0 {
+					m.statNotFound[p]--
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				size, ok := m.statLengths[p]
+				if !ok {
+					size = int64(len(data))
+				}
+				w.WriteHeader(http.StatusMultiStatus)
+				fmt.Fprintf(w, `<d:multistatus xmlns:d="DAV:"><d:response><d:href>%s</d:href><d:propstat><d:prop><d:getcontentlength>%d</d:getcontentlength></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>`, r.URL.EscapedPath(), size)
+				return
+			}
 			dirPath := p
 			if !strings.HasSuffix(dirPath, "/") {
 				dirPath += "/"
@@ -95,6 +117,210 @@ func (m *mockWebDAV) server() *httptest.Server {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	}))
+}
+
+func (m *mockWebDAV) assertRequests(t *testing.T, request string, want int) {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if got := m.requests[request]; got != want {
+		t.Errorf("%s: got %d requests, want %d", request, got, want)
+	}
+}
+
+func (m *mockWebDAV) putSnapshot(t *testing.T, id string, rev uint64) string {
+	t.Helper()
+	p, err := SnapshotPath(id, rev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := EncodeSnapshot(&DeviceSnapshot{
+		SchemaVersion: ProtocolSchemaVersion, InstallID: id, Rev: rev, MaxCounter: rev,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p = "/dav/StillPoets/" + p
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.files[p] = data
+	return p
+}
+
+func TestEngineSyncKnownRemoteRevs(t *testing.T) {
+	const state = "/dav/StillPoets/state/"
+	mock := newMockWebDAV()
+	mock.dirs["/dav/StillPoets/"] = true
+	mock.dirs[state] = true
+	rev2 := mock.putSnapshot(t, "dev-remote", 2)
+	srv := mock.server()
+	defer srv.Close()
+	client, err := webdav.NewClient(webdav.Config{BaseURL: srv.URL + "/dav/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(client)
+	req := SyncRequest{InstallID: "dev-local", ForcePush: true}
+	first, err := engine.Sync(t.Context(), req)
+	if err != nil || first.SyncedDeviceRevs["dev-remote"] != 2 || !first.Published {
+		t.Fatalf("initial sync = %+v, %v", first, err)
+	}
+	mock.assertRequests(t, "GET "+rev2, 1)
+	mock.assertRequests(t, "GET /dav/StillPoets/state/device_dev-local_1.json.gz", 1)
+	mock.assertRequests(t, "MKCOL "+state, 0)
+
+	req = SyncRequest{
+		InstallID: "dev-local", LocalRev: first.PublishedRev, LocalCounter: first.MaxCounter,
+		LocalData: first.MergedData, KnownRemoteRevs: first.SyncedDeviceRevs,
+	}
+	check := func(wantRev uint64, wantGet string) {
+		t.Helper()
+		mock.mu.Lock()
+		clear(mock.requests)
+		mock.mu.Unlock()
+		result, err := engine.Sync(t.Context(), req)
+		if err != nil || result.Published || result.PartialSync || result.SyncedDeviceRevs["dev-remote"] != wantRev ||
+			!slices.Equal(result.RemoteDevices, []string{"dev-remote"}) {
+			t.Fatalf("sync with remote rev %d = %+v, %v", wantRev, result, err)
+		}
+		want := map[string]int{"PROPFIND " + state: 1}
+		if wantGet != "" {
+			want["GET "+wantGet] = 1
+		}
+		if req.LocalRev == 0 {
+			want["GET "+state+"device_dev-local_1.json.gz"] = 1
+		}
+		mock.mu.Lock()
+		got := maps.Clone(mock.requests)
+		mock.mu.Unlock()
+		if !maps.Equal(got, want) {
+			t.Errorf("requests = %v, want %v", got, want)
+		}
+		req.KnownRemoteRevs = result.SyncedDeviceRevs
+	}
+	check(2, "")
+	check(3, mock.putSnapshot(t, "dev-remote", 3))
+	mock.mu.Lock()
+	delete(mock.files, state+"device_dev-remote_3.json.gz")
+	mock.mu.Unlock()
+	check(2, rev2)
+	req.LocalRev = 0
+	check(2, rev2)
+	req.LocalRev = first.PublishedRev
+	req.KnownRemoteRevs = nil
+	check(2, rev2)
+}
+
+func TestEngineSyncRecreatesMissingCachedStateDir(t *testing.T) {
+	mock := newMockWebDAV()
+	srv := mock.server()
+	defer srv.Close()
+	client, err := webdav.NewClient(webdav.Config{BaseURL: srv.URL + "/dav/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(client)
+	req := SyncRequest{InstallID: "dev-local"}
+	for range 2 {
+		result, err := engine.Sync(t.Context(), req)
+		if err != nil || result.Published {
+			t.Fatalf("sync missing directory: %+v, %v", result, err)
+		}
+		mock.mu.Lock()
+		delete(mock.dirs, "/dav/StillPoets/state/")
+		delete(mock.dirs, "/dav/StillPoets/")
+		mock.mu.Unlock()
+	}
+	mock.assertRequests(t, "PROPFIND /dav/StillPoets/state/", 2)
+	mock.assertRequests(t, "MKCOL /dav/StillPoets/", 2)
+	mock.assertRequests(t, "MKCOL /dav/StillPoets/state/", 2)
+}
+
+func TestEngineSyncRetentionVerifiesOldRevsWhenLocalRevMissing(t *testing.T) {
+	const state = "/dav/StillPoets/state/"
+	mock := newMockWebDAV()
+	mock.dirs[state] = true
+	valid := mock.putSnapshot(t, "dev-local", 1)
+	corrupt := state + "device_dev-local_2.json.gz"
+	mock.files[corrupt] = []byte("corrupt")
+	srv := mock.server()
+	defer srv.Close()
+	client, err := webdav.NewClient(webdav.Config{BaseURL: srv.URL + "/dav/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(client)
+	result, err := engine.Sync(t.Context(), SyncRequest{InstallID: "dev-local", LocalRev: 3, ForcePush: true})
+	if err != nil || result.PublishedRev != 4 {
+		t.Fatalf("sync with missing local rev: %+v, %v", result, err)
+	}
+	mock.assertRequests(t, "GET "+corrupt, 1)
+	mock.assertRequests(t, "GET "+valid, 1)
+	mock.assertRequests(t, "DELETE "+corrupt, 1)
+	mock.assertRequests(t, "DELETE "+valid, 0)
+}
+
+func TestEngineSyncDownloadsAtMostTwoDevicesAtOnce(t *testing.T) {
+	mock := newMockWebDAV()
+	mock.dirs["/dav/StillPoets/state/"] = true
+	paths := []string{
+		mock.putSnapshot(t, "dev-a", 1),
+		mock.putSnapshot(t, "dev-b", 1),
+		mock.putSnapshot(t, "dev-c", 1),
+	}
+	dav := mock.server()
+	defer dav.Close()
+	started := make(chan string, len(paths))
+	allow := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			started <- r.URL.Path
+			select {
+			case <-allow:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		dav.Config.Handler.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	client, err := webdav.NewClient(webdav.Config{BaseURL: srv.URL + "/dav/", MaxConcurrency: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(client)
+	done := make(chan struct{})
+	var result *SyncResult
+	var syncErr error
+	go func() {
+		result, syncErr = engine.Sync(ctx, SyncRequest{InstallID: "dev-local", LocalRev: 1})
+		close(done)
+	}()
+	var firstBatch []string
+	for range 2 {
+		select {
+		case p := <-started:
+			firstBatch = append(firstBatch, p)
+		case <-ctx.Done():
+			t.Fatalf("two downloads did not overlap: %v", firstBatch)
+		}
+	}
+	slices.Sort(firstBatch)
+	if !slices.Equal(firstBatch, paths[:2]) {
+		t.Fatalf("first download batch = %v, want %v", firstBatch, paths[:2])
+	}
+	select {
+	case p := <-started:
+		t.Fatalf("third download started while first two blocked: %s", p)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(allow)
+	<-done
+	if syncErr != nil || !slices.Equal(result.RemoteDevices, []string{"dev-a", "dev-b", "dev-c"}) {
+		t.Fatalf("sync result = %+v, %v", result, syncErr)
+	}
 }
 
 func TestEngineGenerationalSyncFallbackAndRetention(t *testing.T) {
@@ -144,6 +370,7 @@ func TestEngineGenerationalSyncFallbackAndRetention(t *testing.T) {
 		}
 		revA = res.PublishedRev
 	}
+	mock.assertRequests(t, "GET /dav/StillPoets/state/device_dev-a_2.json.gz", 1)
 
 	mock.mu.Lock()
 	_, hasRev1 := mock.files["/dav/StillPoets/state/device_dev-a_1.json.gz"]
@@ -262,14 +489,22 @@ func TestUploadBookAssetsAndWorkspaceDetection(t *testing.T) {
 		ContentVer:  v(1, "dev-a"),
 	}
 
+	const rawPath = "/dav/StillPoets/books/book-1/海子诗选_a1b2c3.epub"
+	mock.mu.Lock()
+	mock.statNotFound[rawPath] = 1
+	mock.mu.Unlock()
 	engine := NewEngine(client)
-	uploadRes, err := engine.UploadBookAssets(ctx, book, spBytes, []byte("PK-fake-epub-bytes"), []byte("webp-cover"))
+	original := []byte("PK-fake-epub-bytes")
+	uploadRes, err := engine.UploadBookAssets(ctx, book, spBytes, original, []byte("webp-cover"))
 	if err != nil {
 		t.Fatalf("UploadBookAssets failed: %v", err)
 	}
 	if uploadRes.CoverWarning != nil {
 		t.Fatalf("unexpected cover warning: %v", uploadRes.CoverWarning)
 	}
+	mock.assertRequests(t, "GET "+rawPath, 0)
+	mock.assertRequests(t, "PROPFIND "+rawPath, 2)
+	mock.assertRequests(t, "GET /dav/StillPoets/books/book-1/parsed.spbook.json.gz", 1)
 
 	// 验证解析包、原始 epub、封面均已落盘
 	mock.mu.Lock()
@@ -287,6 +522,30 @@ func TestUploadBookAssetsAndWorkspaceDetection(t *testing.T) {
 		if !slices.Contains(keys, want) {
 			t.Fatalf("missing uploaded asset %q in %v", want, keys)
 		}
+	}
+	for _, tc := range []struct {
+		name   string
+		length int64
+	}{
+		{name: "reject mismatched length", length: int64(len(original)) - 1},
+		{name: "accept unknown length"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock.mu.Lock()
+			mock.statLengths[rawPath] = tc.length
+			clear(mock.requests)
+			mock.mu.Unlock()
+			_, err := engine.UploadBookAssets(ctx, book, spBytes, original, nil)
+			if tc.length > 0 {
+				if err == nil || !strings.Contains(err.Error(), "content length mismatch") {
+					t.Fatalf("upload with mismatched length: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("upload with unknown length: %v", err)
+			}
+			mock.assertRequests(t, "GET "+rawPath, 0)
+			mock.assertRequests(t, "PROPFIND "+rawPath, 1)
+		})
 	}
 }
 

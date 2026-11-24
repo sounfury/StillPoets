@@ -16,12 +16,13 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
 	DefaultAppFolder       = "StillPoets"
-	DefaultUserAgent       = "StillPoets/0.1.2"
+	DefaultUserAgent       = "StillPoets/0.1.3"
 	DefaultConcurrency     = 2
 	DefaultMaxRetries      = 3
 	DefaultMaxRetryDelay   = 60 * time.Second
@@ -62,7 +63,7 @@ type Config struct {
 	MaxDownloadBytes            int64         // 默认 GET 最大下载字节数，默认 64 MiB
 }
 
-// Entry 表示 PROPFIND 返回的单个远端直接子项（已排除目录自身）。
+// Entry 表示 PROPFIND 返回的单个远端资源。
 type Entry struct {
 	Name          string // 从 href 解析并单次解码后的直接子项文件名（优先用于协议识别）
 	Href          string
@@ -86,6 +87,9 @@ type Client struct {
 	appRoot string
 	http    *http.Client
 	sem     chan struct{}
+
+	dirMu       sync.Mutex
+	ensuredDirs map[string]struct{}
 }
 
 // NewClient 校验配置并创建 WebDAV 客户端。
@@ -153,10 +157,11 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 
 	c := &Client{
-		cfg:     cfg,
-		baseURL: parsed,
-		appRoot: cfg.AppFolder,
-		sem:     make(chan struct{}, cfg.MaxConcurrency),
+		cfg:         cfg,
+		baseURL:     parsed,
+		appRoot:     cfg.AppFolder,
+		sem:         make(chan struct{}, cfg.MaxConcurrency),
+		ensuredDirs: make(map[string]struct{}),
 	}
 	c.http = &http.Client{
 		Timeout:       cfg.Timeout,
@@ -164,6 +169,11 @@ func NewClient(cfg Config) (*Client, error) {
 		CheckRedirect: c.checkRedirect,
 	}
 	return c, nil
+}
+
+// CloseIdleConnections 关闭连接池中空闲的 HTTP 连接。
+func (c *Client) CloseIdleConnections() {
+	c.http.CloseIdleConnections()
 }
 
 // checkRedirect 仅允许同源且不改写 DAV 方法的重定向，防止 PUT 301/302 变 GET 误报成功或泄露 Basic Auth。
@@ -286,12 +296,14 @@ func (c *Client) CheckConnection(ctx context.Context) error {
 }
 
 func (c *Client) propfindZero(ctx context.Context, target string) (*responseResult, error) {
-	headers := map[string]string{
-		"Depth":        "0",
+	return c.propfind(ctx, target, "0", `<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>`)
+}
+
+func (c *Client) propfind(ctx context.Context, target, depth, body string) (*responseResult, error) {
+	return c.do(ctx, "PROPFIND", target, []byte(body), map[string]string{
+		"Depth":        depth,
 		"Content-Type": "application/xml; charset=utf-8",
-	}
-	body := []byte(`<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>`)
-	return c.do(ctx, "PROPFIND", target, body, headers, maxControlBodySize)
+	}, maxControlBodySize)
 }
 
 // isExistingCollection 通过 Depth: 0 PROPFIND 确认目标存在且确实是一个 WebDAV 集合（目录）。
@@ -317,76 +329,109 @@ func (c *Client) isExistingCollection(ctx context.Context, target string) (bool,
 	if err := xml.Unmarshal(res.Body, &ms); err != nil {
 		return false, fmt.Errorf("webdav: parse depth-0 propfind xml: %w", err)
 	}
+	targetURL, err := url.Parse(target)
+	if err != nil {
+		return false, err
+	}
+	baseSegs := splitEscapedPath(targetURL.EscapedPath())
 	for _, r := range ms.Responses {
-		if r.Status != "" && !isSuccessDAVStatus(r.Status) {
+		if !samePathSegments(baseSegs, hrefSegments(targetURL, r.Href)) {
 			continue
 		}
-		for _, ps := range r.PropStats {
-			if ps.Status != "" && !isSuccessDAVStatus(ps.Status) {
-				continue
-			}
-			if ps.Prop.ResourceType.Collection != nil {
-				return true, nil
-			}
+		if entry, ok := r.entry(); ok && entry.IsDir {
+			return true, nil
 		}
 	}
 	return false, nil
 }
 
-// EnsureDir 逐级检查并创建 <BaseURL>/<AppFolder>/<relDir> 目录树。
-// 遇到 405 Method Not Allowed 或 301 时，使用 PROPFIND (Depth: 0) 确认目标确为集合目录。
-func (c *Client) EnsureDir(ctx context.Context, relDir string) error {
-	var parts []string
-	if c.appRoot != "" {
-		parts = append(parts, strings.Split(c.appRoot, "/")...)
-	}
-	trimmed := strings.Trim(strings.TrimSpace(relDir), "/")
-	if trimmed != "" && trimmed != "." {
-		parts = append(parts, strings.Split(trimmed, "/")...)
-	}
-
+func (c *Client) directoryPaths(relDir string) []string {
+	var dirs []string
 	cur := ""
-	for _, seg := range parts {
+	for seg := range strings.SplitSeq(c.appRoot+"/"+strings.TrimSpace(relDir), "/") {
 		if seg == "" || seg == "." || seg == ".." {
 			continue
 		}
-		if cur == "" {
-			cur = seg
-		} else {
-			cur = cur + "/" + seg
-		}
-		target := c.resolveURL(cur, false, true)
-		res, err := c.do(ctx, "MKCOL", target, nil, nil, maxControlBodySize)
-		if err != nil {
-			// 若 MKCOL 遇 301 被安全重定向策略拦截，尝试确认目标是否已是集合目录
-			if errors.Is(err, ErrUnsafeRedirect) {
-				ok, verifyErr := c.isExistingCollection(ctx, target)
-				if verifyErr == nil && ok {
-					continue
-				}
-			}
-			return fmt.Errorf("webdav: mkcol %s: %w", cur, err)
-		}
+		cur += seg + "/"
+		dirs = append(dirs, cur)
+	}
+	return dirs
+}
 
-		switch res.StatusCode {
-		case http.StatusCreated, http.StatusOK, http.StatusNoContent:
-			continue
-		case http.StatusMethodNotAllowed, http.StatusMovedPermanently:
-			ok, verifyErr := c.isExistingCollection(ctx, target)
-			if verifyErr != nil {
-				return fmt.Errorf("webdav: verify dir %s after %d: %w", cur, res.StatusCode, verifyErr)
-			}
-			if !ok {
-				return fmt.Errorf("webdav: path %s returned %d on MKCOL and is not a collection", cur, res.StatusCode)
-			}
-			continue
-		case http.StatusUnauthorized, http.StatusForbidden:
-			return ErrUnauthorized
-		default:
-			return fmt.Errorf("webdav: mkcol %s unexpected status %d", cur, res.StatusCode)
+// InvalidateDir 清除目录及其子目录的确认记录。
+func (c *Client) InvalidateDir(relDir string) {
+	c.invalidateDir(relDir, false)
+}
+
+func (c *Client) invalidateDir(relDir string, includeParents bool) {
+	dirs := c.directoryPaths(relDir)
+	target := ""
+	if len(dirs) > 0 {
+		target = dirs[len(dirs)-1]
+	}
+	c.dirMu.Lock()
+	defer c.dirMu.Unlock()
+	for dir := range c.ensuredDirs {
+		if strings.HasPrefix(dir, target) || (includeParents && strings.HasPrefix(target, dir)) {
+			delete(c.ensuredDirs, dir)
 		}
 	}
+}
+
+// EnsureDir 逐级检查并创建 <BaseURL>/<AppFolder>/<relDir> 目录树。
+// 遇到 405 Method Not Allowed 或 301 时，使用 PROPFIND (Depth: 0) 确认目标确为集合目录。
+func (c *Client) EnsureDir(ctx context.Context, relDir string) error {
+	c.dirMu.Lock()
+	defer c.dirMu.Unlock()
+
+	dirs := c.directoryPaths(relDir)
+	if len(dirs) > 0 {
+		if _, ok := c.ensuredDirs[dirs[len(dirs)-1]]; ok {
+			return ctx.Err()
+		}
+	}
+	for _, dir := range dirs {
+		if _, ok := c.ensuredDirs[dir]; ok {
+			continue
+		}
+		if err := c.ensureCollection(ctx, dir); err != nil {
+			return err
+		}
+		c.ensuredDirs[dir] = struct{}{}
+	}
 	return nil
+}
+
+func (c *Client) ensureCollection(ctx context.Context, dir string) error {
+	target := c.resolveURL(dir, false, true)
+	res, err := c.do(ctx, "MKCOL", target, nil, nil, maxControlBodySize)
+	if err != nil {
+		// 301 带 Location 时，客户端会拦截改写方法的重定向。
+		if errors.Is(err, ErrUnsafeRedirect) {
+			if ok, verifyErr := c.isExistingCollection(ctx, target); verifyErr == nil && ok {
+				return nil
+			}
+		}
+		return fmt.Errorf("webdav: mkcol %s: %w", dir, err)
+	}
+
+	switch res.StatusCode {
+	case http.StatusCreated, http.StatusOK, http.StatusNoContent:
+		return nil
+	case http.StatusMethodNotAllowed, http.StatusMovedPermanently:
+		ok, verifyErr := c.isExistingCollection(ctx, target)
+		if verifyErr != nil {
+			return fmt.Errorf("webdav: verify dir %s after %d: %w", dir, res.StatusCode, verifyErr)
+		}
+		if !ok {
+			return fmt.Errorf("webdav: path %s returned %d on MKCOL and is not a collection", dir, res.StatusCode)
+		}
+		return nil
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return ErrUnauthorized
+	default:
+		return fmt.Errorf("webdav: mkcol %s unexpected status %d", dir, res.StatusCode)
+	}
 }
 
 // GetWithLimit 下载应用目录内的文件（限制最大读取字节数），显式请求 Accept-Encoding: identity 保留原始字节。
@@ -470,10 +515,15 @@ func (c *Client) Put(ctx context.Context, relPath string, data []byte, contentTy
 	case http.StatusCreated, http.StatusNoContent, http.StatusOK:
 		return res.Header.Get("ETag"), nil
 	case http.StatusNotFound:
+		c.invalidateDir(path.Dir(strings.TrimSpace(relPath)), true)
 		// 若前一次 MOVE 实际已在服务端成功、重试因临时文件已移走返回 404，则回读正式目标确认
 		if got, etag, getErr := c.GetWithLimit(ctx, relPath, int64(len(data))+1024); getErr == nil && bytes.Equal(got, data) {
 			return etag, nil
 		}
+		_ = c.Delete(ctx, tmpRel)
+		return "", fmt.Errorf("webdav: atomic move %s unexpected status %d", relPath, res.StatusCode)
+	case http.StatusConflict:
+		c.invalidateDir(path.Dir(strings.TrimSpace(relPath)), true)
 		_ = c.Delete(ctx, tmpRel)
 		return "", fmt.Errorf("webdav: atomic move %s unexpected status %d", relPath, res.StatusCode)
 	case http.StatusUnauthorized, http.StatusForbidden:
@@ -501,6 +551,9 @@ func (c *Client) putDirect(ctx context.Context, relPath string, data []byte, con
 	switch res.StatusCode {
 	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
 		return res.Header.Get("ETag"), nil
+	case http.StatusNotFound, http.StatusConflict:
+		c.invalidateDir(path.Dir(strings.TrimSpace(relPath)), true)
+		return "", fmt.Errorf("webdav: put %s unexpected status %d", relPath, res.StatusCode)
 	case http.StatusPreconditionFailed:
 		return "", ErrPreconditionFailed
 	case http.StatusUnauthorized, http.StatusForbidden:
@@ -520,6 +573,7 @@ func (c *Client) Delete(ctx context.Context, relPath string) error {
 
 	switch res.StatusCode {
 	case http.StatusOK, http.StatusNoContent, http.StatusAccepted, http.StatusNotFound:
+		c.InvalidateDir(relPath)
 		return nil
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return ErrUnauthorized
@@ -529,6 +583,7 @@ func (c *Client) Delete(ctx context.Context, relPath string) error {
 }
 
 type multiStatusXML struct {
+	XMLName   xml.Name      `xml:"multistatus"`
 	Responses []responseXML `xml:"response"`
 }
 
@@ -544,11 +599,11 @@ type propStatXML struct {
 }
 
 type propXML struct {
-	DisplayName   string          `xml:"displayname"`
-	ContentLength string          `xml:"getcontentlength"`
-	ETag          string          `xml:"getetag"`
-	LastModified  string          `xml:"getlastmodified"`
-	ResourceType  resourceTypeXML `xml:"resourcetype"`
+	DisplayName   string           `xml:"displayname"`
+	ContentLength string           `xml:"getcontentlength"`
+	ETag          string           `xml:"getetag"`
+	LastModified  string           `xml:"getlastmodified"`
+	ResourceType  *resourceTypeXML `xml:"resourcetype"`
 }
 
 type resourceTypeXML struct {
@@ -564,16 +619,13 @@ func (c *Client) ListDir(ctx context.Context, relDir string) ([]Entry, error) {
 		return nil, fmt.Errorf("webdav: parse list url: %w", err)
 	}
 
-	body := []byte(`<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:displayname/><d:getcontentlength/><d:getetag/><d:getlastmodified/><d:resourcetype/></d:prop></d:propfind>`)
-	res, err := c.do(ctx, "PROPFIND", target, body, map[string]string{
-		"Depth":        "1",
-		"Content-Type": "application/xml; charset=utf-8",
-	}, maxControlBodySize)
+	res, err := c.propfind(ctx, target, "1", entryPropfindBody)
 	if err != nil {
 		return nil, err
 	}
 
 	if res.StatusCode == http.StatusNotFound {
+		c.invalidateDir(relDir, true)
 		return nil, ErrNotFound
 	}
 	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
@@ -590,113 +642,166 @@ func (c *Client) ListDir(ctx context.Context, relDir string) ([]Entry, error) {
 
 	baseSegs := splitEscapedPath(targetURL.EscapedPath())
 	entries := make([]Entry, 0, len(ms.Responses))
+	confirmed := false
 	for _, r := range ms.Responses {
-		// 若 response 级带有非 2xx 状态码（例如 403/404），直接忽略
-		if r.Status != "" && !isSuccessDAVStatus(r.Status) {
+		segs := hrefSegments(targetURL, r.Href)
+		if segs == nil {
 			continue
 		}
-
-		// 合并所有 2xx propstat 的属性；若无任何有效 propstat（全为 403/404），忽略该条目
-		var (
-			hasOKProp     bool
-			displayName   string
-			contentLength int64
-			etag          string
-			lastModified  string
-			isDir         bool
-		)
-		for _, ps := range r.PropStats {
-			if ps.Status != "" && !isSuccessDAVStatus(ps.Status) {
-				continue
+		entry, ok := r.entry()
+		if samePathSegments(baseSegs, segs) {
+			switch davStatusCode(r.Status) {
+			case http.StatusNotFound:
+				c.invalidateDir(relDir, true)
+				return nil, ErrNotFound
+			case http.StatusForbidden, http.StatusUnauthorized:
+				return nil, ErrUnauthorized
 			}
-			hasOKProp = true
-			if ps.Prop.DisplayName != "" {
-				displayName = ps.Prop.DisplayName
+			if ok && !entry.IsDir && r.hasResourceType() {
+				c.InvalidateDir(relDir)
+				return nil, fmt.Errorf("webdav: list %s: target is not a collection", relDir)
 			}
-			if cl := strings.TrimSpace(ps.Prop.ContentLength); cl != "" {
-				if n, err := strconv.ParseInt(cl, 10, 64); err == nil {
-					contentLength = n
-				}
-			}
-			if ps.Prop.ETag != "" {
-				etag = ps.Prop.ETag
-			}
-			if ps.Prop.LastModified != "" {
-				lastModified = ps.Prop.LastModified
-			}
-			if ps.Prop.ResourceType.Collection != nil {
-				isDir = true
-			}
-		}
-		if !hasOKProp {
+			confirmed = confirmed || (ok && entry.IsDir)
 			continue
 		}
-
-		childName, ok := extractDirectChildName(targetURL, baseSegs, r.Href)
-		if !ok {
-			// 目录自身或非直接子项
+		if !ok || len(segs) != len(baseSegs)+1 || !samePathSegments(baseSegs, segs[:len(baseSegs)]) {
 			continue
 		}
-
-		entries = append(entries, Entry{
-			Name:          childName,
-			Href:          r.Href,
-			DisplayName:   displayName,
-			IsDir:         isDir,
-			ContentLength: contentLength,
-			ETag:          etag,
-			LastModified:  lastModified,
-		})
+		if name := decodePathSegment(segs[len(segs)-1]); name != "" && name != "." && name != ".." && !strings.Contains(name, "/") {
+			entry.Name = name
+			entries = append(entries, entry)
+		}
+	}
+	if confirmed || len(entries) > 0 {
+		c.dirMu.Lock()
+		for _, dir := range c.directoryPaths(relDir) {
+			c.ensuredDirs[dir] = struct{}{}
+		}
+		c.dirMu.Unlock()
 	}
 	return entries, nil
 }
 
-// extractDirectChildName 将 response href 解析为相对于列表目录的直接子项名称（单次解码）。
-// 若 href 指向目录自身、其他目录或更深层子路径，返回 ("", false)。
-func extractDirectChildName(listURL *url.URL, baseSegs []string, rawHref string) (string, bool) {
-	trimmed := strings.TrimSpace(rawHref)
-	if trimmed == "" {
-		return "", false
-	}
-	ref, err := url.Parse(trimmed)
-	if err != nil {
-		return "", false
-	}
-	resolved := listURL.ResolveReference(ref)
-	segs := splitEscapedPath(resolved.EscapedPath())
+const entryPropfindBody = `<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:displayname/><d:getcontentlength/><d:getetag/><d:getlastmodified/><d:resourcetype/></d:prop></d:propfind>`
 
-	// 必须严格多 1 层路径段，且前缀与列表目录逐段一致（忽略大小写差异按解码段比较）
-	if len(segs) != len(baseSegs)+1 {
-		return "", false
-	}
-	for i := range baseSegs {
-		a, errA := url.PathUnescape(baseSegs[i])
-		b, errB := url.PathUnescape(segs[i])
-		if errA != nil {
-			a = baseSegs[i]
-		}
-		if errB != nil {
-			b = segs[i]
-		}
-		if a != b {
-			return "", false
-		}
-	}
-
-	last, err := url.PathUnescape(segs[len(segs)-1])
+// Stat 获取指定资源的属性（Depth: 0），仅使用目标路径的响应。
+func (c *Client) Stat(ctx context.Context, relPath string) (*Entry, error) {
+	target := c.resolveURL(relPath, true, false)
+	targetURL, err := url.Parse(target)
 	if err != nil {
-		last = segs[len(segs)-1]
+		return nil, err
 	}
-	if last == "" || last == "." || last == ".." || strings.Contains(last, "/") {
-		return "", false
+	res, err := c.propfind(ctx, target, "0", entryPropfindBody)
+	if err != nil {
+		return nil, err
 	}
-	return last, true
+	switch res.StatusCode {
+	case http.StatusNotFound:
+		return nil, ErrNotFound
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return nil, ErrUnauthorized
+	case http.StatusOK, http.StatusMultiStatus:
+	default:
+		return nil, fmt.Errorf("webdav: stat %s unexpected status %d", relPath, res.StatusCode)
+	}
+	var ms multiStatusXML
+	if err := xml.Unmarshal(res.Body, &ms); err != nil {
+		return nil, fmt.Errorf("webdav: parse stat %s: %w", relPath, err)
+	}
+	targetSegs := splitEscapedPath(targetURL.EscapedPath())
+	for _, r := range ms.Responses {
+		if !samePathSegments(targetSegs, hrefSegments(targetURL, r.Href)) {
+			continue
+		}
+		entry, ok := r.entry()
+		if ok || isSuccessDAVStatus(r.Status) {
+			if len(targetSegs) > 0 {
+				entry.Name = decodePathSegment(targetSegs[len(targetSegs)-1])
+			}
+			return &entry, nil
+		}
+		if status := davStatusCode(r.Status); status == http.StatusUnauthorized || status == http.StatusForbidden {
+			return nil, ErrUnauthorized
+		}
+	}
+	return nil, ErrNotFound
+}
+
+// entry 合并响应中成功的 propstat，剔除失败条目及属性。
+func (r responseXML) entry() (Entry, bool) {
+	if r.Status != "" && !isSuccessDAVStatus(r.Status) {
+		return Entry{}, false
+	}
+	entry := Entry{Href: r.Href}
+	ok := false
+	for _, ps := range r.PropStats {
+		if ps.Status != "" && !isSuccessDAVStatus(ps.Status) {
+			continue
+		}
+		ok = true
+		if ps.Prop.DisplayName != "" {
+			entry.DisplayName = ps.Prop.DisplayName
+		}
+		if n, err := strconv.ParseInt(strings.TrimSpace(ps.Prop.ContentLength), 10, 64); err == nil {
+			entry.ContentLength = n
+		}
+		if ps.Prop.ETag != "" {
+			entry.ETag = ps.Prop.ETag
+		}
+		if ps.Prop.LastModified != "" {
+			entry.LastModified = ps.Prop.LastModified
+		}
+		if ps.Prop.ResourceType != nil && ps.Prop.ResourceType.Collection != nil {
+			entry.IsDir = true
+		}
+	}
+	return entry, ok
+}
+
+func (r responseXML) hasResourceType() bool {
+	for _, ps := range r.PropStats {
+		if ps.Prop.ResourceType != nil && (ps.Status == "" || isSuccessDAVStatus(ps.Status)) {
+			return true
+		}
+	}
+	return false
+}
+
+func hrefSegments(target *url.URL, href string) []string {
+	href = strings.TrimSpace(href)
+	if href == "" {
+		return nil
+	}
+	ref, err := url.Parse(href)
+	if err != nil {
+		return nil
+	}
+	return splitEscapedPath(target.ResolveReference(ref).EscapedPath())
+}
+
+func samePathSegments(left, right []string) bool {
+	if right == nil || len(left) != len(right) {
+		return false
+	}
+	for i, seg := range left {
+		if decodePathSegment(seg) != decodePathSegment(right[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func decodePathSegment(seg string) string {
+	if decoded, err := url.PathUnescape(seg); err == nil {
+		return decoded
+	}
+	return seg
 }
 
 func splitEscapedPath(escapedPath string) []string {
 	trimmed := strings.Trim(escapedPath, "/")
 	if trimmed == "" {
-		return nil
+		return []string{}
 	}
 	raw := strings.Split(trimmed, "/")
 	out := make([]string, 0, len(raw))
@@ -710,15 +815,17 @@ func splitEscapedPath(escapedPath string) []string {
 
 // isSuccessDAVStatus 解析形如 "HTTP/1.1 200 OK" 的 WebDAV 状态行，判断是否为 2xx。
 func isSuccessDAVStatus(statusLine string) bool {
+	code := davStatusCode(statusLine)
+	return code >= 200 && code < 300
+}
+
+func davStatusCode(statusLine string) int {
 	fields := strings.Fields(statusLine)
 	if len(fields) < 2 {
-		return false
+		return 0
 	}
-	code, err := strconv.Atoi(fields[1])
-	if err != nil {
-		return false
-	}
-	return code >= 200 && code < 300
+	code, _ := strconv.Atoi(fields[1])
+	return code
 }
 
 // do 统一执行带并发信号量限制（覆盖完整响应体读取）、BasicAuth、User-Agent、

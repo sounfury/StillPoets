@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"maps"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -92,7 +93,7 @@ func TestStoreReopenSettingsAndPendingUploads(t *testing.T) {
 	t.Cleanup(func() { must(t, reopened.Close()) })
 	_, persisted, err := reopened.ExportSnapshot(ctx)
 	must(t, err)
-	if persisted != meta {
+	if !reflect.DeepEqual(persisted, meta) {
 		t.Fatalf("sync metadata after local-only writes = %+v, want %+v", persisted, meta)
 	}
 	gotSettings, err := reopened.LoadSettings(ctx)
@@ -254,7 +255,7 @@ func TestStoreBookContentAndFTS(t *testing.T) {
 	must(t, err)
 	_, after, err := s.ExportSnapshot(ctx)
 	must(t, err)
-	if got.LocalState != domain.LocalStateDownloaded || len(found) != 1 || before != after {
+	if got.LocalState != domain.LocalStateDownloaded || len(found) != 1 || !reflect.DeepEqual(before, after) {
 		t.Fatalf("redownload: book=%+v hits=%d sync metadata=%+v, before=%+v", got, len(found), after, before)
 	}
 }
@@ -276,7 +277,7 @@ func TestStoreFailedImportRollsBackContentAndVersion(t *testing.T) {
 	must(t, err)
 	_, after, err := s.ExportSnapshot(ctx)
 	must(t, err)
-	if got.ContentHash == book.ContentHash || got.LocalState != domain.LocalStateDownloaded || len(found) != 1 || before != after {
+	if got.ContentHash == book.ContentHash || got.LocalState != domain.LocalStateDownloaded || len(found) != 1 || !reflect.DeepEqual(before, after) {
 		t.Fatalf("failed import altered state: book=%+v hits=%d meta=%+v", got, len(found), after)
 	}
 }
@@ -627,14 +628,61 @@ func TestUpdateSettingsPatchAndKeepDirtyAndMaxCounterGuard(t *testing.T) {
 	// 验证 keepDirty=true 在 published=true 时保留 dirty=1，且拒绝超大 Lamport 计数
 	data, meta, err := s.ExportSnapshot(ctx)
 	must(t, err)
-	if err := s.ApplyMergedSnapshotEx(ctx, data, meta.DirtySeq, ^uint64(0), 1, true, false); err == nil {
+	if err := s.ApplyMergedSnapshotEx(ctx, data, meta.DirtySeq, ^uint64(0), 1, true, false, nil); err == nil {
 		t.Fatalf("expected oversized lamport counter to fail")
 	}
-	must(t, s.ApplyMergedSnapshotEx(ctx, data, meta.DirtySeq, meta.LamportCounter, 1, true, true))
+	must(t, s.ApplyMergedSnapshotEx(ctx, data, meta.DirtySeq, meta.LamportCounter, 1, true, true, nil))
 	after, err := s.GetSyncMeta(ctx)
 	must(t, err)
 	if !after.Dirty || after.LocalRev != 1 {
 		t.Fatalf("expected dirty=true and local_rev=1 with keepDirty, got %+v", after)
+	}
+}
+
+func TestApplyMergedSnapshotExPersistsRemoteDeviceRevsAtomically(t *testing.T) {
+	s, ctx := openTestStore(t), t.Context()
+	meta, err := s.GetSyncMeta(ctx)
+	must(t, err)
+	if meta.KnownRemoteRevs != nil {
+		t.Fatalf("fresh database has remote revs: %v", meta.KnownRemoteRevs)
+	}
+	initial := map[string]uint64{"dev-a": 2, "dev-deleted": 1}
+	must(t, s.ApplyMergedSnapshotEx(ctx, booksync.SnapshotData{}, meta.DirtySeq, 2, 1, true, false, initial))
+	meta, err = s.GetSyncMeta(ctx)
+	must(t, err)
+	if !maps.Equal(meta.KnownRemoteRevs, initial) {
+		t.Fatalf("saved revs = %v, want %v", meta.KnownRemoteRevs, initial)
+	}
+
+	// 在合并数据写入后让代次记录语句失败，验证整个事务回滚。
+	_, err = s.db.Execute(ctx, `CREATE TRIGGER fail_remote_revs BEFORE INSERT ON sync_state
+		WHEN NEW.key = 'remote_device_revs' BEGIN SELECT RAISE(ABORT, 'remote revs test failure'); END`)
+	must(t, err)
+	changed := booksync.SnapshotData{Groups: []domain.BookGroup{{ID: "remote", Name: "远端分组"}}}
+	replacement := map[string]uint64{"dev-a": 3}
+	if err := s.ApplyMergedSnapshotEx(ctx, changed, meta.DirtySeq, 3, 2, true, false, replacement); err == nil || !strings.Contains(err.Error(), "remote revs test failure") {
+		t.Fatalf("expected transaction failure, got %v", err)
+	}
+	dbData, dbMeta, err := s.ExportSnapshot(ctx)
+	must(t, err)
+	if len(dbData.Groups) != 0 || dbMeta.LocalRev != 1 || dbMeta.LamportCounter != 2 || !maps.Equal(dbMeta.KnownRemoteRevs, initial) {
+		t.Fatalf("failed transaction left changes: groups=%v meta=%+v", dbData.Groups, dbMeta)
+	}
+
+	_, err = s.db.Execute(ctx, `DROP TRIGGER fail_remote_revs`)
+	must(t, err)
+	must(t, s.ApplyMergedSnapshotEx(ctx, changed, meta.DirtySeq, 3, 0, false, false, replacement))
+	dbData, dbMeta, err = s.ExportSnapshot(ctx)
+	must(t, err)
+	if len(dbData.Groups) != 1 || dbMeta.LocalRev != 1 || !maps.Equal(dbMeta.KnownRemoteRevs, replacement) {
+		t.Fatalf("expected merged data and replacement revs: groups=%v meta=%+v", dbData.Groups, dbMeta)
+	}
+
+	must(t, s.ResetWorkspaceSyncState(ctx))
+	dbMeta, err = s.GetSyncMeta(ctx)
+	must(t, err)
+	if dbMeta.KnownRemoteRevs != nil || dbMeta.LocalRev != 0 || dbMeta.LastSyncAt != 0 || !dbMeta.Dirty {
+		t.Fatalf("workspace reset left sync state: %+v", dbMeta)
 	}
 }
 

@@ -307,16 +307,17 @@ jobs:
 
           ls -lh release-assets/
 
-          cat > "${RUNNER_TEMP}/release-notes.md" <<EOF
-          ## StillPoets ${TAG}
-
+          printf '## StillPoets %s\n\n' "${TAG}" > "${RUNNER_TEMP}/release-notes.md"
+          cat >> "${RUNNER_TEMP}/release-notes.md" <<'EOF'
           ### 安装包说明
-          - **Android (APK)**：内置桌面小组件（\`StillPoetsWidgetProvider\`），可直接安装在 Android 手机 / 平板（ARM64）。
-          - **iOS (IPA)**：内嵌 WidgetKit 桌面小组件（\`StillPoetsWidget.appex\`），免证书未签名真机包，可使用全能签 / 轻松签 / AltStore / SideStore 自签安装。
+          - **Android (APK)**：内置桌面小组件（`StillPoetsWidgetProvider`），可直接安装在 Android 手机 / 平板（ARM64）。
+          - **iOS (IPA)**：内嵌 WidgetKit 桌面小组件（`StillPoetsWidget.appex`），免证书未签名真机包，可使用全能签 / 轻松签 / AltStore / SideStore 自签安装。
 
           ### 本次核心更新
-          - **全新正式版 App 图标（展开的诗集与秋叶）**：采用 StillPoets 画册风招牌配色（鼠尾草绿底 + 赤陶精装书壳 + 暖棉纸双页 + 轻栖赤陶秋叶），已完成 1024×1024 高精光栅化与光学居中调优。
-          - **双端原生图标规范适配**：同步配置 iOS 无透明通道 \`AppIcon\` 与 Android 8.0+ 自适应图标（Adaptive Icon 108dp 透明前景层 + \`#C8D3BE\` 鼠尾草绿背景层），兼容圆形、圆角矩形及视差动效且不裁切主体。
+          - **WebDAV / OpenList + 115 同步链路大幅提速**：优先 `ListDir` 并缓存已确认目录（避免每次重复 `MKCOL`/`PROPFIND`）、持久化远端设备已合并代次跳过未变化快照重复 `GET`（常规无变更同步压缩至 1 次请求）、清理旧代次复用本机已校验 `LocalRev`、原始大文件 `.epub` 改用轻量 `PROPFIND Depth:0` 属性校验，并按工作区复用 HTTP 连接池。
+          - **更新日志升级为三级底部抽屉 + 原生 Markdown 渲染**：「关于 StillPoets」页内收敛为「更新日志」入口，点击弹出可拖拽底部抽屉，使用原生 Markdown 排版完整展示历次更新说明。
+          - **修复 iOS 二级页面顶部大面积空白**：移除二级页顶栏对顶部安全区的重复叠加，与主顶栏保持一致高度。
+          - **阅读排版与字体防误触重排**：将「正文字号」与「行距倍数」滑块收纳进「阅读排版与字体」二级页，设置主页仅保留只读预览条与入口摘要。
           EOF
 
           if gh release view "${TAG}" >/dev/null 2>&1; then

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -72,12 +73,13 @@ func (s *Store) snapshotData(ctx context.Context) (booksync.SnapshotData, error)
 
 // ApplyMergedSnapshot receives the DirtySeq from the export used for this sync round.
 func (s *Store) ApplyMergedSnapshot(ctx context.Context, merged booksync.SnapshotData, exportedDirtySeq, maxCounter, publishedRev uint64, published bool) error {
-	return s.ApplyMergedSnapshotEx(ctx, merged, exportedDirtySeq, maxCounter, publishedRev, published, false)
+	return s.ApplyMergedSnapshotEx(ctx, merged, exportedDirtySeq, maxCounter, publishedRev, published, false, nil)
 }
 
 // ApplyMergedSnapshotEx 允许在存在未验证资产（keepDirty=true）时推进 local_rev 但仍保留 dirty=1，
 // 防止部分发布后误清脏标记导致新书长期漏发（P1-1），并拒绝超过 MaxInt64 的异常 Lamport 计数（P1-13）。
-func (s *Store) ApplyMergedSnapshotEx(ctx context.Context, merged booksync.SnapshotData, exportedDirtySeq, maxCounter, publishedRev uint64, published, keepDirty bool) error {
+// remoteDeviceRevs 非 nil 时，随合并数据提交整个工作区的已验证远端代次记录。
+func (s *Store) ApplyMergedSnapshotEx(ctx context.Context, merged booksync.SnapshotData, exportedDirtySeq, maxCounter, publishedRev uint64, published, keepDirty bool, remoteDeviceRevs map[string]uint64) error {
 	if maxCounter > math.MaxInt64 {
 		return fmt.Errorf("storage: remote lamport counter %d exceeds int64 limit", maxCounter)
 	}
@@ -140,6 +142,13 @@ func (s *Store) ApplyMergedSnapshotEx(ctx context.Context, merged booksync.Snaps
 		setSyncState("lamport_counter", strconv.FormatUint(max(meta.LamportCounter, maxCounter), 10), now),
 		setSyncState("last_sync_at", strconv.FormatInt(now, 10), now),
 	)
+	if remoteDeviceRevs != nil {
+		revs, err := json.Marshal(remoteDeviceRevs)
+		if err != nil {
+			return err
+		}
+		statements = append(statements, setSyncState("remote_device_revs", string(revs), now))
+	}
 	if published {
 		statements = append(statements, setSyncState("local_rev", strconv.FormatUint(publishedRev, 10), now))
 		if !changedDuringSync && !keepDirty {

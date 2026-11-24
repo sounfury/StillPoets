@@ -67,6 +67,7 @@ func (a *AppUI) openProfileSubpage(sub profileSubpage) {
 
 func (a *AppUI) closeProfileSubpage() {
 	a.profileSub = profileSubpageNone
+	a.showChangelogModal = false
 	a.confirmDisconnect = false
 	a.confirmDeleteFont = ""
 }
@@ -99,14 +100,10 @@ func (a *AppUI) renderProfileSubpageLayer(c *ui.Context, pal theme.Palette, isTa
 }
 
 func (a *AppUI) renderProfileSubpageHeader(c *ui.Context, pal theme.Palette, isTablet bool, title string, rightAction func()) {
-	safeTop, _, _, _ := c.SafeArea()
-	topPad := float32(14)
-	if !isTablet {
-		topPad = max(safeTop, 8) + 8
-	}
+	// MyGo 根视图在移动端已自动避开顶部系统状态栏安全区，与 BrandHeader / renderReaderHeader 保持一致，避免叠加双重 safeTop 留白。
 	ui.Row(c.Key("sub-header-"+title)).
 		FillWidth().
-		Padding(topPad, 16, 12, 12).
+		Padding(12, 16, 12, 12).
 		Gap(10).
 		AlignItems(ui.Center).
 		Background(pal.Background).
@@ -489,7 +486,7 @@ func (a *AppUI) renderTypographySummarySection(c *ui.Context, pal theme.Palette)
 			Background(pal.Surface).
 			Border(1, pal.Border).
 			Children(func() {
-				// 紧凑实时诗句预览条
+				// 紧凑实时诗句预览条（只读展示，低频字号/行距调节收敛进二级页防误触）
 				ui.Box(c.Key("typo-inline-preview")).
 					FillWidth().
 					Padding(12, 14).
@@ -506,38 +503,16 @@ func (a *AppUI) renderTypographySummarySection(c *ui.Context, pal theme.Palette)
 							MaxLines(2)
 					})
 
-				// 字号滑块
-				ui.Column(c).FillWidth().Gap(4).Children(func() {
-					ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-						ui.Text(c, "正文字号").FontSize(13).TextColor(pal.TextSecondary).Grow(1)
-						ui.Textf(c, "%.0f pt", a.fontSizeSlider).Font(theme.FontMono).FontSize(12).TextColor(pal.Accent)
-					})
-					if ui.Slider(c.Key("prof-fontsize"), &a.fontSizeSlider, 14, 28).Changed() {
-						a.saveTypography(float32(a.fontSizeSlider), float32(a.lineHeightSlider))
-					}
-				})
-
-				// 行距滑块
-				ui.Column(c).FillWidth().Gap(4).Children(func() {
-					ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-						ui.Text(c, "行距倍数").FontSize(13).TextColor(pal.TextSecondary).Grow(1)
-						ui.Textf(c, "%.2f", a.lineHeightSlider).Font(theme.FontMono).FontSize(12).TextColor(pal.Accent)
-					})
-					if ui.Slider(c.Key("prof-lineheight"), &a.lineHeightSlider, 1.4, 2.4).Changed() {
-						a.saveTypography(float32(a.fontSizeSlider), float32(a.lineHeightSlider))
-					}
-				})
-
 				a.renderSettingsDivider(c, pal)
 
-				subHint := "支持导入自定义 .ttf / .otf 与正文字重调整"
+				subHint := fmt.Sprintf("%.0f pt · %.2f 倍行距 · 调整字号、行距、字重与自定义字体", a.fontSizeSlider, a.lineHeightSlider)
 				if len(a.localFonts) > 0 {
-					subHint = fmt.Sprintf("已导入 %d 款自定义字体", len(a.localFonts))
+					subHint = fmt.Sprintf("%.0f pt · %.2f 倍行距 · 已导入 %d 款自定义字体", a.fontSizeSlider, a.lineHeightSlider, len(a.localFonts))
 				}
 				a.renderSettingsNavRow(
 					c, pal,
 					"nav-fonts-sub",
-					"字体与字重",
+					"排版、字体与字重",
 					subHint,
 					fmt.Sprintf("%s · %s", fontDisplayName, formatFontWeightLabel(curWeight)),
 					"",
@@ -898,7 +873,7 @@ func (a *AppUI) renderFontsSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 	}
 
 	ui.Column(c.Key("subpage-fonts")).Fill().Children(func() {
-		a.renderProfileSubpageHeader(c, pal, isTablet, "字体与字重", func() {
+		a.renderProfileSubpageHeader(c, pal, isTablet, "阅读排版与字体", func() {
 			impBtn := ui.Row(c.Key("fonts-header-import")).
 				Padding(5, 11).
 				Radius(999).
@@ -921,12 +896,13 @@ func (a *AppUI) renderFontsSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 					// 1. 实时诗句标本预览卡
 					ui.Column(c.Key("fonts-specimen-card")).
 						FillWidth().
-						Padding(20, 20, 14, 20).
-						Gap(12).
+						Padding(16, 18, 14, 18).
+						Gap(10).
 						Radius(12).
 						Background(pal.Surface).
 						Border(1, pal.Border).
 						Children(func() {
+							ui.Text(c, "实时排版预览").FontSize(11).TextColor(pal.TextMuted)
 							ui.Column(c).FillWidth().Padding(14, 16).Radius(8).Background(pal.Background).Border(1, pal.Border).Gap(6).Children(func() {
 								ui.Text(c, "那里，一切皆有序而美，\n奢华、安宁，与欢愉。").
 									Font(poetryFont).
@@ -935,14 +911,44 @@ func (a *AppUI) renderFontsSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 									LineHeight(float32(a.lineHeightSlider)).
 									TextColor(pal.TextPrimary)
 							})
-							ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-								ui.Text(c, "实时排版预览").FontSize(11).TextColor(pal.TextMuted).Grow(1)
-								ui.Textf(c, "%s · %s · %.0f pt", curFontName, formatFontWeightLabel(curWeight), a.fontSizeSlider).
-									Font(theme.FontMono).FontSize(11).TextColor(pal.TextSecondary).MaxLines(1)
-							})
+							ui.Textf(c, "%s · %s · %.0f pt · %.2f×", curFontName, formatFontWeightLabel(curWeight), a.fontSizeSlider, a.lineHeightSlider).
+								Font(theme.FontMono).FontSize(11).TextColor(pal.TextSecondary).MaxLines(1)
 						})
 
-					// 2. 正文字重 4 档分段选择器
+					// 2. 字号与行距调节
+					ui.Column(c.Key("fonts-metrics-sec")).FillWidth().Gap(8).Children(func() {
+						a.renderSettingsGroupLabel(c, pal, "字号与行距")
+						ui.Column(c).
+							FillWidth().
+							Padding(16, 18).
+							Gap(14).
+							Radius(12).
+							Background(pal.Surface).
+							Border(1, pal.Border).
+							Children(func() {
+								ui.Column(c).FillWidth().Gap(4).Children(func() {
+									ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+										ui.Text(c, "正文字号").FontSize(13).TextColor(pal.TextSecondary).Grow(1)
+										ui.Textf(c, "%.0f pt", a.fontSizeSlider).Font(theme.FontMono).FontSize(12).TextColor(pal.Accent)
+									})
+									if ui.Slider(c.Key("sub-fontsize"), &a.fontSizeSlider, 14, 28).Changed() {
+										a.saveTypography(float32(a.fontSizeSlider), float32(a.lineHeightSlider))
+									}
+								})
+
+								ui.Column(c).FillWidth().Gap(4).Children(func() {
+									ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+										ui.Text(c, "行距倍数").FontSize(13).TextColor(pal.TextSecondary).Grow(1)
+										ui.Textf(c, "%.2f", a.lineHeightSlider).Font(theme.FontMono).FontSize(12).TextColor(pal.Accent)
+									})
+									if ui.Slider(c.Key("sub-lineheight"), &a.lineHeightSlider, 1.4, 2.4).Changed() {
+										a.saveTypography(float32(a.fontSizeSlider), float32(a.lineHeightSlider))
+									}
+								})
+							})
+					})
+
+					// 3. 正文字重 4 档分段选择器
 					ui.Column(c.Key("fonts-weight-sec")).FillWidth().Gap(8).Children(func() {
 						a.renderSettingsGroupLabel(c, pal, "正文字重")
 						ui.Column(c).

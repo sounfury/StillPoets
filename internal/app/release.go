@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	DefaultAppVersion = "0.1.2"
+	DefaultAppVersion = "0.1.3"
 	GitHubRepoOwner   = "sounfury"
 	GitHubRepoName    = "StillPoets"
 	GitHubReleasesURL = "https://github.com/sounfury/StillPoets/releases"

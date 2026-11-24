@@ -3,8 +3,6 @@ package sync
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -24,12 +22,13 @@ type DeviceWarning struct {
 
 // SyncRequest 描述一次串行同步执行的输入状态。
 type SyncRequest struct {
-	InstallID    string       // 当前本机的唯一安装 ID（不随系统备份克隆）
-	LocalRev     uint64       // 本机上次已确认发布成功的代次号（首次为 0）
-	LocalCounter uint64       // 本机持久化的 Lamport 逻辑时钟计数
-	LocalData    SnapshotData // 本机待合并的完整元数据快照
-	HasDirty     bool         // 本机是否存在尚未发布的变更（或合并后需要主动发布）
-	ForcePush    bool         // 强制发布新代次（例如首次建库或退役旧设备前）
+	InstallID       string            // 当前本机的唯一安装 ID（不随系统备份克隆）
+	LocalRev        uint64            // 本机上次已确认发布成功的代次号（首次为 0）
+	LocalCounter    uint64            // 本机持久化的 Lamport 逻辑时钟计数
+	LocalData       SnapshotData      // 本机待合并的完整元数据快照
+	HasDirty        bool              // 本机是否存在尚未发布的变更（或合并后需要主动发布）
+	ForcePush       bool              // 强制发布新代次（例如首次建库或退役旧设备前）
+	KnownRemoteRevs map[string]uint64 // 已验证且已提交到本地数据库的远端代次
 }
 
 // SyncResult 返回单次同步的合并结果、推进后的逻辑时钟与发布状态。
@@ -40,8 +39,8 @@ type SyncResult struct {
 	PublishedRev      uint64
 	PartialSync       bool
 	Warnings          []DeviceWarning
-	RemoteDevices     []string          // 本轮成功读取到有效快照的远端 installId 列表
-	SyncedDeviceRevs  map[string]uint64 // 本轮已完整读取其最新代次并合并的远端 installId -> rev（用于安全退役）
+	RemoteDevices     []string          // 本轮确认已合并有效快照的远端 installId 列表
+	SyncedDeviceRevs  map[string]uint64 // 本轮确认已完整合并最新代次的远端 installId -> rev（用于安全退役）
 	IncompleteDevices map[string]bool   // 本轮最新代次读取失败或发生降级回退的远端设备集合
 }
 
@@ -65,12 +64,12 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if err := e.client.EnsureDir(ctx, StateDir); err != nil {
-		return nil, fmt.Errorf("sync: ensure state dir: %w", err)
-	}
-
 	entries, err := e.client.ListDir(ctx, StateDir)
-	if err != nil {
+	if errors.Is(err, webdav.ErrNotFound) {
+		if err := e.client.EnsureDir(ctx, StateDir); err != nil {
+			return nil, fmt.Errorf("sync: create state dir: %w", err)
+		}
+	} else if err != nil {
 		return nil, fmt.Errorf("sync: list state dir: %w", err)
 	}
 
@@ -112,55 +111,57 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 		IncompleteDevices: make(map[string]bool),
 	}
 
-	var ownRemoteMaxRev uint64
-	var ownValidRevs []uint64
-
+	var ownRemoteMaxRev, ownValidRev uint64
+	if revs := byDevice[req.InstallID]; len(revs) > 0 {
+		ownRemoteMaxRev = revs[0]
+		if req.LocalRev > 0 && slices.Contains(revs, req.LocalRev) {
+			ownValidRev = req.LocalRev
+		}
+	}
+	var toLoad []string
 	for _, devID := range deviceIDs {
-		revs := byDevice[devID]
 		if devID == req.InstallID {
-			if len(revs) > 0 {
-				ownRemoteMaxRev = revs[0]
-			}
-			// 仅在本地尚未发布过（如首次恢复）或远端存在比本地记录更高的代次时读取自身远端快照；
-			// 注意此处不把未验证的目录项直接当成 ownValidRevs，回收阶段会单独验证保留代次（P1-11）。
+			// 本机仅在首次恢复或发现更高远端代次时拉取。
 			if req.LocalRev > 0 && ownRemoteMaxRev <= req.LocalRev {
 				continue
 			}
-		}
-
-		loadedSnap, validRev, warnings := e.loadLatestValidSnapshot(ctx, devID, revs)
-		if len(warnings) > 0 {
-			res.PartialSync = true
-			res.Warnings = append(res.Warnings, warnings...)
-			if devID != req.InstallID {
-				res.IncompleteDevices[devID] = true
-			}
-		}
-		if loadedSnap == nil {
-			if devID != req.InstallID {
-				res.IncompleteDevices[devID] = true
-			}
+		} else if rev := req.KnownRemoteRevs[devID]; req.LocalRev > 0 && rev > 0 && rev == byDevice[devID][0] {
+			res.SyncedDeviceRevs[devID] = rev
+			res.RemoteDevices = append(res.RemoteDevices, devID)
 			continue
 		}
-		if devID == req.InstallID {
-			ownValidRevs = append(ownValidRevs, validRev)
-		} else {
-			res.RemoteDevices = append(res.RemoteDevices, devID)
-			if len(warnings) == 0 && len(revs) > 0 && validRev == revs[0] {
-				res.SyncedDeviceRevs[devID] = validRev
-			}
-		}
-
-		res.MergedData = MergeSnapshotData(res.MergedData, loadedSnap.Data)
-		if loadedSnap.MaxCounter > res.MaxCounter {
-			res.MaxCounter = loadedSnap.MaxCounter
-		}
-		res.MaxCounter = MaxCounterInData(res.MaxCounter, res.MergedData)
+		toLoad = append(toLoad, devID)
 	}
+
+	// 每批最多同时下载两个设备，按字典序合并并及时释放快照内存。
+	for batch := range slices.Chunk(toLoad, 2) {
+		var wg sync.WaitGroup
+		var reads [2]snapshotRead
+		for i, id := range batch {
+			wg.Go(func() {
+				reads[i].snapshot, reads[i].rev, reads[i].warnings = e.loadLatestValidSnapshot(ctx, id, byDevice[id])
+			})
+		}
+		wg.Wait()
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		for i, id := range batch {
+			read := reads[i]
+			if id == req.InstallID {
+				ownValidRev = max(ownValidRev, read.rev)
+			}
+			res.mergeRead(id, id == req.InstallID, read)
+		}
+	}
+	slices.Sort(res.RemoteDevices)
 
 	shouldPush := req.HasDirty || req.ForcePush
 	if !shouldPush {
 		return res, nil
+	}
+	if err := e.client.EnsureDir(ctx, StateDir); err != nil {
+		return nil, fmt.Errorf("sync: ensure state dir before publishing: %w", err)
 	}
 
 	nextRev := req.LocalRev
@@ -207,33 +208,67 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 	res.PublishedRev = nextRev
 
 	// 3. 提交确认后再清理本设备更早的旧代次，严格保留最近 KeepSnapshotGenerations (2) 份已校验有效的代次
-	e.cleanupOwnOldRevisions(ctx, req.InstallID, nextRev, byDevice[req.InstallID], ownValidRevs)
+	e.cleanupOwnOldRevisions(ctx, req.InstallID, nextRev, byDevice[req.InstallID], ownValidRev)
 
 	return res, nil
 }
 
-// readBackWithRetry 在 PUT 完成后做有界 404 退避回读，兼容 AList/115 等挂载点的写后最终一致性延迟（P1-8）。
-func (e *Engine) readBackWithRetry(ctx context.Context, relPath string, maxBytes int64) ([]byte, error) {
-	delays := []time.Duration{300 * time.Millisecond, 700 * time.Millisecond, 1500 * time.Millisecond}
-	var lastErr error
-	for attempt := 0; attempt <= len(delays); attempt++ {
-		raw, _, err := e.client.GetWithLimit(ctx, relPath, maxBytes)
-		if err == nil {
-			return raw, nil
+type snapshotRead struct {
+	snapshot *DeviceSnapshot
+	rev      uint64
+	warnings []DeviceWarning
+}
+
+func (res *SyncResult) mergeRead(id string, local bool, read snapshotRead) {
+	if len(read.warnings) > 0 {
+		res.PartialSync = true
+		res.Warnings = append(res.Warnings, read.warnings...)
+	}
+	if !local {
+		if read.snapshot == nil || len(read.warnings) > 0 {
+			res.IncompleteDevices[id] = true
+		} else {
+			res.SyncedDeviceRevs[id] = read.rev
 		}
-		lastErr = err
+		if read.snapshot != nil {
+			res.RemoteDevices = append(res.RemoteDevices, id)
+		}
+	}
+	if read.snapshot != nil {
+		res.MergedData = MergeSnapshotData(res.MergedData, read.snapshot.Data)
+		res.MaxCounter = MaxCounterInData(max(res.MaxCounter, read.snapshot.MaxCounter), res.MergedData)
+	}
+}
+
+func (e *Engine) readBackWithRetry(ctx context.Context, relPath string, maxBytes int64) ([]byte, error) {
+	return verifyAfterWrite(ctx, func() ([]byte, error) {
+		raw, _, err := e.client.GetWithLimit(ctx, relPath, maxBytes)
+		return raw, err
+	})
+}
+
+func (e *Engine) statWithRetry(ctx context.Context, relPath string) (*webdav.Entry, error) {
+	return verifyAfterWrite(ctx, func() (*webdav.Entry, error) {
+		return e.client.Stat(ctx, relPath)
+	})
+}
+
+// verifyAfterWrite 对短暂的写后 404 做有界退避，兼容 AList/OpenList 挂载点的最终一致性。
+func verifyAfterWrite[T any](ctx context.Context, verify func() (T, error)) (T, error) {
+	delays := [...]time.Duration{300 * time.Millisecond, 700 * time.Millisecond, 1500 * time.Millisecond}
+	for attempt := 0; ; attempt++ {
+		result, err := verify()
 		if !errors.Is(err, webdav.ErrNotFound) || attempt == len(delays) {
-			break
+			return result, err
 		}
 		timer := time.NewTimer(delays[attempt])
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, ctx.Err()
+			return result, ctx.Err()
 		case <-timer.C:
 		}
 	}
-	return nil, lastErr
 }
 
 // loadLatestValidSnapshot 从最新代次向旧代次回退，直到找到一份完整通过 gzip+JSON+协议校验的快照。
@@ -260,18 +295,13 @@ func (e *Engine) loadLatestValidSnapshot(ctx context.Context, installID string, 
 }
 
 // cleanupOwnOldRevisions 仅清理当前安装 ID 名下的过期代次，保留最新提交的 nextRev 以及上一份经真实可读校验的代次（P1-11）。
-func (e *Engine) cleanupOwnOldRevisions(ctx context.Context, installID string, nextRev uint64, allRemoteDesc, knownValidDesc []uint64) {
+func (e *Engine) cleanupOwnOldRevisions(ctx context.Context, installID string, nextRev uint64, allRemoteDesc []uint64, knownValidRev uint64) {
 	if len(allRemoteDesc) < KeepSnapshotGenerations {
 		return
 	}
 	keep := map[uint64]struct{}{nextRev: {}}
-	for _, rev := range knownValidDesc {
-		if len(keep) >= KeepSnapshotGenerations {
-			break
-		}
-		if rev < nextRev {
-			keep[rev] = struct{}{}
-		}
+	if knownValidRev > 0 && knownValidRev < nextRev {
+		keep[knownValidRev] = struct{}{}
 	}
 
 	// 若尚未确认到足够的有效旧代次，先按降序回读校验，确认至少留住 1 份真实完好的旧快照后再删除更早代次
@@ -320,7 +350,7 @@ type BookAssetUploadResult struct {
 	CoverWarning error // 封面上传失败不阻断书目发布，由读端占位图降级
 }
 
-// UploadBookAssets 在发布书目元数据前，先确保 books/<bookId>/ 下的解析包与原始导入文件均上传且回读校验通过。
+// UploadBookAssets 在发布书目元数据前，验证解析包的内容以及原始文件的存在性和可用的长度属性。
 func (e *Engine) UploadBookAssets(
 	ctx context.Context,
 	book domain.Book,
@@ -362,20 +392,20 @@ func (e *Engine) UploadBookAssets(
 		return nil, fmt.Errorf("sync: verify decoded spbook %s: %w", parsedPath, err)
 	}
 
-	// 2. 上传原始导入文件（如 .epub）并回读校验哈希，保证原文件备份完整可读
+	// 2. 检查原始导入文件的存在性和可用长度，避免下载整个备份。
 	rawPath := BookRawPath(book.ID, book.RawFilename)
-	rawSum := sha256.Sum256(rawOriginal)
-	wantRawHash := hex.EncodeToString(rawSum[:])
 	if _, err := e.client.Put(ctx, rawPath, rawOriginal, "application/octet-stream"); err != nil {
 		return nil, fmt.Errorf("sync: put raw file %s: %w", rawPath, err)
 	}
-	readBackRaw, err := e.readBackWithRetry(ctx, rawPath, int64(len(rawOriginal))+1024)
+	rawEntry, err := e.statWithRetry(ctx, rawPath)
 	if err != nil {
 		return nil, fmt.Errorf("sync: verify raw file %s: %w", rawPath, err)
 	}
-	gotRawSum := sha256.Sum256(readBackRaw)
-	if hex.EncodeToString(gotRawSum[:]) != wantRawHash {
-		return nil, fmt.Errorf("sync: verify raw file %s: sha256 mismatch", rawPath)
+	if rawEntry.IsDir {
+		return nil, fmt.Errorf("sync: verify raw file %s: expected a file, found a collection", rawPath)
+	}
+	if want := int64(len(rawOriginal)); rawEntry.ContentLength > 0 && rawEntry.ContentLength != want {
+		return nil, fmt.Errorf("sync: verify raw file %s: content length mismatch: got %d, want %d", rawPath, rawEntry.ContentLength, want)
 	}
 
 	// 3. 封面图非强依赖，上传失败仅记录警告，不阻断书目发布

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/markdown"
 
 	"stillpoets/internal/app"
 	"stillpoets/internal/domain"
@@ -149,13 +150,17 @@ type AppUI struct {
 	bannerMsg    string
 
 	// 弹窗/抽屉开关与表单状态
-	showAddModal    bool
-	showQuoteModal  bool
-	showGroupModal  bool
-	showSearchModal bool
-	showTOCModal    bool
-	showTypoModal   bool
-	showQuoteDetail bool
+	showAddModal       bool
+	showQuoteModal     bool
+	showGroupModal     bool
+	showSearchModal    bool
+	showTOCModal       bool
+	showTypoModal      bool
+	showQuoteDetail    bool
+	showChangelogModal bool
+
+	changelogMDOpts  *markdown.Options
+	changelogMDTheme theme.PresetID
 
 	editingQuoteID   string
 	quoteFormContent string
@@ -693,6 +698,7 @@ func (a *AppUI) renderTabletShell(c *ui.Context, pal theme.Palette) {
 			a.activeTab = tab
 			a.readerMobile = false
 			a.profileSub = profileSubpageNone
+			a.showChangelogModal = false
 			a.confirmDisconnect = false
 			a.confirmDeleteFont = ""
 		})
@@ -766,6 +772,7 @@ func (a *AppUI) renderPhoneShell(c *ui.Context, pal theme.Palette) {
 				a.activeTab = tab
 				a.readerMobile = false
 				a.profileSub = profileSubpageNone
+				a.showChangelogModal = false
 				a.confirmDisconnect = false
 				a.confirmDeleteFont = ""
 			})

@@ -23,6 +23,7 @@ func (a *AppUI) renderModals(c *ui.Context, pal theme.Palette) {
 	a.renderSearchModal(c, pal)
 	a.renderTOCModal(c, pal)
 	a.renderTypographyModal(c, pal)
+	a.renderChangelogModal(c, pal)
 }
 
 func (a *AppUI) renderAddModal(c *ui.Context, pal theme.Palette) {

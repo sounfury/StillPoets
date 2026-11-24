@@ -102,13 +102,13 @@ func TestProfileRedesignSubpagesSyncSpinnerAndAbout(t *testing.T) {
 			t.Fatalf("%s widget subpage render failed", vp.name)
 		}
 
-		// 5. 二级页：关于 StillPoets（含发现新版本 + 更新日志列表 + 邮件联系 + 导出日志状态）
+		// 5. 二级页：关于 StillPoets（含发现新版本 + 更新日志三级入口 + 邮件联系 + 导出日志状态）
 		appUI.releasesLoaded = true
 		appUI.releases = []app.ReleaseInfo{
 			{
 				TagName:     "v0.2.0",
 				Name:        "StillPoets v0.2.0",
-				Body:        "- 全新设置页二级导航与字体字重管理\n- WebDAV 同步等待动画\n- 关于页支持检查更新与分析日志导出",
+				Body:        "## StillPoets v0.2.0\n\n### 安装包说明\n- **Android (APK)**：内置桌面小组件（`StillPoetsWidgetProvider`）\n- **iOS (IPA)**：内嵌 WidgetKit 小组件（`StillPoetsWidget.appex`）\n\n### 本次核心更新\n- 全新设置页二级导航与字体字重管理\n- WebDAV 同步等待动画",
 				HTMLURL:     "https://github.com/sounfury/StillPoets/releases/tag/v0.2.0",
 				PublishedAt: time.Now(),
 				Assets: []app.ReleaseAsset{
@@ -131,10 +131,136 @@ func TestProfileRedesignSubpagesSyncSpinnerAndAbout(t *testing.T) {
 			maybeSavePNG(t, img, "settings-phone-sub-about")
 		}
 
-		// 返回主页校验
+		// 6. 三级底部抽屉：更新日志（Markdown 渲染）
+		appUI.openChangelogSheet()
+		if !appUI.showChangelogModal {
+			t.Fatalf("%s expected changelog sheet open", vp.name)
+		}
+		img = ui.Render(appUI.Render, vp.w, vp.h, 2.0)
+		if img == nil {
+			t.Fatalf("%s changelog sheet render failed", vp.name)
+		}
+		if vp.name == "phone" {
+			maybeSavePNG(t, img, "settings-phone-sheet-changelog")
+		}
+
+		// 返回主页校验（同时关闭三级抽屉）
 		appUI.closeProfileSubpage()
 		if appUI.profileSub != profileSubpageNone {
 			t.Fatalf("expected profileSub reset to None after close")
 		}
+		if appUI.showChangelogModal {
+			t.Fatalf("expected changelog sheet closed after closeProfileSubpage")
+		}
 	}
+}
+
+func TestNormalizeReleaseMarkdown(t *testing.T) {
+	rel := app.ReleaseInfo{
+		TagName: "v0.1.2",
+		Name:    "StillPoets v0.1.2",
+		Body:    "## StillPoets v0.1.2\r\n\r\n### 安装包说明\r\n- **iOS**：`StillPoetsWidget.appex`",
+	}
+	got := normalizeReleaseMarkdown(rel)
+	want := "### 安装包说明\n- **iOS**：`StillPoetsWidget.appex`"
+	if got != want {
+		t.Fatalf("normalizeReleaseMarkdown mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+
+	other := app.ReleaseInfo{
+		TagName: "v0.1.2",
+		Name:    "StillPoets v0.1.2",
+		Body:    "### 独立更新说明\n- 修复若干问题",
+	}
+	if got := normalizeReleaseMarkdown(other); got != other.Body {
+		t.Fatalf("unexpected strip for non-duplicate heading: got %q", got)
+	}
+}
+
+func TestProfileSubpageTopPaddingTypographyAndChangelogSheet(t *testing.T) {
+	ctx := t.Context()
+	svc, err := app.Open(ctx, t.TempDir(), app.NewMemorySecretStore())
+	if err != nil {
+		t.Fatalf("app.Open: %v", err)
+	}
+	defer svc.Close()
+
+	appUI := NewAppUI(svc, nil, nil)
+	appUI.SetAppVersion("0.1.2")
+	appUI.activeTab = components.TabProfile
+	appUI.reloadSync(ctx)
+	appUI.releasesLoaded = true
+	appUI.releases = []app.ReleaseInfo{
+		{
+			TagName:     "v0.1.2",
+			Name:        "StillPoets v0.1.2",
+			Body:        "## StillPoets v0.1.2\n\n### 安装包说明\n- **Android (APK)**：内置桌面小组件（`StillPoetsWidgetProvider`），可直接安装在 Android 手机 / 平板。\n- **iOS (IPA)**：内嵌 WidgetKit 小组件（`StillPoetsWidget.appex`），支持全能签 / AltStore 自签。\n\n### 本次核心更新\n- **全新正式版 App 图标**：鼠尾草绿底 + 赤陶精装书壳 + 暖棉纸双页与秋叶。\n- **同步链路提速**：减少重复目录探测与未变更快照拉取。",
+			HTMLURL:     "https://github.com/sounfury/StillPoets/releases/tag/v0.1.2",
+			PublishedAt: time.Date(2026, 11, 24, 13, 40, 0, 0, time.UTC),
+			Assets: []app.ReleaseAsset{
+				{Name: "StillPoets-0.1.2-ios-arm64-unsigned.ipa", Size: 9271890},
+				{Name: "StillPoets-0.1.2-android-arm64.apk", Size: 15800000},
+			},
+		},
+		{
+			TagName:     "v0.1.1",
+			Name:        "StillPoets v0.1.1",
+			Body:        "- 新增 WebDAV 同步等待动画与实时阶段提示\n- 设置页重排与二级页面架构",
+			HTMLURL:     "https://github.com/sounfury/StillPoets/releases/tag/v0.1.1",
+			PublishedAt: time.Date(2026, 11, 24, 8, 35, 0, 0, time.UTC),
+		},
+	}
+
+	tt := ui.NewTester(appUI.Render, 390, 844)
+	tt.Frame()
+	advanceFrames(tt, 300*time.Millisecond)
+
+	// 1. 「我的」主页不应直接暴露字号/行距滑块（防止滚动误触）
+	if _, ok := tt.Find("正文字号"); ok {
+		t.Fatalf("profile main page should not expose font size slider directly")
+	}
+	if _, ok := tt.Find("行距倍数"); ok {
+		t.Fatalf("profile main page should not expose line height slider directly")
+	}
+
+	// 2. 进入「阅读排版与字体」二级页：顶部不叠加冗余空白，且包含字号与行距调节
+	appUI.openProfileSubpage(profileSubpageFonts)
+	tt.Frame()
+	advanceFrames(tt, 450*time.Millisecond)
+	if rect, ok := tt.Find("返回"); !ok {
+		t.Fatalf("expected typography subpage back button")
+	} else if rect.Y > 36 {
+		t.Fatalf("subpage header top offset too large (possible double safe-area): y=%.1f", rect.Y)
+	}
+	if _, ok := tt.Find("+ 导入字体"); !ok {
+		t.Fatalf("expected typography subpage import font action")
+	}
+	if _, ok := tt.Find("正文字号"); !ok {
+		t.Fatalf("expected font size slider inside typography subpage")
+	}
+	if _, ok := tt.Find("行距倍数"); !ok {
+		t.Fatalf("expected line height slider inside typography subpage")
+	}
+	maybeSavePNG(t, tt.Image(), "settings-phone-sub-fonts-settled")
+
+	// 3. 进入「关于 StillPoets」二级页，点击「更新日志」打开三级底部抽屉
+	appUI.openProfileSubpage(profileSubpageAbout)
+	tt.Frame()
+	advanceFrames(tt, 450*time.Millisecond)
+	if rect, ok := tt.Find("Releases"); !ok {
+		t.Fatalf("expected about subpage Releases button")
+	} else if rect.Y > 36 {
+		t.Fatalf("about subpage header top offset too large: y=%.1f", rect.Y)
+	}
+	if err := tt.Click("更新日志"); err != nil {
+		t.Fatalf("click changelog entry: %v", err)
+	}
+	advanceFrames(tt, 600*time.Millisecond)
+	if !appUI.showChangelogModal {
+		t.Fatalf("expected changelog drawer open after clicking entry")
+	}
+	if _, ok := tt.Find("GitHub Releases 历次版本记录"); !ok {
+		t.Fatalf("expected changelog drawer subtitle rendered")
+	}
+	maybeSavePNG(t, tt.Image(), "settings-phone-sheet-changelog-settled")
 }

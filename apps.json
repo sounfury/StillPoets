@@ -22,17 +22,25 @@
       "type": "0",
       "lock": "0",
       "isLanZouCloud": "0",
-      "version": "0.1.6",
-      "versionDate": "2026-11-24T17:16:22Z",
-      "versionDescription": "• 修复 WebDAV 换盘后远端缺失诗集正文的问题：每次同步自动巡检远端 books/ 目录，若发现本机已下载的诗集在当前网盘缺失（含升版前已切盘的存量设备），自动补入上传队列并立即补传。\n• 支持从本地已下载正文无损救援迁移：当诗集当初由其他设备导入、本机仅按需下载了正文且旧 WebDAV 已不可达时，支持直接复用本地缓存或从 SQLite 诗篇重建 .spbook.json.gz 上传并同步更新校验哈希，其他端拉取即可直接阅读。\n• 优化按需下载缓存与同步报错透出：按需下载诗集时顺手保留 .spbook.json.gz 离线校验副本；WebDAV 状态卡片直接展示最近上传异常详情，排障不再黑盒。",
-      "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.6/StillPoets-0.1.6-ios-arm64-unsigned.ipa",
-      "size": 9640715,
+      "version": "0.1.7",
+      "versionDate": "2026-11-25T06:00:30Z",
+      "versionDescription": "• Phase 3 完整读诗统计看板：新增全局时间窗口（本周 / 本月 / 今年 / 全部）、52 周与按自然年读诗热力图（点选任意日期下钻当日读诗列表并直达原诗）、昼夜阅读节律（五时段矢量环图 / 24 小时柱状图切换）、完读诗集墙与回望卡弹窗、诗人作者云（综合 / 读过 / 精选三权重切换及诗人档案下钻）；同步扩展 SQLite v4 reading_events 与 WebDAV 跨端确定性合集同步。\n• 书架原地批量整理与长按单本操作：书架「我的诗集」新增「整理」原地多选模式（含空分组「从书架选入」定向挑书、单层「移入分组」弹窗与一键「新建分组并移入」）；长按/右键任意书封直接弹出单本快捷管理弹窗，支持单层胶囊改分组、标为完读、清缓存与删书（兼容未下载云端诗集）。\n• 修复桌面小组件提前换诗问题：小组件时间线改为基于日期与诗池的一致性哈希确定性排序，无变更时跳过冗余重写；Android 与 iOS 桥接层改为按 poolRevision 控制手动偏移归零（并修复 iOS App Group 时间戳 31-bit 截断问题），冷启动、WebDAV 同步或调整主题/字号/间隔均不再提前打断设定的 3 小时等换诗周期。",
+      "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.7/StillPoets-0.1.7-ios-arm64-unsigned.ipa",
+      "size": 9776817,
       "screenshotURLs": [
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-shelf-fragments.png",
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-editorial.png",
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-settings.png"
       ],
       "versions": [
+        {
+          "version": "0.1.7",
+          "date": "2026-11-25T06:00:30Z",
+          "localizedDescription": "• Phase 3 完整读诗统计看板：新增全局时间窗口（本周 / 本月 / 今年 / 全部）、52 周与按自然年读诗热力图（点选任意日期下钻当日读诗列表并直达原诗）、昼夜阅读节律（五时段矢量环图 / 24 小时柱状图切换）、完读诗集墙与回望卡弹窗、诗人作者云（综合 / 读过 / 精选三权重切换及诗人档案下钻）；同步扩展 SQLite v4 reading_events 与 WebDAV 跨端确定性合集同步。\n• 书架原地批量整理与长按单本操作：书架「我的诗集」新增「整理」原地多选模式（含空分组「从书架选入」定向挑书、单层「移入分组」弹窗与一键「新建分组并移入」）；长按/右键任意书封直接弹出单本快捷管理弹窗，支持单层胶囊改分组、标为完读、清缓存与删书（兼容未下载云端诗集）。\n• 修复桌面小组件提前换诗问题：小组件时间线改为基于日期与诗池的一致性哈希确定性排序，无变更时跳过冗余重写；Android 与 iOS 桥接层改为按 poolRevision 控制手动偏移归零（并修复 iOS App Group 时间戳 31-bit 截断问题），冷启动、WebDAV 同步或调整主题/字号/间隔均不再提前打断设定的 3 小时等换诗周期。",
+          "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.7/StillPoets-0.1.7-ios-arm64-unsigned.ipa",
+          "size": 9776817,
+          "minOSVersion": "17.0"
+        },
         {
           "version": "0.1.6",
           "date": "2026-11-24T17:16:22Z",

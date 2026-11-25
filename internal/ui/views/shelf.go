@@ -43,6 +43,13 @@ func (a *AppUI) syncShelfPager(scope string, width float32) int {
 
 func (a *AppUI) attachShelfPagerDraggable(track ui.Element, width float32, curPage int) float32 {
 	startX := -float32(curPage) * width
+	// 原地整理书架时锁定横向切页，防止手指点选封面时误划到散页
+	if a.shelfOrganizing {
+		track.Left(startX)
+		a.shelfDragging = false
+		a.shelfPager.progress = float32(curPage)
+		return float32(curPage)
+	}
 	// 适配平板左窄书架栏（348 DIP）：避免在 1000+ DIP 工作区中需要划过半屏才能切到散页
 	threshold := min(width*0.28, 130)
 	track.Draggable(&a.shelfPager.offset, ui.DraggableOptions{
@@ -119,6 +126,7 @@ func (a *AppUI) renderTabletShelfWorkspace(c *ui.Context, pal theme.Palette) {
 								ui.Scroll(c.Key("tablet-books-scroll")).Grow(1).FillWidth().Children(func() {
 									a.renderBooksSubTab(c, pal, true)
 								})
+								a.renderShelfOrganizeBar(c, pal, true)
 							})
 						},
 						func() { a.renderReaderPane(c, pal, true) },
@@ -183,8 +191,11 @@ func (a *AppUI) renderShelfPane(c *ui.Context, pal theme.Palette, isTablet bool)
 					Left(0).Top(0).Bottom(0).
 					Width(width).
 					Children(func() {
-						ui.Scroll(c.Key("shelf-books-scroll")).Fill().Children(func() {
-							a.renderBooksSubTab(c, pal, isTablet)
+						ui.Column(c.Key("phone-books-col")).Fill().Children(func() {
+							ui.Scroll(c.Key("shelf-books-scroll")).Grow(1).FillWidth().Children(func() {
+								a.renderBooksSubTab(c, pal, isTablet)
+							})
+							a.renderShelfOrganizeBar(c, pal, isTablet)
 						})
 					})
 
@@ -208,18 +219,25 @@ func (a *AppUI) renderBooksSubTab(c *ui.Context, pal theme.Palette, isTablet boo
 	if !isTablet && a.useFloatingBottomNav() {
 		bottomPad = 108
 	}
+	if a.shelfOrganizing {
+		// 整理模式下底部操作条占据实心高度，滚区自身仅保留轻量呼吸留白
+		bottomPad = 24
+	}
 	ui.Column(c.Key("books-subtab")).Padding(10, 18, bottomPad, 18).Gap(14).FillWidth().Children(func() {
-		// 手机单栏在首屏展示「今日重读」画册/刊物主视觉卡；平板左主栏聚焦继续阅读 + 书架网格（右栏已是实时整诗阅读区）
-		if !isTablet {
-			a.renderTodayRereadHero(c, pal)
+		// 整理模式下收起顶部「今日重读」与「继续阅读」，让视线聚焦书架封面网格
+		if !a.shelfOrganizing {
+			// 手机单栏在首屏展示「今日重读」画册/刊物主视觉卡；平板左主栏聚焦继续阅读 + 书架网格（右栏已是实时整诗阅读区）
+			if !isTablet {
+				a.renderTodayRereadHero(c, pal)
+			}
+
+			// 轻巧单行书签条：继续阅读
+			if a.continueItem != nil {
+				a.renderContinueReading(c, pal, a.continueItem)
+			}
 		}
 
-		// 轻巧单行书签条：继续阅读
-		if a.continueItem != nil {
-			a.renderContinueReading(c, pal, a.continueItem)
-		}
-
-		// 我的诗集 + 管理分组 + 横向分组直达条
+		// 我的诗集 + 整理/管理分组 + 横向分组直达条
 		a.renderMyBooksSection(c, pal, isTablet)
 	})
 }
@@ -486,51 +504,115 @@ func (a *AppUI) renderContinueReading(c *ui.Context, pal theme.Palette, item *st
 func (a *AppUI) renderMyBooksSection(c *ui.Context, pal theme.Palette, isTablet bool) {
 	ui.Column(c.Key("my-books-section")).Gap(10).FillWidth().Children(func() {
 		// 标题行：我的诗集 + 右侧轻量「管理分组」
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "我的诗集").Font(theme.FontSerif).FontSize(16).Bold().LetterSpacing(0.3).TextColor(pal.TextPrimary).Grow(1)
-			manageBtn := ui.Box(c.Key("manage-groups")).Padding(3, 6).Cursor(ui.CursorPointer)
-			manageBtn.Children(func() {
-				ui.Text(c, "管理分组").Font(theme.FontSans).FontSize(12).TextColor(pal.TextMuted)
-			})
-			if manageBtn.Clicked() {
-				a.groupFormError = ""
-				a.showGroupModal = true
+		books := a.filteredBooks()
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
+			title := "我的诗集"
+			if a.shelfOrganizing {
+				title = "整理诗集"
+			}
+			ui.Text(c, title).Font(theme.FontSerif).FontSize(16).Bold().LetterSpacing(0.3).TextColor(pal.TextPrimary).Grow(1)
+
+			if a.shelfOrganizing {
+				if len(books) > 0 {
+					selAllLabel := "全选"
+					if a.allFilteredBooksSelected(books) {
+						selAllLabel = "取消全选"
+					}
+					selAllBtn := ui.Box(c.Key("org-sel-all")).Padding(3, 6).Cursor(ui.CursorPointer)
+					selAllBtn.Children(func() {
+						ui.Text(c, selAllLabel).Font(theme.FontSans).FontSize(12).TextColor(pal.TextSecondary)
+					})
+					if selAllBtn.Clicked() {
+						a.toggleSelectAllFilteredBooks(books)
+					}
+				}
+				doneLabel := "完成"
+				if a.shelfTargetGroupID != "" {
+					doneLabel = "取消"
+				}
+				doneBtn := ui.Box(c.Key("org-done")).Padding(3, 6).Cursor(ui.CursorPointer)
+				doneBtn.Children(func() {
+					ui.Text(c, doneLabel).Font(theme.FontSans).FontSize(12).Bold().TextColor(pal.Accent)
+				})
+				if doneBtn.Clicked() {
+					prevTarget := a.shelfTargetGroupID
+					a.exitShelfOrganize()
+					if prevTarget != "" {
+						a.selectedGrp = prevTarget
+					}
+				}
+			} else {
+				if len(a.books) > 0 {
+					orgBtn := ui.Box(c.Key("organize-books")).Padding(3, 6).Cursor(ui.CursorPointer)
+					orgBtn.Children(func() {
+						ui.Text(c, "整理").Font(theme.FontSans).FontSize(12).TextColor(pal.TextSecondary)
+					})
+					if orgBtn.Clicked() {
+						a.enterShelfOrganize("")
+					}
+				}
+				manageBtn := ui.Box(c.Key("manage-groups")).Padding(3, 6).Cursor(ui.CursorPointer)
+				manageBtn.Children(func() {
+					ui.Text(c, "管理分组").Font(theme.FontSans).FontSize(12).TextColor(pal.TextMuted)
+				})
+				if manageBtn.Clicked() {
+					a.groupFormError = ""
+					a.showGroupModal = true
+				}
 			}
 		})
 
-		// 横向直达分组切换条（不藏二级页）
-		ui.ScrollHorizontal(c.Key("group-pills-scroll")).FillWidth().Height(28).Scrollbars(false).Children(func() {
-			ui.Row(c).Gap(18).Padding(1, 0, 3, 0).Children(func() {
-				renderGroupTab := func(id, label string) {
-					active := a.selectedGrp == id
-					col := ui.Column(c.Key("grp-"+id)).AlignItems(ui.Center).Gap(4).Cursor(ui.CursorPointer)
-					col.Children(func() {
-						txt := ui.Text(c, label).Font(theme.FontSans).FontSize(13)
-						if active {
-							txt.FontWeight(600).TextColor(pal.TextPrimary)
-						} else {
-							txt.TextColor(pal.TextMuted)
-						}
-						bar := ui.Box(c).Width(20).Height(1.5).Radius(1).Transition(theme.ColorTransition())
-						if active {
-							bar.Background(pal.Accent)
-						} else {
-							bar.Background(ui.Transparent)
-						}
+		// 定向选入模式（从空分组点「从书架选入」进入）提示横条
+		if a.shelfOrganizing && a.shelfTargetGroupID != "" {
+			if targetName := a.groupNameByID(a.shelfTargetGroupID); targetName != "" {
+				ui.Row(c.Key("org-target-banner")).
+					FillWidth().
+					Padding(8, 12).
+					Radius(8).
+					Background(pal.SurfaceMuted).
+					Border(0.75, pal.Border).
+					AlignItems(ui.Center).
+					Children(func() {
+						ui.Textf(c, "为「%s」挑选诗集 · 点选下方封面即可收入", targetName).
+							Font(theme.FontNote).FontSize(12).TextColor(pal.TextSecondary).Grow(1)
 					})
-					if col.Clicked() {
-						a.selectedGrp = id
+			}
+		}
+
+		// 横向直达分组切换条（定向选入模式下暂时隐藏，锁定在全书架挑书）
+		if !(a.shelfOrganizing && a.shelfTargetGroupID != "") {
+			ui.ScrollHorizontal(c.Key("group-pills-scroll")).FillWidth().Height(28).Scrollbars(false).Children(func() {
+				ui.Row(c).Gap(18).Padding(1, 0, 3, 0).Children(func() {
+					renderGroupTab := func(id, label string) {
+						active := a.selectedGrp == id
+						col := ui.Column(c.Key("grp-" + id)).AlignItems(ui.Center).Gap(4).Cursor(ui.CursorPointer)
+						col.Children(func() {
+							txt := ui.Text(c, label).Font(theme.FontSans).FontSize(13)
+							if active {
+								txt.FontWeight(600).TextColor(pal.TextPrimary)
+							} else {
+								txt.TextColor(pal.TextMuted)
+							}
+							bar := ui.Box(c).Width(20).Height(1.5).Radius(1).Transition(theme.ColorTransition())
+							if active {
+								bar.Background(pal.Accent)
+							} else {
+								bar.Background(ui.Transparent)
+							}
+						})
+						if col.Clicked() {
+							a.selectedGrp = id
+						}
 					}
-				}
 
-				renderGroupTab("", "全部")
-				for _, g := range a.groups {
-					renderGroupTab(g.ID, g.Name)
-				}
+					renderGroupTab("", "全部")
+					for _, g := range a.groups {
+						renderGroupTab(g.ID, g.Name)
+					}
+				})
 			})
-		})
+		}
 
-		books := a.filteredBooks()
 		if len(books) == 0 {
 			ui.Column(c.Key("empty-books")).
 				FillWidth().
@@ -546,9 +628,20 @@ func (a *AppUI) renderMyBooksSection(c *ui.Context, pal theme.Palette, isTablet 
 						msg = "书架空空如也，导入一本 EPUB 诗集开始阅读吧"
 					}
 					ui.Text(c, msg).Font(theme.FontNote).FontSize(13).TextColor(pal.TextMuted)
-					if ui.PrimaryButton(c, "+ 导入 EPUB 诗集").Clicked() {
-						a.triggerImportEPUB()
-					}
+					ui.Row(c).Gap(10).Wrap().Center().Children(func() {
+						if a.selectedGrp != "" && len(a.books) > 0 {
+							if ui.PrimaryButton(c, "从书架选入").Clicked() {
+								a.enterShelfOrganizeForGroup(a.selectedGrp)
+							}
+							if ui.Button(c, "+ 导入 EPUB 诗集").Clicked() {
+								a.triggerImportEPUB()
+							}
+						} else {
+							if ui.PrimaryButton(c, "+ 导入 EPUB 诗集").Clicked() {
+								a.triggerImportEPUB()
+							}
+						}
+					})
 				})
 			return
 		}
@@ -556,10 +649,26 @@ func (a *AppUI) renderMyBooksSection(c *ui.Context, pal theme.Palette, isTablet 
 		cols := layout.BookGridColumns(c)
 		ui.Grid(c.Key("book-cover-grid")).Columns(cols).Gap(14).FillWidth().Children(func() {
 			for _, b := range books {
-				selected := isTablet && b.ID == a.activeBookID
+				selected := isTablet && b.ID == a.activeBookID && !a.shelfOrganizing
 				isRemote := b.LocalState != domain.LocalStateDownloaded
-				if components.BookCoverCard(c, "bk-"+b.ID, b.ID, b.Title, b.Author, a.coverImageFor(b), pal, selected, isRemote, a.settings.UseOriginalCover) {
-					a.openBook(b.ID, "", nil, !isTablet)
+				orgOpts := components.BookCoverOrganizeOptions{
+					Organizing: a.shelfOrganizing,
+					Checked:    a.shelfSelectedBooks[b.ID],
+				}
+				if a.shelfOrganizing && a.selectedGrp == "" {
+					orgOpts.GroupBadge = a.groupNameByID(b.GroupID)
+				}
+				act := components.BookCoverShelfCard(c, "bk-"+b.ID, b.ID, b.Title, b.Author, a.coverImageFor(b), pal, selected, isRemote, a.settings.UseOriginalCover, orgOpts)
+				if a.shelfOrganizing {
+					if act.Clicked || act.LongPressed {
+						a.toggleShelfBookSelected(b.ID)
+					}
+				} else {
+					if act.LongPressed {
+						a.openBookActionModal(b.ID)
+					} else if act.Clicked {
+						a.openBook(b.ID, "", nil, !isTablet)
+					}
 				}
 			}
 		})

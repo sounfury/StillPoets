@@ -1755,7 +1755,7 @@ func (a *AppUI) refreshWidgetSnapshot() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		tl, err := a.svc.RebuildWidgetTimeline(ctx)
+		tl, err := a.svc.ReshuffleWidgetTimeline(ctx)
 		if err != nil {
 			a.showTransientToast("刷新失败：" + err.Error())
 			return
@@ -1767,7 +1767,7 @@ func (a *AppUI) refreshWidgetSnapshot() {
 			a.widgetCount = len(tl.Entries)
 			a.activeWidgetCount = activeCnt
 		})
-		a.showTransientToast(fmt.Sprintf("桌面小组件已刷新（%d 条）", len(tl.Entries)))
+		a.showTransientToast(fmt.Sprintf("已为桌面小组件换一批诗（%d 条）", len(tl.Entries)))
 	}()
 }
 

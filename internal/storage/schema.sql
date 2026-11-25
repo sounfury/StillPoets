@@ -178,6 +178,7 @@ CREATE TABLE IF NOT EXISTS reading_events (
     device_id TEXT NOT NULL DEFAULT ''
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reading_events_day_poem ON reading_events (book_id, poem_id, read_date);
 CREATE INDEX IF NOT EXISTS idx_reading_events_date ON reading_events (read_date, read_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reading_events_author ON reading_events (author);
 

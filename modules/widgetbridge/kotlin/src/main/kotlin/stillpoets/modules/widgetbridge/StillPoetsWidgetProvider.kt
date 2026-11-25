@@ -107,7 +107,7 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
         private const val PREFS_NAME = "stillpoets_widget_prefs"
         private const val KEY_TIMELINE_PATH = "timeline_path"
         private const val KEY_FONTS_DIR = "fonts_dir"
-        private const val KEY_LAST_GENERATED_AT = "last_generated_at"
+        private const val KEY_LAST_POOL_REV = "last_pool_revision"
         private const val KEY_OFFSET_PREFIX = "manual_offset_"
 
         private fun prefs(context: Context) =
@@ -123,10 +123,12 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
             if (fontsDir.isNotBlank()) {
                 editor.putString(KEY_FONTS_DIR, fontsDir)
             }
-            // 读取最新快照时间戳：若主 App 重新生成了新时间线（例如切换诗集/模式），归零手动偏移以立即呈现新池首条
+            // 仅当诗池本身变更（切换抽选模式/诗集或显式点「刷新小组件」）时才归零手动偏移；
+            // 普通同步、冷启动或改主题/字号/间隔不打断当前槽位展示的诗句。
             val snap = loadTimeline(appCtx, timelinePath.ifBlank { null })
-            if (snap != null && snap.generatedAt > 0L && snap.generatedAt != p.getLong(KEY_LAST_GENERATED_AT, 0L)) {
-                editor.putLong(KEY_LAST_GENERATED_AT, snap.generatedAt)
+            val poolRev = snap?.effectivePoolRevision().orEmpty()
+            if (poolRev.isNotEmpty() && poolRev != p.getString(KEY_LAST_POOL_REV, null)) {
+                editor.putString(KEY_LAST_POOL_REV, poolRev)
                 val manager = AppWidgetManager.getInstance(appCtx)
                 val ids = manager?.getAppWidgetIds(ComponentName(appCtx, StillPoetsWidgetProvider::class.java)) ?: IntArray(0)
                 for (id in ids) {
@@ -459,6 +461,7 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
                 }
                 WidgetTimeline(
                     generatedAt = root.optLong("generatedAt", 0L),
+                    poolRevision = root.optString("poolRevision", "").trim(),
                     refreshIntervalMinutes = normalizeIntervalMinutes(root.optInt("refreshIntervalMinutes", DEFAULT_INTERVAL_MINUTES)),
                     theme = theme,
                     entries = entries,
@@ -716,10 +719,14 @@ class StillPoetsWidgetProvider : AppWidgetProvider() {
 
     private data class WidgetTimeline(
         val generatedAt: Long,
+        val poolRevision: String,
         val refreshIntervalMinutes: Int,
         val theme: WidgetTheme,
         val entries: List<WidgetEntry>,
-    )
+    ) {
+        fun effectivePoolRevision(): String =
+            poolRevision.ifBlank { if (generatedAt > 0L) generatedAt.toString() else "" }
+    }
 
     private data class WidgetTheme(
         val preset: String,

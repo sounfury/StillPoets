@@ -332,3 +332,31 @@ func TestSPBookEncodeDecodeRoundTripAndValidation(t *testing.T) {
 		t.Fatalf("expected bookId mismatch error")
 	}
 }
+
+func TestMergeReadingEventsDedupAndAlgebraicLaws(t *testing.T) {
+	a := []domain.ReadingEvent{
+		{ID: "ev-a1", BookID: "b1", PoemID: "p1", PoemTitle: "", Author: "", ReadDate: "2026-11-20", ReadHour: 9, ReadAt: 1000, IsReread: false, DeviceID: "dev-a"},
+		{ID: "ev-a2", BookID: "b1", PoemID: "p2", PoemTitle: "面朝大海", Author: "海子", ReadDate: "2026-11-21", ReadHour: 22, ReadAt: 2000, IsReread: false, DeviceID: "dev-a"},
+	}
+	b := []domain.ReadingEvent{
+		{ID: "ev-b1", BookID: "b1", PoemID: "p1", PoemTitle: "日记", Author: "", ReadDate: "2026-11-20", ReadHour: 21, ReadAt: 1500, IsReread: true, DeviceID: "dev-b"},
+	}
+	c := []domain.ReadingEvent{
+		{ID: "ev-c1", BookID: "b1", PoemID: "p1", PoemTitle: "日记（补）", Author: "海子", ReadDate: "2026-11-20", ReadHour: 23, ReadAt: 1800, IsReread: true, DeviceID: "dev-c"},
+	}
+
+	ab_c := MergeReadingEvents(MergeReadingEvents(a, b), c)
+	a_bc := MergeReadingEvents(a, MergeReadingEvents(b, c))
+	cb_a := MergeReadingEvents(MergeReadingEvents(c, b), a)
+	idem := MergeReadingEvents(ab_c, ab_c)
+
+	if !reflect.DeepEqual(ab_c, a_bc) || !reflect.DeepEqual(ab_c, cb_a) || !reflect.DeepEqual(ab_c, idem) {
+		t.Fatalf("MergeReadingEvents violated algebraic laws:\nab_c=%+v\na_bc=%+v\ncb_a=%+v", ab_c, a_bc, cb_a)
+	}
+	if len(ab_c) != 2 {
+		t.Fatalf("expected 2 merged events, got %d: %+v", len(ab_c), ab_c)
+	}
+	if ab_c[0].ID != "ev-a1" || ab_c[0].PoemTitle != "日记" || ab_c[0].Author != "海子" || ab_c[0].IsReread {
+		t.Fatalf("unexpected merged first event: %+v", ab_c[0])
+	}
+}

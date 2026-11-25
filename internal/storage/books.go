@@ -299,6 +299,41 @@ func (s *Store) SetBookGroup(ctx context.Context, bookID, groupID string) error 
 	})
 }
 
+// SetBooksGroup 在单次事务与单一 Lamport 版本内将多本未删除诗集批量移入指定分组（空串表示移回未分组）。
+func (s *Store) SetBooksGroup(ctx context.Context, bookIDs []string, groupID string) error {
+	seen := make(map[string]struct{}, len(bookIDs))
+	unique := make([]string, 0, len(bookIDs))
+	for _, id := range bookIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+	return s.mutate(ctx, func(v domain.Version, _ int64) ([]sqlite.Statement, error) {
+		if groupID != "" {
+			if err := s.requireActiveGroup(ctx, groupID); err != nil {
+				return nil, err
+			}
+		}
+		stmts := make([]sqlite.Statement, 0, len(unique))
+		for _, bookID := range unique {
+			stmts = append(stmts, stmt(
+				`UPDATE books SET group_id = ?, group_ver_c = ?, group_ver_i = ? WHERE id = ? AND deleted = 0`,
+				groupID, v.Counter, v.InstallID, bookID,
+			))
+		}
+		return stmts, nil
+	})
+}
+
 func (s *Store) SetBookStarred(ctx context.Context, bookID string, starred bool) error {
 	return s.mutate(ctx, func(v domain.Version, _ int64) ([]sqlite.Statement, error) {
 		if err := s.requireActiveBook(ctx, bookID); err != nil {

@@ -436,6 +436,7 @@ type Settings struct {
 	WidgetMode           WidgetSourceMode  `json:"widgetMode"`
 	WidgetBookID         string            `json:"widgetBookId,omitempty"`
 	WidgetRefreshMinutes int               `json:"widgetRefreshMinutes,omitempty"`
+	WidgetShuffleEpoch   int64             `json:"widgetShuffleEpoch,omitempty"` // 用户显式点击「刷新小组件」时递增，用于稳定洗牌种子
 	WidgetTheme          WidgetThemeConfig `json:"widgetTheme"`
 	UpdatedAt            int64             `json:"updatedAt"`
 }
@@ -456,6 +457,7 @@ func (s Settings) ShouldFollowSystemDark() bool {
 // WidgetTimeline 是主 App 预编译写入共享容器、供原生小组件直接消费的快照协议。
 type WidgetTimeline struct {
 	GeneratedAt            int64             `json:"generatedAt"`
+	PoolRevision           string            `json:"poolRevision,omitempty"` // 仅在切换抽选模式/诗集或显式刷新换池时变更，供原生端判断是否重置手动偏移
 	RefreshIntervalMinutes int               `json:"refreshIntervalMinutes,omitempty"`
 	Theme                  WidgetThemeConfig `json:"theme"`
 	Entries                []WidgetEntry     `json:"entries"`

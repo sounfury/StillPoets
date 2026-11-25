@@ -326,6 +326,7 @@ func (a *AppUI) renderReaderHeader(c *ui.Context, pal theme.Palette, book domain
 					ui.Icon(c, components.IconBack).Width(20).Height(20).TextColor(pal.TextPrimary)
 				})
 				if backBtn.Clicked() {
+					a.flushCurrentPoemDwell(false)
 					a.readerMobile = false
 					a.selectingLines = false
 					a.selectedLines = map[int]bool{}
@@ -722,11 +723,20 @@ func (a *AppUI) commitPoemIndex(bookID string, nextIdx int) {
 	a.highlightRanges = nil
 	a.selectingLines = false
 	a.selectedLines = map[int]bool{}
+
+	poem := a.activePoems[nextIdx]
+	bookAuthor := ""
+	if bk, ok := a.activeBook(); ok {
+		bookAuthor = bk.Author
+	}
+	wasReadBefore := slices.Contains(a.progressMap[bookID].ReadPoemIDs, poem.ID)
+	a.startPoemDwell(bookID, poem, bookAuthor, wasReadBefore)
+
 	if a.readerEntrySource.isPeek() {
-		a.recordPoemPeekAsync(bookID, a.activePoems[nextIdx], a.activePoems)
+		a.recordPoemPeekAsync(bookID, poem, a.activePoems)
 		return
 	}
-	a.recordPoemReadAsync(bookID, a.activePoems[nextIdx], a.activePoems)
+	a.recordPoemReadAsync(bookID, poem, a.activePoems)
 }
 
 func (a *AppUI) mainlineProgressInfo(bookID string) (int, domain.Poem, bool) {
@@ -823,6 +833,7 @@ func (a *AppUI) saveSelectedLinesAsQuote(book domain.Book, poem domain.Poem) {
 	if content == "" {
 		return
 	}
+	a.flushCurrentPoemDwell(true)
 	a.selectingLines = false
 	a.selectedLines = map[int]bool{}
 	a.highlightRanges = app.ParseLineRanges(lineSpec)
@@ -844,6 +855,7 @@ func (a *AppUI) saveSelectedLinesAsWidgetExcerpt(book domain.Book, poem domain.P
 	if content == "" {
 		return
 	}
+	a.flushCurrentPoemDwell(true)
 	a.selectingLines = false
 	a.selectedLines = map[int]bool{}
 	a.highlightRanges = app.ParseLineRanges(lineSpec)
@@ -861,6 +873,9 @@ func (a *AppUI) saveSelectedLinesAsWidgetExcerpt(book domain.Book, poem domain.P
 }
 
 func (a *AppUI) toggleCurrentPoemFavorite(book domain.Book, poem domain.Poem, active bool) {
+	if active {
+		a.flushCurrentPoemDwell(true)
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

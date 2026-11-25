@@ -6,6 +6,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"math"
 	"os"
 	"slices"
 	"strings"
@@ -33,12 +34,30 @@ type PickFileFunc func(title string, extensions []string) (string, error)
 type readerEntrySource string
 
 const (
-	entryMainline readerEntrySource = ""     // 书架封面 / 继续阅读 / 统计页 / 默认选中
+	entryMainline readerEntrySource = ""     // 书架封面 / 继续阅读 / 默认选中
 	entryWidget   readerEntrySource = "小组件"  // 桌面小组件 Deeplink
 	entryToday    readerEntrySource = "今日重读" // 书架首页「今日重读」
 	entryQuote    readerEntrySource = "散页"   // 散页列表/详情「读完整首」
 	entrySearch   readerEntrySource = "检索"   // 全局检索命中诗篇
+	entryStats    readerEntrySource = "统计"   // 统计热力图 / 诗人档案下钻
 )
+
+const (
+	// 有效读诗事件判定阈值：停留满 5 秒自动记录；若读完短诗（>= 1.5 秒）后切走也计入，过滤快速扫目录噪声。
+	poemDwellConfirmDelay = 5 * time.Second
+	poemDwellMinLeave     = 1500 * time.Millisecond
+)
+
+type poemDwellSession struct {
+	bookID        string
+	poemID        string
+	poemTitle     string
+	author        string
+	wasReadBefore bool
+	startedAt     time.Time
+	committed     bool
+	timer         *time.Timer
+}
 
 func (s readerEntrySource) isPeek() bool {
 	return s != entryMainline
@@ -235,23 +254,63 @@ type AppUI struct {
 	// 原书封面异步解码内存缓存（仅在开启「使用原书封面」时按需填充）
 	coverCache    map[string]coverCacheEntry
 	coverFetching map[string]bool
+
+	// 有效读诗停留追踪与当前布局形态
+	lastIsTablet bool
+	dwell        *poemDwellSession
+
+	// Phase 3 完整统计看板状态（完读墙 / 热力图 / 时段节律 / 诗人云）
+	statsPeriod         storage.StatsPeriod
+	statsHeatmapYear    int // 0 表示近一年（52 周）滚动视图
+	statsAuthorMode     storage.AuthorWeightMode
+	statsRhythm24h      bool
+	statsDashboard      storage.StatsDashboard
+	statsSelectedDate   string
+	statsDayEvents      []storage.ReadingEventItem
+	statsDayLoading     bool
+	statsSeq            uint64
+	statsDaySeq         uint64
+	statsHeatmapScroll  ui.ScrollState
+	showFinishedModal   bool
+	detailFinishedBook  *storage.FinishedBookItem
+	showAuthorModal     bool
+	detailAuthorName    string
+	detailAuthorProfile *storage.AuthorProfile
+	detailAuthorLoading bool
+	authorProfileSeq    uint64
+
+	// 书架原地批量整理模式与单本长按快捷操作
+	shelfOrganizing     bool
+	shelfSelectedBooks  map[string]bool
+	shelfTargetGroupID  string
+	showBatchGroupModal bool
+	batchNewGroupName   string
+	batchGroupError     string
+	showBookActionModal bool
+	actionBookID        string
+	actionNewGroupName  string
+	actionGroupError    string
 }
 
 // NewAppUI 创建绑定到核心 Service 的 V3 界面控制器。
 func NewAppUI(svc *app.Service, pickFile PickFileFunc, repaint func()) *AppUI {
 	a := &AppUI{
-		svc:              svc,
-		pickFile:         pickFile,
-		appVersion:       app.DefaultAppVersion,
-		repaintFn:        repaint,
-		registerFn:       ui.RegisterFont,
-		progressMap:      map[string]domain.ReadingProgress{},
-		activeFavorites:  map[string]domain.FavoritePoem{},
-		selectedLines:    map[int]bool{},
-		downloadingBooks: map[string]bool{},
-		coverCache:       map[string]coverCacheEntry{},
-		coverFetching:    map[string]bool{},
-		davFolder:        webdav.DefaultAppFolder,
+		svc:                svc,
+		pickFile:           pickFile,
+		appVersion:         app.DefaultAppVersion,
+		repaintFn:          repaint,
+		registerFn:         ui.RegisterFont,
+		progressMap:        map[string]domain.ReadingProgress{},
+		activeFavorites:    map[string]domain.FavoritePoem{},
+		selectedLines:      map[int]bool{},
+		downloadingBooks:   map[string]bool{},
+		coverCache:         map[string]coverCacheEntry{},
+		coverFetching:      map[string]bool{},
+		davFolder:          webdav.DefaultAppFolder,
+		statsPeriod:        storage.StatsPeriodAll,
+		statsAuthorMode:    storage.AuthorWeightCombined,
+		statsHeatmapScroll: ui.ScrollState{X: math.MaxFloat32},
+		shelfSelectedBooks: map[string]bool{},
 	}
 
 	// 加载本地自定义字体并注册到 MyGo 字体引擎
@@ -410,10 +469,16 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 	today, todayErr := a.svc.PickTodayReread(ctx)
 
 	var (
-		qFilter      storage.QuoteFilter
-		curBookID    string
-		snapOpenSeq  uint64
-		snapQuoteSeq uint64
+		qFilter          storage.QuoteFilter
+		curBookID        string
+		snapOpenSeq      uint64
+		snapQuoteSeq     uint64
+		snapStatsSeq     uint64
+		snapDaySeq       uint64
+		statsPeriod      storage.StatsPeriod
+		statsHeatmapYear int
+		statsAuthorMode  storage.AuthorWeightMode
+		selectedDate     string
 	)
 	a.mu.Lock()
 	qFilter = storage.QuoteFilter{
@@ -424,11 +489,33 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 	curBookID = a.activeBookID
 	snapOpenSeq = a.openSeq
 	snapQuoteSeq = a.quoteFilterSeq
+	snapStatsSeq = a.statsSeq
+	snapDaySeq = a.statsDaySeq
+	statsPeriod = a.statsPeriod
+	statsHeatmapYear = a.statsHeatmapYear
+	statsAuthorMode = a.statsAuthorMode
+	selectedDate = a.statsSelectedDate
 	a.mu.Unlock()
 
 	quotes, quotesErr := a.svc.ListQuotes(ctx, qFilter)
 	facets, facetsErr := a.svc.ListQuoteFacets(ctx)
 	stats, statsErr := a.svc.GetStatsOverview(ctx)
+	dash, dashErr := a.svc.GetStatsDashboard(ctx, storage.StatsQuery{
+		Period:     statsPeriod,
+		Year:       statsHeatmapYear,
+		AuthorMode: statsAuthorMode,
+	})
+	effectiveDate := selectedDate
+	if effectiveDate == "" && dashErr == nil && dash.Heatmap.LatestActiveDate != "" {
+		effectiveDate = dash.Heatmap.LatestActiveDate
+	}
+	var (
+		dayEvents []storage.ReadingEventItem
+		dayErr    error
+	)
+	if effectiveDate != "" {
+		dayEvents, dayErr = a.svc.ListReadingEventsByDate(ctx, effectiveDate)
+	}
 	syncOv, syncOvErr := a.svc.GetSyncOverview(ctx)
 	localFonts := a.svc.ListLocalFonts()
 	cacheSize := a.svc.CacheSizeBytes()
@@ -484,6 +571,8 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 		a.mu.Lock()
 		quoteMatch := a.quoteFilterSeq == snapQuoteSeq
 		openMatch := a.openSeq == snapOpenSeq && a.activeBookID == curBookID
+		statsMatch := a.statsSeq == snapStatsSeq
+		dayMatch := a.statsDaySeq == snapDaySeq
 		a.mu.Unlock()
 		if quoteMatch {
 			if quotesErr == nil {
@@ -495,6 +584,32 @@ func (a *AppUI) reloadSync(ctx context.Context) {
 		}
 		if statsErr == nil {
 			a.stats = stats
+		}
+		if statsMatch && dashErr == nil {
+			a.statsDashboard = dash
+			if a.detailFinishedBook != nil {
+				var refreshed *storage.FinishedBookItem
+				for i := range dash.FinishedBooks {
+					if dash.FinishedBooks[i].Book.ID == a.detailFinishedBook.Book.ID {
+						cp := dash.FinishedBooks[i]
+						refreshed = &cp
+						break
+					}
+				}
+				if refreshed != nil {
+					a.detailFinishedBook = refreshed
+				} else {
+					a.showFinishedModal = false
+					a.detailFinishedBook = nil
+				}
+			}
+		}
+		if dayMatch && dayErr == nil && effectiveDate != "" {
+			if a.statsSelectedDate == "" {
+				a.statsSelectedDate = effectiveDate
+			}
+			a.statsDayEvents = dayEvents
+			a.statsDayLoading = false
 		}
 		if syncOvErr == nil {
 			a.syncOverview = syncOv
@@ -685,6 +800,11 @@ func (a *AppUI) Render(c *ui.Context) {
 	a.syncNativeAppearance(pal)
 
 	isTablet := layout.IsTablet(c)
+	if a.lastIsTablet && !isTablet && a.statsHeatmapYear == 0 {
+		// 宽屏切回窄屏时热力图 MaxX 曾被归零，自动重停靠到最右侧（近期）
+		a.statsHeatmapScroll.X = math.MaxFloat32
+	}
+	a.lastIsTablet = isTablet
 
 	if isTablet {
 		a.renderTabletShell(c, pal)
@@ -703,6 +823,9 @@ func (a *AppUI) selectShelfSubTab(sub components.ShelfSubTab) {
 	if a.shelfSubTab == sub {
 		return
 	}
+	if sub != components.SubTabBooks {
+		a.exitShelfOrganize()
+	}
 	a.shelfSubTab = sub
 	if sub == components.SubTabQuotes {
 		go a.reloadQuotesOnly()
@@ -712,6 +835,13 @@ func (a *AppUI) selectShelfSubTab(sub components.ShelfSubTab) {
 func (a *AppUI) renderTabletShell(c *ui.Context, pal theme.Palette) {
 	ui.Row(c.Key("tablet-root")).Fill().Children(func() {
 		components.TabletNavRail(c, pal, a.activeTab, func(tab components.NavTab) {
+			if a.activeTab == components.TabShelf && tab != components.TabShelf {
+				a.flushCurrentPoemDwell(false)
+				a.exitShelfOrganize()
+			}
+			if tab == components.TabStats && a.activeTab != components.TabStats {
+				a.refreshStatsDashboardAsync()
+			}
 			a.activeTab = tab
 			a.readerMobile = false
 			a.profileSub = profileSubpageNone
@@ -786,6 +916,13 @@ func (a *AppUI) renderPhoneShell(c *ui.Context, pal theme.Palette) {
 			// iOS 液态玻璃悬浮底栏：正文全屏铺底以便滚动内容从胶囊下方透出折射
 			ui.Box(c.Key("phone-body")).Fill().Clip().Children(renderBody)
 			components.FloatingBottomNavBar(c, pal, a.activeTab, func(tab components.NavTab) {
+				if a.activeTab == components.TabShelf && tab != components.TabShelf {
+					a.flushCurrentPoemDwell(false)
+					a.exitShelfOrganize()
+				}
+				if tab == components.TabStats && a.activeTab != components.TabStats {
+					a.refreshStatsDashboardAsync()
+				}
 				a.activeTab = tab
 				a.readerMobile = false
 				a.profileSub = profileSubpageNone
@@ -797,6 +934,13 @@ func (a *AppUI) renderPhoneShell(c *ui.Context, pal theme.Palette) {
 			ui.Column(c.Key("phone-root")).Fill().Children(func() {
 				ui.Box(c.Key("phone-body")).Grow(1).FillWidth().Clip().Children(renderBody)
 				components.BottomNavBar(c, pal, a.activeTab, func(tab components.NavTab) {
+					if a.activeTab == components.TabShelf && tab != components.TabShelf {
+						a.flushCurrentPoemDwell(false)
+						a.exitShelfOrganize()
+					}
+					if tab == components.TabStats && a.activeTab != components.TabStats {
+						a.refreshStatsDashboardAsync()
+					}
 					a.activeTab = tab
 					a.readerMobile = false
 					a.profileSub = profileSubpageNone
@@ -1161,7 +1305,15 @@ func (a *AppUI) openBookLocked(bookID, poemID string, highlightRanges []app.Line
 			effectiveSource = entryMainline
 		}
 
-		var readPoem *domain.Poem
+		var (
+			readPoem      *domain.Poem
+			bookAuthor    string
+			wasReadBefore bool
+			startDwell    bool
+		)
+		if targetBook != nil {
+			bookAuthor = targetBook.Author
+		}
 		a.dispatchUI(func() {
 			a.mu.Lock()
 			stale := a.openSeq != reqSeq || a.activeBookID != bookID
@@ -1180,17 +1332,34 @@ func (a *AppUI) openBookLocked(bookID, poemID string, highlightRanges []app.Line
 			a.readerEntrySource = effectiveSource
 			a.peekBannerHidden = false
 			a.pendingPoemID = ""
-			if len(poems) > 0 && idx < len(poems) && enterMobileReader {
+			if bookAuthor == "" {
+				if bk, ok := a.activeBook(); ok {
+					bookAuthor = bk.Author
+				}
+			}
+			if len(poems) > 0 && idx < len(poems) {
 				cp := poems[idx]
-				readPoem = &cp
+				wasReadBefore = slices.Contains(prog.ReadPoemIDs, cp.ID)
+				if enterMobileReader {
+					readPoem = &cp
+					startDwell = true
+				} else if a.lastIsTablet && a.activeTab == components.TabShelf && a.shelfSubTab == components.SubTabBooks {
+					readPoem = &cp
+					startDwell = true
+				}
 			}
 		})
 
 		if readPoem != nil {
-			if effectiveSource.isPeek() {
-				a.recordPoemPeekAsync(bookID, *readPoem, poems)
-			} else {
-				a.recordPoemReadAsync(bookID, *readPoem, poems)
+			if startDwell {
+				a.startPoemDwell(bookID, *readPoem, bookAuthor, wasReadBefore)
+			}
+			if enterMobileReader {
+				if effectiveSource.isPeek() {
+					a.recordPoemPeekAsync(bookID, *readPoem, poems)
+				} else {
+					a.recordPoemReadAsync(bookID, *readPoem, poems)
+				}
 			}
 		}
 	}()
@@ -1279,6 +1448,108 @@ func countFormalPoems(allPoems []domain.Poem) int {
 		}
 	}
 	return totalPoems
+}
+
+// startPoemDwell 开始追踪一首正式诗篇的有效停留时长：
+// 1. 若切离前一篇已停留 >= poemDwellMinLeave，自动补记前一篇为有效读诗事件；
+// 2. 当前篇目停留满 poemDwellConfirmDelay（5 秒）自动落库一条单日去重读诗事件。
+func (a *AppUI) startPoemDwell(bookID string, poem domain.Poem, bookAuthor string, wasReadBefore bool) {
+	var commitPrev *poemDwellSession
+
+	a.mu.Lock()
+	if a.dwell != nil {
+		if a.dwell.bookID == bookID && a.dwell.poemID == poem.ID {
+			a.mu.Unlock()
+			return
+		}
+		prev := a.dwell
+		if prev.timer != nil {
+			prev.timer.Stop()
+			prev.timer = nil
+		}
+		if !prev.committed && time.Since(prev.startedAt) >= poemDwellMinLeave {
+			prev.committed = true
+			commitPrev = prev
+		}
+		a.dwell = nil
+	}
+
+	if bookID != "" && poem.ID != "" && poem.IsPoem() {
+		author := strings.TrimSpace(poem.Author)
+		if author == "" {
+			author = strings.TrimSpace(bookAuthor)
+		}
+		sess := &poemDwellSession{
+			bookID:        bookID,
+			poemID:        poem.ID,
+			poemTitle:     strings.TrimSpace(poem.Title),
+			author:        author,
+			wasReadBefore: wasReadBefore,
+			startedAt:     time.Now(),
+		}
+		sess.timer = time.AfterFunc(poemDwellConfirmDelay, func() {
+			a.commitPoemDwellIfActive(sess)
+		})
+		a.dwell = sess
+	}
+	a.mu.Unlock()
+
+	if commitPrev != nil {
+		a.commitPoemDwellAsync(commitPrev)
+	}
+}
+
+// flushCurrentPoemDwell 结束或立即确认当前读诗停留会话。
+// force=true 用于用户显式点亮 ❤️ / 划句留散页等深度阅读行为；force=false 仅当停留 >= poemDwellMinLeave 时落库。
+func (a *AppUI) flushCurrentPoemDwell(force bool) {
+	var toCommit *poemDwellSession
+
+	a.mu.Lock()
+	sess := a.dwell
+	if sess != nil {
+		if sess.timer != nil {
+			sess.timer.Stop()
+			sess.timer = nil
+		}
+		if !sess.committed && (force || time.Since(sess.startedAt) >= poemDwellMinLeave) {
+			sess.committed = true
+			toCommit = sess
+		}
+		if !force {
+			a.dwell = nil
+		}
+	}
+	a.mu.Unlock()
+
+	if toCommit != nil {
+		a.commitPoemDwellAsync(toCommit)
+	}
+}
+
+func (a *AppUI) commitPoemDwellIfActive(target *poemDwellSession) {
+	a.mu.Lock()
+	if a.dwell != target || target.committed {
+		a.mu.Unlock()
+		return
+	}
+	target.committed = true
+	target.timer = nil
+	a.mu.Unlock()
+
+	a.commitPoemDwellAsync(target)
+}
+
+func (a *AppUI) commitPoemDwellAsync(sess *poemDwellSession) {
+	if sess == nil || sess.bookID == "" || sess.poemID == "" {
+		return
+	}
+	go func() {
+		a.readOrderMu.Lock()
+		defer a.readOrderMu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _, _ = a.svc.RecordReadingEvent(ctx, sess.bookID, sess.poemID, sess.poemTitle, sess.author, sess.wasReadBefore)
+	}()
 }
 
 func (a *AppUI) triggerImportEPUB() {

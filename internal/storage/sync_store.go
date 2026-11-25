@@ -68,6 +68,10 @@ func (s *Store) snapshotData(ctx context.Context) (booksync.SnapshotData, error)
 	if err != nil {
 		return booksync.SnapshotData{}, err
 	}
+	data.ReadingEvents, err = selectRows(ctx, s, decodeReadingEvent, `SELECT `+readingEventColumns+` FROM reading_events ORDER BY read_date, read_at, book_id, poem_id, id`)
+	if err != nil {
+		return booksync.SnapshotData{}, err
+	}
 	return data, nil
 }
 
@@ -136,6 +140,9 @@ func (s *Store) ApplyMergedSnapshotEx(ctx context.Context, merged booksync.Snaps
 			}
 		}
 		statements = append(statements, putProgress(progress))
+	}
+	for _, ev := range merged.ReadingEvents {
+		statements = append(statements, putReadingEventStmts(ev)...)
 	}
 
 	statements = append(statements,

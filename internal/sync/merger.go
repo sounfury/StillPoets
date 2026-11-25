@@ -11,11 +11,12 @@ import (
 // 所有集合与字段级合并均满足交换律、结合律与幂等性，结果与拉取顺序无关。
 func MergeSnapshotData(a, b SnapshotData) SnapshotData {
 	return SnapshotData{
-		Groups:    MergeGroups(a.Groups, b.Groups),
-		Books:     MergeBooks(a.Books, b.Books),
-		Favorites: MergeFavorites(a.Favorites, b.Favorites),
-		Quotes:    MergeQuotes(a.Quotes, b.Quotes),
-		Progress:  MergeProgress(a.Progress, b.Progress),
+		Groups:        MergeGroups(a.Groups, b.Groups),
+		Books:         MergeBooks(a.Books, b.Books),
+		Favorites:     MergeFavorites(a.Favorites, b.Favorites),
+		Quotes:        MergeQuotes(a.Quotes, b.Quotes),
+		Progress:      MergeProgress(a.Progress, b.Progress),
+		ReadingEvents: MergeReadingEvents(a.ReadingEvents, b.ReadingEvents),
 	}
 }
 
@@ -443,6 +444,88 @@ func mergeOneProgress(x, y domain.ReadingProgress) domain.ReadingProgress {
 	combined = append(combined, y.ReadPoemIDs...)
 	out.ReadPoemIDs = normalizeStringSet(combined)
 	return out
+}
+
+// MergeReadingEvents 按 (BookID, PoemID, ReadDate) 单日去重并确定性合并跨端有效读诗事件。
+// 同一天同一首诗在多台设备均被阅读时，按 (ReadAt ASC, ID ASC) 选取最早发生的那条为主记录，
+// 并按序补全缺失的 PoemTitle / Author / DeviceID，严格满足交换律、结合律与幂等性。
+func MergeReadingEvents(a, b []domain.ReadingEvent) []domain.ReadingEvent {
+	type dayKey struct {
+		bookID   string
+		poemID   string
+		readDate string
+	}
+	merged := make(map[dayKey]domain.ReadingEvent, len(a)+len(b))
+	insert := func(in domain.ReadingEvent) {
+		in.BookID = strings.TrimSpace(in.BookID)
+		in.PoemID = strings.TrimSpace(in.PoemID)
+		in.ReadDate = strings.TrimSpace(in.ReadDate)
+		if in.BookID == "" || in.PoemID == "" || in.ReadDate == "" {
+			return
+		}
+		if in.ReadHour < 0 || in.ReadHour > 23 {
+			in.ReadHour = 0
+		}
+		key := dayKey{bookID: in.BookID, poemID: in.PoemID, readDate: in.ReadDate}
+		cur, exists := merged[key]
+		if !exists {
+			merged[key] = in
+			return
+		}
+		merged[key] = mergeOneReadingEvent(cur, in)
+	}
+	for _, ev := range a {
+		insert(ev)
+	}
+	for _, ev := range b {
+		insert(ev)
+	}
+
+	out := make([]domain.ReadingEvent, 0, len(merged))
+	for _, ev := range merged {
+		out = append(out, ev)
+	}
+	slices.SortFunc(out, func(x, y domain.ReadingEvent) int {
+		if cmp := strings.Compare(x.ReadDate, y.ReadDate); cmp != 0 {
+			return cmp
+		}
+		if x.ReadAt != y.ReadAt {
+			if x.ReadAt < y.ReadAt {
+				return -1
+			}
+			return 1
+		}
+		if cmp := strings.Compare(x.BookID, y.BookID); cmp != 0 {
+			return cmp
+		}
+		if cmp := strings.Compare(x.PoemID, y.PoemID); cmp != 0 {
+			return cmp
+		}
+		return strings.Compare(x.ID, y.ID)
+	})
+	return out
+}
+
+func mergeOneReadingEvent(x, y domain.ReadingEvent) domain.ReadingEvent {
+	winner, loser := x, y
+	if readingEventPrecedes(y, x) {
+		winner, loser = y, x
+	}
+	winner.PoemTitle = firstNonEmpty(winner.PoemTitle, loser.PoemTitle)
+	winner.Author = firstNonEmpty(winner.Author, loser.Author)
+	winner.DeviceID = firstNonEmpty(winner.DeviceID, loser.DeviceID)
+	winner.ID = firstNonEmpty(winner.ID, loser.ID)
+	return winner
+}
+
+func readingEventPrecedes(a, b domain.ReadingEvent) bool {
+	if a.ReadAt > 0 && b.ReadAt > 0 && a.ReadAt != b.ReadAt {
+		return a.ReadAt < b.ReadAt
+	}
+	if (a.ReadAt > 0) != (b.ReadAt > 0) {
+		return a.ReadAt > 0
+	}
+	return a.ID < b.ID
 }
 
 // mergePermanentDelete 实现永久删除（吸收状态）：只要任意一方已删除，合并结果即永久保持 Deleted=true。

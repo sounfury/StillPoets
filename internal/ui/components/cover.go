@@ -110,9 +110,34 @@ func BookCoverThumbnail(c *ui.Context, key, bookID string, coverImg ui.ImageSour
 	})
 }
 
+// BookCoverOrganizeOptions 控制书架诗集封面在「原地整理模式」下的勾选与分组微标展示。
+type BookCoverOrganizeOptions struct {
+	Organizing bool
+	Checked    bool
+	GroupBadge string
+}
+
+// BookCoverAction 描述书架封面卡片上的单帧用户交互（轻点 / 长按或右键）。
+type BookCoverAction struct {
+	Clicked     bool
+	LongPressed bool
+}
+
 // BookCoverCard 渲染诗集封面卡：开启原书封面且有图时展示 EPUB 原封面，否则呈现抽象几何色块封面。
 // 封面带左侧书脊压痕高光/阴影、棉纸肌理与底部柔和接触投影，营造立在书架上的实体书物感。
 func BookCoverCard(c *ui.Context, key, bookID, title, author string, coverImg ui.ImageSource, pal theme.Palette, selected, isRemote, forceCaptionBelow bool) bool {
+	return BookCoverShelfCard(c, key, bookID, title, author, coverImg, pal, selected, isRemote, forceCaptionBelow, BookCoverOrganizeOptions{}).Clicked
+}
+
+// BookCoverShelfCard 渲染支持日常点击、长按/右键唤出快捷操作，以及原地批量整理勾选的书架封面卡。
+func BookCoverShelfCard(
+	c *ui.Context,
+	key, bookID, title, author string,
+	coverImg ui.ImageSource,
+	pal theme.Palette,
+	selected, isRemote, forceCaptionBelow bool,
+	org BookCoverOrganizeOptions,
+) BookCoverAction {
 	seed := coverSeed(bookID)
 	sw := pal.CoverSwatches[int(seed)%len(pal.CoverSwatches)]
 	pattern := int(seed/7) % 4
@@ -124,6 +149,55 @@ func BookCoverCard(c *ui.Context, key, bookID, title, author string, coverImg ui
 	if isDark {
 		dropShadow = ui.RGBA(0, 0, 0, 0.48)
 		contactShadow = ui.RGBA(0, 0, 0, 0.62)
+	}
+
+	highlightBorder := selected || (org.Organizing && org.Checked)
+
+	renderOrganizeOverlays := func() {
+		if !org.Organizing {
+			return
+		}
+		// 1. 右上角圆形勾选徽标
+		checkBg := ui.RGBA(255, 255, 255, 0.84)
+		checkBd := pal.TextSecondary.Alpha(0.65)
+		if isDark {
+			checkBg = ui.RGBA(26, 26, 30, 0.78)
+			checkBd = ui.RGBA(255, 255, 255, 0.55)
+		}
+		if org.Checked {
+			checkBg = pal.Accent
+			checkBd = ui.RGB(255, 255, 255)
+		}
+		ui.Box(c.Key("org-check")).
+			Absolute().
+			Top(6).Right(6).
+			Width(22).Height(22).
+			Radius(999).
+			Center().
+			Background(checkBg).
+			Border(1.5, checkBd).
+			Transition(theme.ColorTransition()).
+			Children(func() {
+				if org.Checked {
+					ui.Icon(c, IconCheck).Width(12).Height(12).TextColor(pal.AccentText)
+				}
+			})
+
+		// 2. 已有分组微标（左下角避开书脊），方便整理时一眼识别归属
+		if org.GroupBadge != "" {
+			pillBg := ui.RGBA(20, 20, 22, 0.64)
+			pillFg := ui.RGB(248, 246, 242)
+			ui.Box(c.Key("org-grp")).
+				Absolute().
+				Bottom(6).Left(12).
+				MaxWidth(96).
+				Padding(2, 6).
+				Radius(4).
+				Background(pillBg).
+				Children(func() {
+					ui.Text(c, org.GroupBadge).Font(theme.FontSans).FontSize(9.5).TextColor(pillFg).MaxLines(1)
+				})
+		}
 	}
 
 	outer := ui.Column(c.Key(key)).Gap(6).Cursor(ui.CursorPointer)
@@ -151,14 +225,14 @@ func BookCoverCard(c *ui.Context, key, bookID, title, author string, coverImg ui
 					DrawOver(func(p *ui.Painter, r ui.Rect) {
 						drawBookSpineEffect(p, r, isDark)
 					})
-				if selected {
+				if highlightBorder {
 					cover.Border(2, pal.Accent)
 				} else {
 					cover.Border(0.75, pal.Border)
 				}
 				cover.Children(func() {
 					ui.Image(c, coverImg).Fill().Fit(ui.Cover)
-					if isRemote {
+					if isRemote && !org.Organizing {
 						ui.Box(c.Key("remote-badge")).
 							Absolute().
 							Top(6).Right(6).
@@ -168,7 +242,18 @@ func BookCoverCard(c *ui.Context, key, bookID, title, author string, coverImg ui
 							Children(func() {
 								ui.Icon(c, IconCloud).Width(12).Height(12).TextColor(ui.RGB(255, 255, 255))
 							})
+					} else if isRemote && org.Organizing {
+						ui.Box(c.Key("remote-badge-org")).
+							Absolute().
+							Bottom(6).Right(6).
+							Padding(3).
+							Radius(999).
+							Background(ui.RGBA(0, 0, 0, 0.45)).
+							Children(func() {
+								ui.Icon(c, IconCloud).Width(11).Height(11).TextColor(ui.RGB(255, 255, 255))
+							})
 					}
+					renderOrganizeOverlays()
 				})
 			} else {
 				cover := ui.Box(c.Key("art")).
@@ -181,12 +266,16 @@ func BookCoverCard(c *ui.Context, key, bookID, title, author string, coverImg ui
 						theme.DrawPaperTexture(p, r, 0, sw.IsDarkSurface(), 0.05)
 						drawBookSpineEffect(p, r, isDark)
 					})
-				if selected {
+				if highlightBorder {
 					cover.Border(2, pal.Accent)
 				}
 				cover.Children(func() {
-					// 左内边距略宽（14 DIP）以避开书脊压痕线
-					ui.Column(c).Fill().Padding(11, 10, 10, 14).Children(func() {
+					// 左内边距略宽（14 DIP）以避开书脊压痕线；整理态右侧略留空间避让右上角勾选圆章
+					rightPad := float32(10)
+					if org.Organizing {
+						rightPad = 28
+					}
+					ui.Column(c).Fill().Padding(11, rightPad, 10, 14).Children(func() {
 						ui.Row(c).AlignItems(ui.Start).Children(func() {
 							ui.Column(c).Grow(1).Gap(3).Children(func() {
 								ui.Text(c, title).
@@ -204,11 +293,23 @@ func BookCoverCard(c *ui.Context, key, bookID, title, author string, coverImg ui
 										MaxLines(1)
 								}
 							})
-							if isRemote {
+							if isRemote && !org.Organizing {
 								ui.Icon(c, IconCloud).Width(13).Height(13).TextColor(sw.Muted)
 							}
 						})
 					})
+					if isRemote && org.Organizing {
+						ui.Box(c.Key("remote-badge-art")).
+							Absolute().
+							Bottom(6).Right(6).
+							Padding(3).
+							Radius(999).
+							Background(ui.RGBA(0, 0, 0, 0.32)).
+							Children(func() {
+								ui.Icon(c, IconCloud).Width(11).Height(11).TextColor(ui.RGB(255, 255, 255))
+							})
+					}
+					renderOrganizeOverlays()
 				})
 			}
 		})
@@ -223,7 +324,10 @@ func BookCoverCard(c *ui.Context, key, bookID, title, author string, coverImg ui
 			})
 		}
 	})
-	return outer.Clicked()
+	return BookCoverAction{
+		Clicked:     outer.Clicked(),
+		LongPressed: outer.LongPressed() || outer.RightClicked(),
+	}
 }
 
 func drawGeometricMotif(p *ui.Painter, r ui.Rect, pattern int, sw theme.CardSwatch, pal theme.Palette) {

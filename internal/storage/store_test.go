@@ -744,3 +744,46 @@ func TestRecordPoemPeekPreservesPositionAndContinueReading(t *testing.T) {
 		t.Fatalf("expected cross-book poemID in RecordPoemPeek to be rejected")
 	}
 }
+
+func TestSetBooksGroupBatch(t *testing.T) {
+	s, ctx := openTestStore(t), t.Context()
+	gModern, err := s.CreateGroup(ctx, "现代诗")
+	must(t, err)
+	gForeign, err := s.CreateGroup(ctx, "外国诗")
+	must(t, err)
+
+	importTestBook(t, s, "b1")
+	importTestBook(t, s, "b2")
+	importTestBook(t, s, "b3")
+
+	// 批量归入现代诗（含重复 ID 与空白 ID 自动去重忽略）
+	must(t, s.SetBooksGroup(ctx, []string{"b1", "b2", "b1", " "}, gModern.ID))
+	inModern, err := s.ListBooks(ctx, gModern.ID)
+	must(t, err)
+	if len(inModern) != 2 {
+		t.Fatalf("expected 2 books in modern group, got %d", len(inModern))
+	}
+
+	// 批量迁移 b2, b3 至外国诗
+	must(t, s.SetBooksGroup(ctx, []string{"b2", "b3"}, gForeign.ID))
+	inModern, err = s.ListBooks(ctx, gModern.ID)
+	must(t, err)
+	inForeign, err := s.ListBooks(ctx, gForeign.ID)
+	must(t, err)
+	if len(inModern) != 1 || inModern[0].ID != "b1" || len(inForeign) != 2 {
+		t.Fatalf("unexpected group distribution: modern=%d foreign=%d", len(inModern), len(inForeign))
+	}
+
+	// 批量移回未分组
+	must(t, s.SetBooksGroup(ctx, []string{"b2", "b3"}, ""))
+	inForeign, err = s.ListBooks(ctx, gForeign.ID)
+	must(t, err)
+	if len(inForeign) != 0 {
+		t.Fatalf("expected 0 books in foreign group after ungroup, got %d", len(inForeign))
+	}
+
+	// 无效分组 ID 拒绝整批写入
+	if err := s.SetBooksGroup(ctx, []string{"b1"}, "non-existent-group"); err == nil {
+		t.Fatalf("expected error for non-existent target group")
+	}
+}

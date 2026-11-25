@@ -99,6 +99,7 @@ struct WidgetEntryPayload: Codable, Equatable {
 
 struct WidgetTimelinePayload: Codable {
     var generatedAt: Int64?
+    var poolRevision: String?
     var refreshIntervalMinutes: Int?
     var theme: WidgetThemePayload?
     var entries: [WidgetEntryPayload]?

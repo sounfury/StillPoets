@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"time"
 
 	"stillpoets/internal/domain"
 	"stillpoets/internal/parser"
@@ -60,30 +61,58 @@ func (s *Service) RebuildWidgetTimeline(ctx context.Context) (domain.WidgetTimel
 	wTheme.DarkTextColor = darkPal.TextHex
 	wTheme.DarkAccentColor = darkPal.AccentHex
 
-	entries, err := s.buildWidgetEntries(ctx, settings)
+	dayKey := time.Now().Format("2006-01-02")
+	poolRevision := widgetPoolRevision(settings)
+	shuffleSeed := fmt.Sprintf("%s|%s", poolRevision, dayKey)
+
+	entries, err := s.buildWidgetEntries(ctx, settings, shuffleSeed)
 	if err != nil {
 		return domain.WidgetTimeline{}, err
 	}
 
 	timeline := domain.WidgetTimeline{
 		GeneratedAt:            domain.NowMillis(),
+		PoolRevision:           poolRevision,
 		RefreshIntervalMinutes: domain.NormalizeWidgetRefreshMinutes(settings.WidgetRefreshMinutes),
 		Theme:                  wTheme,
 		Entries:                entries,
 	}
 
 	timelinePath := filepath.Join(s.dataDir, widgetTimelineFilename)
-	if err := writeJSONAtomic(timelinePath, timeline); err != nil {
-		return domain.WidgetTimeline{}, fmt.Errorf("app: write widget timeline: %w", err)
+	unchanged := false
+	if prev, err := s.ReadWidgetTimeline(); err == nil && widgetTimelineEquivalent(prev, timeline) {
+		// 诗池、样式、切换间隔与条目顺序均未变化：沿用原快照时间戳，不反复覆盖磁盘也不无故触发小组件重绘
+		timeline.GeneratedAt = prev.GeneratedAt
+		unchanged = true
 	}
 
-	s.mu.Lock()
-	cb := s.onWidgetUpdated
-	s.mu.Unlock()
-	if cb != nil {
-		cb(timelinePath, s.FontsDir())
+	if !unchanged {
+		if err := writeJSONAtomic(timelinePath, timeline); err != nil {
+			return domain.WidgetTimeline{}, fmt.Errorf("app: write widget timeline: %w", err)
+		}
+	}
+
+	shouldNotify := !unchanged || !s.widgetSyncedOnce
+	s.widgetSyncedOnce = true
+	if shouldNotify {
+		s.mu.Lock()
+		cb := s.onWidgetUpdated
+		s.mu.Unlock()
+		if cb != nil {
+			cb(timelinePath, s.FontsDir())
+		}
 	}
 	return timeline, nil
+}
+
+// ReshuffleWidgetTimeline 递增本地换诗代次并立刻重建小组件快照（仅用于用户显式点击「刷新小组件」）。
+func (s *Service) ReshuffleWidgetTimeline(ctx context.Context) (domain.WidgetTimeline, error) {
+	if _, err := s.store.UpdateSettings(ctx, func(st *domain.Settings) {
+		st.WidgetShuffleEpoch++
+	}); err != nil {
+		return domain.WidgetTimeline{}, err
+	}
+	return s.RebuildWidgetTimeline(ctx)
 }
 
 // ReadWidgetTimeline 读取当前磁盘上已预编译的小组件时间线快照（供 App 内设置页实时预览）。
@@ -104,22 +133,22 @@ func (s *Service) WidgetTimelinePath() string {
 	return filepath.Join(s.dataDir, widgetTimelineFilename)
 }
 
-func (s *Service) buildWidgetEntries(ctx context.Context, settings domain.Settings) ([]domain.WidgetEntry, error) {
+func (s *Service) buildWidgetEntries(ctx context.Context, settings domain.Settings, shuffleSeed string) ([]domain.WidgetEntry, error) {
 	switch settings.WidgetMode {
 	case domain.WidgetModeQuotesRandom:
-		return s.buildQuoteWidgetEntries(ctx)
+		return s.buildQuoteWidgetEntries(ctx, shuffleSeed)
 	case domain.WidgetModeBookFavorites:
-		return s.buildFavoriteWidgetEntries(ctx, settings.WidgetBookID)
+		return s.buildFavoriteWidgetEntries(ctx, settings.WidgetBookID, shuffleSeed)
 	case domain.WidgetModeBookRandom:
-		return s.buildBookWidgetEntries(ctx, settings.WidgetBookID, true)
+		return s.buildBookWidgetEntries(ctx, settings.WidgetBookID, true, shuffleSeed)
 	case domain.WidgetModeBookSequential:
-		return s.buildBookWidgetEntries(ctx, settings.WidgetBookID, false)
+		return s.buildBookWidgetEntries(ctx, settings.WidgetBookID, false, shuffleSeed)
 	default:
-		return s.buildGlobalRandomWidgetEntries(ctx)
+		return s.buildGlobalRandomWidgetEntries(ctx, shuffleSeed)
 	}
 }
 
-func (s *Service) buildQuoteWidgetEntries(ctx context.Context) ([]domain.WidgetEntry, error) {
+func (s *Service) buildQuoteWidgetEntries(ctx context.Context, shuffleSeed string) ([]domain.WidgetEntry, error) {
 	views, err := s.store.ListQuotes(ctx, storage.QuoteFilter{})
 	if err != nil {
 		return nil, err
@@ -139,11 +168,11 @@ func (s *Service) buildQuoteWidgetEntries(ctx context.Context) ([]domain.WidgetE
 			Deeplink:    qv.Deeplink, // 诗歌节选跳回原诗，独立/降级散句仅开单句卡片
 		})
 	}
-	shuffleEntries(entries)
+	sortEntriesDeterministically(entries, shuffleSeed)
 	return limitEntries(entries), nil
 }
 
-func (s *Service) buildFavoriteWidgetEntries(ctx context.Context, bookID string) ([]domain.WidgetEntry, error) {
+func (s *Service) buildFavoriteWidgetEntries(ctx context.Context, bookID, shuffleSeed string) ([]domain.WidgetEntry, error) {
 	favs, err := s.store.ListFavorites(ctx, bookID)
 	if err != nil {
 		return nil, err
@@ -191,13 +220,13 @@ func (s *Service) buildFavoriteWidgetEntries(ctx context.Context, bookID string)
 			Deeplink:    link,
 		})
 	}
-	shuffleEntries(entries)
+	sortEntriesDeterministically(entries, shuffleSeed)
 	return limitEntries(entries), nil
 }
 
-func (s *Service) buildBookWidgetEntries(ctx context.Context, bookID string, shuffle bool) ([]domain.WidgetEntry, error) {
+func (s *Service) buildBookWidgetEntries(ctx context.Context, bookID string, shuffle bool, shuffleSeed string) ([]domain.WidgetEntry, error) {
 	if bookID == "" {
-		return s.buildGlobalRandomWidgetEntries(ctx)
+		return s.buildGlobalRandomWidgetEntries(ctx, shuffleSeed)
 	}
 	book, err := s.store.GetBook(ctx, bookID)
 	if err != nil {
@@ -213,12 +242,12 @@ func (s *Service) buildBookWidgetEntries(ctx context.Context, bookID string, shu
 	}
 	entries := poemsToWidgetEntries(book, poems, favByPoem)
 	if shuffle {
-		shuffleEntries(entries)
+		sortEntriesDeterministically(entries, shuffleSeed)
 	}
 	return limitEntries(entries), nil
 }
 
-func (s *Service) buildGlobalRandomWidgetEntries(ctx context.Context) ([]domain.WidgetEntry, error) {
+func (s *Service) buildGlobalRandomWidgetEntries(ctx context.Context, shuffleSeed string) ([]domain.WidgetEntry, error) {
 	books, err := s.store.ListBooks(ctx, "")
 	if err != nil {
 		return nil, err
@@ -247,7 +276,7 @@ func (s *Service) buildGlobalRandomWidgetEntries(ctx context.Context) ([]domain.
 			}
 		}
 	}
-	shuffleEntries(entries)
+	sortEntriesDeterministically(entries, shuffleSeed)
 	return limitEntries(entries), nil
 }
 
@@ -330,13 +359,66 @@ func (s *Service) favoritesByKey(ctx context.Context) (map[string]domain.Favorit
 	return out, nil
 }
 
-func shuffleEntries(entries []domain.WidgetEntry) {
+func widgetPoolRevision(settings domain.Settings) string {
+	mode := settings.WidgetMode
+	if mode == "" {
+		mode = domain.WidgetModeGlobalRandom
+	}
+	return fmt.Sprintf("%s|%s|%d", mode, settings.WidgetBookID, settings.WidgetShuffleEpoch)
+}
+
+func widgetTimelineEquivalent(a, b domain.WidgetTimeline) bool {
+	return a.PoolRevision == b.PoolRevision &&
+		a.RefreshIntervalMinutes == b.RefreshIntervalMinutes &&
+		a.Theme == b.Theme &&
+		slices.Equal(a.Entries, b.Entries)
+}
+
+// sortEntriesDeterministically 使用一致性哈希按 (seed, entry) 确定性排序，替代无种子真随机洗牌：
+//  1. 同一天同一诗池下，无论冷启动、WebDAV 同步或修改主题/字号/间隔触发多少次重建，条目顺序 100% 稳定，
+//     确保当前 3 小时（或任意设定间隔）槽位内的诗句不会提前被洗走；
+//  2. 即使当天新增/删除少量诗篇或红心，其余诗篇的相对顺序依然高度稳定，不会全盘洗牌；
+//  3. 跨自然日或用户主动切池/点击「刷新小组件」时 seed 变化，平滑迎来新一批诗句。
+func sortEntriesDeterministically(entries []domain.WidgetEntry, seed string) {
 	if len(entries) <= 1 {
 		return
 	}
-	rand.Shuffle(len(entries), func(i, j int) {
-		entries[i], entries[j] = entries[j], entries[i]
+	type ranked struct {
+		entry domain.WidgetEntry
+		rank  uint64
+	}
+	items := make([]ranked, len(entries))
+	for i, e := range entries {
+		items[i] = ranked{
+			entry: e,
+			rank:  widgetEntryHash(seed, e),
+		}
+	}
+	slices.SortFunc(items, func(a, b ranked) int {
+		if a.rank < b.rank {
+			return -1
+		}
+		if a.rank > b.rank {
+			return 1
+		}
+		if c := strings.Compare(a.entry.Deeplink, b.entry.Deeplink); c != 0 {
+			return c
+		}
+		return strings.Compare(a.entry.DisplayText, b.entry.DisplayText)
 	})
+	for i := range items {
+		entries[i] = items[i].entry
+	}
+}
+
+func widgetEntryHash(seed string, e domain.WidgetEntry) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(seed))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(e.Deeplink))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(e.DisplayText))
+	return h.Sum64()
 }
 
 func limitEntries(entries []domain.WidgetEntry) []domain.WidgetEntry {

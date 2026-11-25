@@ -20,7 +20,7 @@ private final class AppleWidgetBridge: Bridge {
     private static let keychainService = "app.stillpoets.widget"
     private static let timelineAccount = "widget_timeline.json"
     private static let offsetAccount = "manual_offset"
-    private static let generatedAtAccount = "last_generated_at"
+    private static let poolRevisionAccount = "last_pool_revision"
     private static let sharedGroupSuffix = "stillpoets.shared"
 
     func sync(timelinePath: String, fontsDir: String) throws {
@@ -30,7 +30,7 @@ private final class AppleWidgetBridge: Bridge {
             return
         }
 
-        let generatedAt = extractGeneratedAt(from: rawData)
+        let poolRevision = extractPoolRevision(from: rawData)
         let fontFile = extractFontFile(from: rawData)
 
         // 通道 1：若存在可用的 App Group 共享容器，则同步写入快照与当前自定义字体
@@ -51,10 +51,10 @@ private final class AppleWidgetBridge: Bridge {
                 }
             }
 
-            if generatedAt > 0, let defaults = UserDefaults(suiteName: groupID) {
-                let prev = Int64(defaults.integer(forKey: Self.generatedAtAccount))
-                if prev != generatedAt {
-                    defaults.set(Int(generatedAt & 0x7FFFFFFF), forKey: Self.generatedAtAccount)
+            if !poolRevision.isEmpty, let defaults = UserDefaults(suiteName: groupID) {
+                let prev = defaults.string(forKey: Self.poolRevisionAccount)
+                if prev != poolRevision {
+                    defaults.set(poolRevision, forKey: Self.poolRevisionAccount)
                     defaults.set(0, forKey: Self.offsetAccount)
                 }
             }
@@ -64,12 +64,12 @@ private final class AppleWidgetBridge: Bridge {
         let accessGroup = resolveKeychainAccessGroup()
         writeKeychain(data: rawData, account: Self.timelineAccount, accessGroup: accessGroup)
 
-        // 若主 App 重新编译了新快照（如切换诗集/模式），归零手动翻诗偏移以立即展示新首条
-        if generatedAt > 0 {
-            let genStr = String(generatedAt)
-            let prev = readKeychainString(account: Self.generatedAtAccount, accessGroup: accessGroup)
-            if prev != genStr {
-                writeKeychain(data: Data(genStr.utf8), account: Self.generatedAtAccount, accessGroup: accessGroup)
+        // 仅当诗池标识变更（切换诗集/抽选模式或显式点击「刷新小组件」）时归零手动翻诗偏移；
+        // 普通冷启动、WebDAV 同步、调整主题/字号/间隔均保留当前诗句与偏移。
+        if !poolRevision.isEmpty {
+            let prev = readKeychainString(account: Self.poolRevisionAccount, accessGroup: accessGroup)
+            if prev != poolRevision {
+                writeKeychain(data: Data(poolRevision.utf8), account: Self.poolRevisionAccount, accessGroup: accessGroup)
                 writeKeychain(data: Data("0".utf8), account: Self.offsetAccount, accessGroup: accessGroup)
             }
         }
@@ -207,14 +207,20 @@ private final class AppleWidgetBridge: Bridge {
         return String(data: data, encoding: .utf8)
     }
 
-    private func extractGeneratedAt(from data: Data) -> Int64 {
+    private func extractPoolRevision(from data: Data) -> String {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return 0
+            return ""
         }
-        if let n = obj["generatedAt"] as? NSNumber {
-            return n.int64Value
+        if let rev = obj["poolRevision"] as? String {
+            let trimmed = rev.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
         }
-        return 0
+        if let n = obj["generatedAt"] as? NSNumber, n.int64Value > 0 {
+            return String(n.int64Value)
+        }
+        return ""
     }
 
     private func extractFontFile(from data: Data) -> String? {

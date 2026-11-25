@@ -160,6 +160,7 @@ type Service struct {
 
 	mu                 sync.Mutex
 	widgetMu           sync.Mutex
+	widgetSyncedOnce   bool
 	syncSem            chan struct{}
 	syncWG             sync.WaitGroup
 	syncCancel         context.CancelFunc // 当前同步或退役操作，由 mu 保护
@@ -751,6 +752,16 @@ func (s *Service) SetBookGroup(ctx context.Context, bookID, groupID string) erro
 	return err
 }
 
+// SetBooksGroup 批量将多本诗集归入指定分组（空串表示移回未分组），单事务落库并只触发一次防抖同步。
+func (s *Service) SetBooksGroup(ctx context.Context, bookIDs []string, groupID string) error {
+	err := s.store.SetBooksGroup(ctx, bookIDs, groupID)
+	if err == nil {
+		s.notifyDataChanged()
+		s.scheduleDebouncedSync()
+	}
+	return err
+}
+
 func (s *Service) SetBookStarred(ctx context.Context, bookID string, starred bool) error {
 	err := s.store.SetBookStarred(ctx, bookID, starred)
 	if err == nil {
@@ -911,6 +922,32 @@ func (s *Service) GetContinueReading(ctx context.Context) (*storage.ContinueRead
 
 func (s *Service) GetStatsOverview(ctx context.Context) (storage.StatsOverview, error) {
 	return s.store.GetStatsOverview(ctx)
+}
+
+// RecordReadingEvent 记录一次有效读诗事件（单日同书同诗去重、自动区分初读/重读），
+// 仅当真正插入新事件时才通知 UI 刷新并触发防抖同步。
+func (s *Service) RecordReadingEvent(ctx context.Context, bookID, poemID, poemTitle, author string, wasReadBefore bool) (domain.ReadingEvent, bool, error) {
+	ev, inserted, err := s.store.RecordReadingEvent(ctx, bookID, poemID, poemTitle, author, time.Now(), wasReadBefore)
+	if err == nil && inserted {
+		s.notifyDataChanged()
+		s.scheduleDebouncedSync()
+	}
+	return ev, inserted, err
+}
+
+// GetStatsDashboard 聚合完整统计看板数据（时间窗口总览、完读墙、热力图、时段节律、诗人云）。
+func (s *Service) GetStatsDashboard(ctx context.Context, query storage.StatsQuery) (storage.StatsDashboard, error) {
+	return s.store.GetStatsDashboard(ctx, query)
+}
+
+// ListReadingEventsByDate 查询热力图指定日期（YYYY-MM-DD）的读诗明细列表。
+func (s *Service) ListReadingEventsByDate(ctx context.Context, date string) ([]storage.ReadingEventItem, error) {
+	return s.store.ListReadingEventsByDate(ctx, date)
+}
+
+// GetAuthorProfile 查询诗人云中点击某位诗人后展开的个人档案卡数据。
+func (s *Service) GetAuthorProfile(ctx context.Context, author string) (storage.AuthorProfile, error) {
+	return s.store.GetAuthorProfile(ctx, author)
 }
 
 // Search 联合检索已离线诗集正文与散页库（FTS5）。

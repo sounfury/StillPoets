@@ -41,13 +41,15 @@ const (
 	KeepSnapshotGenerations = 2
 )
 
-// SnapshotData 明确限定跨端同步的 V1.0 元数据载荷，严格排除本机设置、字体与缓存状态。
+// SnapshotData 明确限定跨端同步的元数据载荷，严格排除本机设置、字体与缓存状态。
+// ReadingEvents 采用可选字段（omitempty）保持与旧版 v2 快照的向前/向后兼容。
 type SnapshotData struct {
-	Groups    []domain.BookGroup       `json:"groups,omitempty"`
-	Books     []domain.Book            `json:"books,omitempty"`
-	Favorites []domain.FavoritePoem    `json:"favorites,omitempty"`
-	Quotes    []domain.Quote           `json:"quotes,omitempty"`
-	Progress  []domain.ReadingProgress `json:"progress,omitempty"`
+	Groups        []domain.BookGroup       `json:"groups,omitempty"`
+	Books         []domain.Book            `json:"books,omitempty"`
+	Favorites     []domain.FavoritePoem    `json:"favorites,omitempty"`
+	Quotes        []domain.Quote           `json:"quotes,omitempty"`
+	Progress      []domain.ReadingProgress `json:"progress,omitempty"`
+	ReadingEvents []domain.ReadingEvent    `json:"readingEvents,omitempty"`
 }
 
 // DeviceSnapshot 是单台设备发布到 state/device_<installId>_<rev>.json.gz 的完整元数据快照。

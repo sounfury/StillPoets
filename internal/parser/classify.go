@@ -24,6 +24,13 @@ func classify(title string, blocks []textBlock) domain.EntryKind {
 	if proseTitle.MatchString(title) {
 		return domain.EntryKindProse
 	}
+	if hasProseStructure(blocks) {
+		return domain.EntryKindProse
+	}
+	return domain.EntryKindPoem
+}
+
+func hasProseStructure(blocks []textBlock) bool {
 	count, long, verse := 0, 0, false
 	totalChars, longChars := 0, 0
 	for _, b := range blocks {
@@ -36,7 +43,7 @@ func classify(title string, blocks []textBlock) domain.EntryKind {
 		}
 		count++
 		n := utf8.RuneCountInString(s)
-		verseBlock := semanticNode(b.node, "poetry", "verse", "line", "stanza") || b.node != nil && b.node.Data == "pre"
+		verseBlock := isVerseBlock(b.node)
 		totalChars += n
 		if n > 90 && !verseBlock {
 			long++
@@ -46,12 +53,27 @@ func classify(title string, blocks []textBlock) domain.EntryKind {
 			verse = true
 		}
 	}
-	if count > 0 && (longChars*2 >= totalChars || !verse && long*2 >= count) {
-		return domain.EntryKindProse
-	}
-	return domain.EntryKindPoem
+	return count > 0 && (longChars*2 >= totalChars || !verse && long*2 >= count)
 }
+
+func isVerseBlock(n *html.Node) bool {
+	return semanticNode(n, "poetry", "verse", "line", "stanza") || n != nil && n.Data == "pre"
+}
+
 func filterReason(title, body string, blocks []textBlock) string {
+	if reason := filteredTitle(title); reason != "" {
+		return reason
+	}
+	if reason := publishingPageReason(body); reason != "" {
+		return reason
+	}
+	if isLinkDirectory(blocks) {
+		return "toc"
+	}
+	return ""
+}
+
+func filteredTitle(title string) string {
 	label := strings.ToLower(strings.TrimSpace(title))
 	switch label {
 	case "cover", "封面", "扉页", "title page":
@@ -64,6 +86,10 @@ func filterReason(title, body string, blocks []textBlock) string {
 	if strings.Contains(label, "目录") && (strings.Contains(label, "英文") || strings.Contains(label, "英语")) {
 		return "toc"
 	}
+	return ""
+}
+
+func publishingPageReason(body string) string {
 	// CIP and production credits identify publishing pages even without a heading.
 	if strings.Contains(body, "图书在版编目") || strings.Contains(body, "CIP数据核字") || strings.Contains(body, "ISBN") && (strings.Contains(body, "版权所有") || strings.Contains(body, "出版发行") || strings.Contains(body, "责任编辑")) {
 		return "copyright"
@@ -74,6 +100,10 @@ func filterReason(title, body string, blocks []textBlock) string {
 	if strings.Contains(body, "电子书制作") || strings.Contains(body, "书籍设计") && strings.Contains(body, "策划人") {
 		return "publishing"
 	}
+	return ""
+}
+
+func isLinkDirectory(blocks []textBlock) bool {
 	linkText, total := 0, 0
 	for _, b := range blocks {
 		total += utf8.RuneCountInString(strings.TrimSpace(b.text))
@@ -85,8 +115,5 @@ func filterReason(title, body string, blocks []textBlock) string {
 			})
 		}
 	}
-	if total > 0 && linkText*10 >= total*8 && linkText > 20 {
-		return "toc"
-	}
-	return ""
+	return total > 0 && linkText*10 >= total*8 && linkText > 20
 }

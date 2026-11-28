@@ -19,15 +19,19 @@ import (
 
 // --- 二级页 4：关于 StillPoets（更新日志 / 检查更新 / 邮件联系 / 分析日志导出） ---
 
+type aboutChangelogState struct {
+	loading  bool
+	releases []app.ReleaseInfo
+	err      string
+}
+
 func (a *AppUI) renderAboutSubpage(c *ui.Context, pal theme.Palette, isTablet bool) {
 	a.mu.Lock()
 	appVer := a.appVersion
 	updChecking := a.updateChecking
 	updRes := a.updateResult
 	updErr := a.updateError
-	relLoading := a.releasesLoading
-	relList := a.releases
-	relErr := a.releasesError
+	changelog := aboutChangelogState{loading: a.releasesLoading, releases: a.releases, err: a.releasesError}
 	expLog := a.exportingLog
 	expStatus := a.exportLogStatus
 	diagSize := a.diagLogSizeBytes
@@ -60,319 +64,11 @@ func (a *AppUI) renderAboutSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 		ui.Scroll(c.Key("subpage-about-scroll")).Grow(1).FillWidth().Children(func() {
 			ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(16, 20, 48, 20).Children(func() {
 				ui.Column(c).FillWidth().MaxWidth(layout.ReadingMaxWidthDIP + 80).Gap(18).Children(func() {
-					// 1. 品牌与当前版本卡
-					ui.Column(c.Key("about-brand-card")).
-						FillWidth().
-						Padding(20).
-						Gap(8).
-						Radius(12).
-						Background(pal.Surface).
-						Border(1, pal.Border).
-						Children(func() {
-							ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
-								ui.Text(c, "StillPoets").Font(theme.FontSerif).FontSize(22).Bold().TextColor(pal.TextPrimary)
-								ui.Box(c).Padding(2, 9).Radius(999).Background(pal.HeroBg).Children(func() {
-									ui.Text(c, formatVersionTag(appVer)).Font(theme.FontMono).FontSize(11).Bold().TextColor(pal.TextPrimary)
-								})
-							})
-							ui.Text(c, "私有化多端现代诗阅读、独立散页与诗笺小组件。一切藏书与笔记归属于你的设备与网盘。").
-								FontSize(12).LineHeight(1.55).TextColor(pal.TextMuted)
-							// 扉页题记：梭罗《瓦尔登湖》死亡诗社开场誓词
-							ui.Row(c.Key("about-thoreau-epigraph")).
-								FillWidth().
-								Padding(12, 14).
-								Gap(12).
-								Radius(8).
-								Background(pal.Background).
-								Border(1, pal.Border).
-								Children(func() {
-									ui.Box(c).Width(2).FillHeight().Radius(1).Background(pal.Accent.Alpha(0.55))
-									ui.Column(c).Grow(1).Gap(8).Children(func() {
-										ui.Text(c, dpsThoreauOpening).
-											Font(theme.PoetryFont(a.settings.FontFamily)).
-											FontSize(13.5).
-											LineHeight(1.75).
-											TextColor(pal.TextPrimary)
-										ui.Text(c, "—— "+dpsThoreauAttribution).
-											Font(theme.FontNote).
-											FontSize(11).
-											Italic().
-											TextColor(pal.TextMuted)
-									})
-								})
-						})
+					a.renderAboutBrandCard(c, pal, appVer)
 
-					// 2. 版本与检查更新卡
-					ui.Column(c.Key("about-update-group")).FillWidth().Gap(8).Children(func() {
-						a.renderSettingsGroupLabel(c, pal, "版本更新")
-						ui.Column(c.Key("about-update-card")).
-							FillWidth().
-							Padding(16, 18).
-							Gap(12).
-							Radius(12).
-							Background(pal.Surface).
-							Border(1, pal.Border).
-							Children(func() {
-								ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
-									ui.Column(c).Grow(1).Gap(2).Children(func() {
-										ui.Text(c, "检查更新").FontSize(14).Bold().TextColor(pal.TextPrimary)
-										updateDesc := "每次进入应用自动检测 GitHub Release 新版本"
-										if a.canInAppUpdate() {
-											updateDesc = "每次进入应用自动检测新版本，支持应用内下载并更新"
-										}
-										ui.Text(c, updateDesc).
-											FontSize(11).TextColor(pal.TextMuted)
-									})
-									chkBtn := ui.Row(c.Key("about-check-update-btn")).
-										Padding(7, 13).
-										Gap(6).
-										Radius(999).
-										AlignItems(ui.Center).
-										Background(pal.Accent).
-										Cursor(ui.CursorPointer).
-										Disabled(updChecking)
-									theme.ApplyPressScale(chkBtn, 0.95)
-									chkBtn.Children(func() {
-										if updChecking {
-											ui.Spinner(c.Key("upd-spin")).FontSize(13).TextColor(pal.AccentText).Label("检查中")
-											ui.Text(c, "检查中…").FontSize(12).Bold().TextColor(pal.AccentText)
-										} else {
-											ui.Icon(c, components.IconRefresh).Width(13).Height(13).TextColor(pal.AccentText)
-											ui.Text(c, "检查更新").FontSize(12).Bold().TextColor(pal.AccentText)
-										}
-									})
-									if chkBtn.Clicked() && !updChecking {
-										a.checkAppUpdateAsync()
-									}
-								})
+					a.renderAboutUpdateCard(c, pal, updChecking, updRes, updErr, changelog)
 
-								switch {
-								case updChecking:
-									ui.Row(c.Key("upd-loading-bar")).
-										FillWidth().
-										Padding(9, 12).
-										Gap(8).
-										Radius(8).
-										Background(pal.Background).
-										Border(1, pal.Border).
-										AlignItems(ui.Center).
-										Children(func() {
-											ui.Spinner(c.Key("upd-bar-spin")).FontSize(13).TextColor(pal.Accent).Label("正在检查最新版本")
-											ui.Text(c, "正在查询 GitHub Releases 最新版本…").FontSize(12).TextColor(pal.TextSecondary)
-										})
-								case updErr != "":
-									ui.Text(c, "检查失败："+updErr).FontSize(12).LineHeight(1.45).TextColor(pal.Accent)
-								case updRes != nil && updRes.NoRelease:
-									ui.Text(c, "仓库暂未发布正式 Release 安装包。").FontSize(12).TextColor(pal.TextMuted)
-								case updRes != nil && updRes.Latest != nil && updRes.HasUpdate:
-									latest := updRes.Latest
-									ui.Column(c.Key("upd-found-box")).
-										FillWidth().
-										Padding(12, 14).
-										Gap(8).
-										Radius(10).
-										Background(pal.Background).
-										Border(1, pal.Accent).
-										Children(func() {
-											ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-												ui.Textf(c, "发现新版本 %s", formatVersionTag(latest.TagName)).
-													Font(theme.FontSerif).FontSize(14).Bold().TextColor(pal.Accent).Grow(1)
-												if !latest.PublishedAt.IsZero() {
-													ui.Text(c, latest.PublishedAt.Local().Format("2006-01-02")).
-														Font(theme.FontMono).FontSize(11).TextColor(pal.TextMuted)
-												}
-											})
-											if mdBody := normalizeReleaseMarkdown(*latest); mdBody != "" {
-												markdown.View(c.Key("upd-found-md-"+latest.TagName), mdBody, a.changelogMarkdownOptions(pal)).
-													FillWidth()
-											}
-											if len(latest.Assets) > 0 {
-												ui.Text(c, "包含安装包："+formatAssetNames(latest.Assets)).
-													Font(theme.FontMono).FontSize(11).TextColor(pal.TextMuted).MaxLines(2)
-											}
-											ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Children(func() {
-												if ui.Button(c, "查看更新日志").Clicked() {
-													a.openChangelogSheet()
-												}
-												targetURL := latest.HTMLURL
-												if targetURL == "" {
-													targetURL = app.GitHubReleasesURL
-												}
-												if a.canInAppUpdate() {
-													a.mu.Lock()
-													isDownloading := a.updateStage == updateStageDownloading
-													a.mu.Unlock()
-													btnLabel := "立即更新"
-													if isDownloading {
-														btnLabel = "查看下载进度"
-													}
-													if ui.PrimaryButton(c, btnLabel).Clicked() {
-														a.openUpdateModalForRelease(*latest, true)
-													}
-												} else {
-													if ui.PrimaryButton(c, "前往 Release 下载").Clicked() {
-														a.openExternalURL(targetURL)
-													}
-												}
-											})
-										})
-								case updRes != nil && updRes.Latest != nil:
-									ui.Row(c.Key("upd-latest-row")).
-										FillWidth().
-										Padding(9, 12).
-										Gap(8).
-										Radius(8).
-										Background(pal.Background).
-										AlignItems(ui.Center).
-										Children(func() {
-											ui.Icon(c, components.IconCheck).Width(14).Height(14).TextColor(pal.Accent)
-											ui.Textf(c, "当前已是最新版本（%s，远端最新 %s）",
-												formatVersionTag(updRes.CurrentVersion),
-												formatVersionTag(updRes.Latest.TagName)).
-												FontSize(12).TextColor(pal.TextSecondary).Grow(1)
-										})
-								}
-
-								a.renderSettingsDivider(c, pal)
-
-								// 三级入口：更新日志底部抽屉（Markdown 渲染，仅展示最新前 5 条）
-								changelogSub := "查看 GitHub Releases 最新版本更新说明"
-								changelogValue := "查看"
-								switch {
-								case relLoading:
-									changelogSub = "正在获取 GitHub Releases 更新记录…"
-									changelogValue = "加载中"
-								case relErr != "":
-									changelogSub = "上次获取失败，点击进入后可重试"
-									changelogValue = "重试"
-								case len(relList) > 0:
-									latestRel := relList[0]
-									shown := min(len(relList), maxChangelogSheetItems)
-									if !latestRel.PublishedAt.IsZero() {
-										changelogSub = fmt.Sprintf("最新 %s · 发布于 %s",
-											formatVersionTag(latestRel.TagName),
-											latestRel.PublishedAt.Local().Format("2006-01-02"))
-									} else {
-										changelogSub = fmt.Sprintf("最新 %s · 展示近 %d 条记录",
-											formatVersionTag(latestRel.TagName), shown)
-									}
-									if len(relList) > maxChangelogSheetItems {
-										changelogValue = fmt.Sprintf("最新 %d 版", shown)
-									} else {
-										changelogValue = fmt.Sprintf("共 %d 版", shown)
-									}
-								}
-								a.renderSettingsNavRow(c, pal, settingsNavRow{
-									key:      "about-changelog-entry",
-									title:    "更新日志",
-									subtitle: changelogSub,
-									value:    changelogValue,
-									onClick:  func() { a.openChangelogSheet() },
-								})
-							})
-					})
-
-					// 3. 联系与诊断卡（邮件联系 + 导出分析日志）
-					ui.Column(c.Key("about-support-group")).FillWidth().Gap(8).Children(func() {
-						a.renderSettingsGroupLabel(c, pal, "反馈与诊断")
-						ui.Column(c.Key("about-support-card")).
-							FillWidth().
-							Padding(6, 18).
-							Gap(0).
-							Radius(12).
-							Background(pal.Surface).
-							Border(1, pal.Border).
-							Children(func() {
-								// 邮件联系
-								ui.Row(c.Key("about-email-row")).
-									FillWidth().
-									Padding(12, 2).
-									Gap(8).
-									AlignItems(ui.Center).
-									Children(func() {
-										ui.Icon(c, components.IconMail).Width(18).Height(18).TextColor(pal.TextSecondary)
-										ui.Column(c).Grow(1).Gap(2).Children(func() {
-											ui.Text(c, "邮件联系").FontSize(14).TextColor(pal.TextPrimary)
-											ui.Text(c, app.ContactEmail).Font(theme.FontMono).FontSize(11).TextColor(pal.TextMuted).MaxLines(1)
-										})
-										copyBtn := ui.Box(c.Key("about-email-copy")).
-											Padding(6, 10).
-											Radius(999).
-											Background(pal.Background).
-											Border(1, pal.Border).
-											Cursor(ui.CursorPointer)
-										theme.ApplyPressScale(copyBtn, 0.95)
-										copyBtn.Children(func() {
-											ui.Text(c, "复制").FontSize(11).TextColor(pal.TextSecondary)
-										})
-										if copyBtn.Clicked() {
-											a.copyContactEmail()
-										}
-										mailBtn := ui.Box(c.Key("about-email-send")).
-											Padding(6, 10).
-											Radius(999).
-											Background(pal.Background).
-											Border(1, pal.Accent).
-											Cursor(ui.CursorPointer)
-										theme.ApplyPressScale(mailBtn, 0.95)
-										mailBtn.Children(func() {
-											ui.Text(c, "发邮件").FontSize(11).Bold().TextColor(pal.Accent)
-										})
-										if mailBtn.Clicked() {
-											a.openContactEmail(appVer)
-										}
-									})
-
-								a.renderSettingsDivider(c, pal)
-
-								// 分析日志导出
-								ui.Column(c.Key("about-diag-wrap")).FillWidth().Padding(12, 2).Gap(10).Children(func() {
-									ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
-										ui.Icon(c, components.IconFileText).Width(18).Height(18).TextColor(pal.TextSecondary)
-										ui.Column(c).Grow(1).Gap(2).Children(func() {
-											ui.Text(c, "分析日志").FontSize(14).TextColor(pal.TextPrimary)
-											ui.Textf(c, "导出脱敏运行与同步诊断日志（约 %s），不含 WebDAV 账号密码",
-												formatBytesSize(diagSize)).
-												FontSize(11).LineHeight(1.45).TextColor(pal.TextMuted).MaxLines(2)
-										})
-										expBtn := ui.Row(c.Key("about-export-log-btn")).
-											Padding(7, 13).
-											Gap(6).
-											Radius(999).
-											AlignItems(ui.Center).
-											Background(pal.Background).
-											Border(1, pal.Accent).
-											Cursor(ui.CursorPointer).
-											Disabled(expLog)
-										theme.ApplyPressScale(expBtn, 0.95)
-										expBtn.Children(func() {
-											if expLog {
-												ui.Spinner(c.Key("exp-log-spin")).FontSize(13).TextColor(pal.Accent).Label("正在导出日志")
-												ui.Text(c, "导出中…").FontSize(12).Bold().TextColor(pal.Accent)
-											} else {
-												ui.Icon(c, components.IconDownload).Width(13).Height(13).TextColor(pal.Accent)
-												ui.Text(c, "导出日志").FontSize(12).Bold().TextColor(pal.Accent)
-											}
-										})
-										if expBtn.Clicked() && !expLog {
-											a.exportDiagnosticLogAsync()
-										}
-									})
-
-									if expStatus != "" {
-										ui.Box(c.Key("about-export-status")).
-											FillWidth().
-											Padding(8, 12).
-											Radius(8).
-											Background(pal.Background).
-											Border(1, pal.Border).
-											Children(func() {
-												ui.Text(c, expStatus).FontSize(11).LineHeight(1.45).TextColor(pal.TextSecondary)
-											})
-									}
-								})
-							})
-					})
+					a.renderAboutSupportCard(c, pal, appVer, expLog, expStatus, diagSize)
 
 				})
 			})
@@ -575,4 +271,344 @@ func formatAssetNames(assets []app.ReleaseAsset) string {
 		}
 	}
 	return strings.Join(names, " · ")
+}
+
+func (a *AppUI) renderAboutBrandCard(c *ui.Context, pal theme.Palette, appVer string) {
+	// 1. 品牌与当前版本卡
+	ui.Column(c.Key("about-brand-card")).
+		FillWidth().
+		Padding(20).
+		Gap(8).
+		Radius(12).
+		Background(pal.Surface).
+		Border(1, pal.Border).
+		Children(func() {
+			ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "StillPoets").Font(theme.FontSerif).FontSize(22).Bold().TextColor(pal.TextPrimary)
+				ui.Box(c).Padding(2, 9).Radius(999).Background(pal.HeroBg).Children(func() {
+					ui.Text(c, formatVersionTag(appVer)).Font(theme.FontMono).FontSize(11).Bold().TextColor(pal.TextPrimary)
+				})
+			})
+			ui.Text(c, "私有化多端现代诗阅读、独立散页与诗笺小组件。一切藏书与笔记归属于你的设备与网盘。").
+				FontSize(12).LineHeight(1.55).TextColor(pal.TextMuted)
+			// 扉页题记：梭罗《瓦尔登湖》死亡诗社开场誓词
+			ui.Row(c.Key("about-thoreau-epigraph")).
+				FillWidth().
+				Padding(12, 14).
+				Gap(12).
+				Radius(8).
+				Background(pal.Background).
+				Border(1, pal.Border).
+				Children(func() {
+					ui.Box(c).Width(2).FillHeight().Radius(1).Background(pal.Accent.Alpha(0.55))
+					ui.Column(c).Grow(1).Gap(8).Children(func() {
+						ui.Text(c, dpsThoreauOpening).
+							Font(theme.PoetryFont(a.settings.FontFamily)).
+							FontSize(13.5).
+							LineHeight(1.75).
+							TextColor(pal.TextPrimary)
+						ui.Text(c, "—— "+dpsThoreauAttribution).
+							Font(theme.FontNote).
+							FontSize(11).
+							Italic().
+							TextColor(pal.TextMuted)
+					})
+				})
+		})
+}
+
+func (a *AppUI) renderAboutNewRelease(c *ui.Context, pal theme.Palette, latest *app.ReleaseInfo) {
+	ui.Column(c.Key("upd-found-box")).
+		FillWidth().
+		Padding(12, 14).
+		Gap(8).
+		Radius(10).
+		Background(pal.Background).
+		Border(1, pal.Accent).
+		Children(func() {
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Textf(c, "发现新版本 %s", formatVersionTag(latest.TagName)).
+					Font(theme.FontSerif).FontSize(14).Bold().TextColor(pal.Accent).Grow(1)
+				if !latest.PublishedAt.IsZero() {
+					ui.Text(c, latest.PublishedAt.Local().Format("2006-01-02")).
+						Font(theme.FontMono).FontSize(11).TextColor(pal.TextMuted)
+				}
+			})
+			if mdBody := normalizeReleaseMarkdown(*latest); mdBody != "" {
+				markdown.View(c.Key("upd-found-md-"+latest.TagName), mdBody, a.changelogMarkdownOptions(pal)).
+					FillWidth()
+			}
+			if len(latest.Assets) > 0 {
+				ui.Text(c, "包含安装包："+formatAssetNames(latest.Assets)).
+					Font(theme.FontMono).FontSize(11).TextColor(pal.TextMuted).MaxLines(2)
+			}
+			ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Children(func() {
+				if ui.Button(c, "查看更新日志").Clicked() {
+					a.openChangelogSheet()
+				}
+				targetURL := latest.HTMLURL
+				if targetURL == "" {
+					targetURL = app.GitHubReleasesURL
+				}
+				if a.canInAppUpdate() {
+					a.mu.Lock()
+					isDownloading := a.updateStage == updateStageDownloading
+					a.mu.Unlock()
+					btnLabel := "立即更新"
+					if isDownloading {
+						btnLabel = "查看下载进度"
+					}
+					if ui.PrimaryButton(c, btnLabel).Clicked() {
+						a.openUpdateModalForRelease(*latest, true)
+					}
+				} else {
+					if ui.PrimaryButton(c, "前往 Release 下载").Clicked() {
+						a.openExternalURL(targetURL)
+					}
+				}
+			})
+		})
+}
+
+func (a *AppUI) renderAboutUpdateStatus(c *ui.Context, pal theme.Palette, updChecking bool, updRes *app.UpdateCheckResult, updErr string) {
+	switch {
+	case updChecking:
+		ui.Row(c.Key("upd-loading-bar")).
+			FillWidth().
+			Padding(9, 12).
+			Gap(8).
+			Radius(8).
+			Background(pal.Background).
+			Border(1, pal.Border).
+			AlignItems(ui.Center).
+			Children(func() {
+				ui.Spinner(c.Key("upd-bar-spin")).FontSize(13).TextColor(pal.Accent).Label("正在检查最新版本")
+				ui.Text(c, "正在查询 GitHub Releases 最新版本…").FontSize(12).TextColor(pal.TextSecondary)
+			})
+	case updErr != "":
+		ui.Text(c, "检查失败："+updErr).FontSize(12).LineHeight(1.45).TextColor(pal.Accent)
+	case updRes != nil && updRes.NoRelease:
+		ui.Text(c, "仓库暂未发布正式 Release 安装包。").FontSize(12).TextColor(pal.TextMuted)
+	case updRes != nil && updRes.Latest != nil && updRes.HasUpdate:
+		a.renderAboutNewRelease(c, pal, updRes.Latest)
+	case updRes != nil && updRes.Latest != nil:
+		ui.Row(c.Key("upd-latest-row")).
+			FillWidth().
+			Padding(9, 12).
+			Gap(8).
+			Radius(8).
+			Background(pal.Background).
+			AlignItems(ui.Center).
+			Children(func() {
+				ui.Icon(c, components.IconCheck).Width(14).Height(14).TextColor(pal.Accent)
+				ui.Textf(c, "当前已是最新版本（%s，远端最新 %s）",
+					formatVersionTag(updRes.CurrentVersion),
+					formatVersionTag(updRes.Latest.TagName)).
+					FontSize(12).TextColor(pal.TextSecondary).Grow(1)
+			})
+	}
+}
+
+func (a *AppUI) renderAboutChangelogEntry(c *ui.Context, pal theme.Palette, changelog aboutChangelogState) {
+	relLoading, relList, relErr := changelog.loading, changelog.releases, changelog.err
+	// 三级入口：更新日志底部抽屉（Markdown 渲染，仅展示最新前 5 条）
+	changelogSub := "查看 GitHub Releases 最新版本更新说明"
+	changelogValue := "查看"
+	switch {
+	case relLoading:
+		changelogSub = "正在获取 GitHub Releases 更新记录…"
+		changelogValue = "加载中"
+	case relErr != "":
+		changelogSub = "上次获取失败，点击进入后可重试"
+		changelogValue = "重试"
+	case len(relList) > 0:
+		latestRel := relList[0]
+		shown := min(len(relList), maxChangelogSheetItems)
+		if !latestRel.PublishedAt.IsZero() {
+			changelogSub = fmt.Sprintf("最新 %s · 发布于 %s",
+				formatVersionTag(latestRel.TagName),
+				latestRel.PublishedAt.Local().Format("2006-01-02"))
+		} else {
+			changelogSub = fmt.Sprintf("最新 %s · 展示近 %d 条记录",
+				formatVersionTag(latestRel.TagName), shown)
+		}
+		if len(relList) > maxChangelogSheetItems {
+			changelogValue = fmt.Sprintf("最新 %d 版", shown)
+		} else {
+			changelogValue = fmt.Sprintf("共 %d 版", shown)
+		}
+	}
+	a.renderSettingsNavRow(c, pal, settingsNavRow{
+		key:      "about-changelog-entry",
+		title:    "更新日志",
+		subtitle: changelogSub,
+		value:    changelogValue,
+		onClick:  func() { a.openChangelogSheet() },
+	})
+}
+
+func (a *AppUI) renderAboutUpdateCard(c *ui.Context, pal theme.Palette, updChecking bool, updRes *app.UpdateCheckResult, updErr string, changelog aboutChangelogState) {
+	// 2. 版本与检查更新卡
+	ui.Column(c.Key("about-update-group")).FillWidth().Gap(8).Children(func() {
+		a.renderSettingsGroupLabel(c, pal, "版本更新")
+		ui.Column(c.Key("about-update-card")).
+			FillWidth().
+			Padding(16, 18).
+			Gap(12).
+			Radius(12).
+			Background(pal.Surface).
+			Border(1, pal.Border).
+			Children(func() {
+				ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
+					ui.Column(c).Grow(1).Gap(2).Children(func() {
+						ui.Text(c, "检查更新").FontSize(14).Bold().TextColor(pal.TextPrimary)
+						updateDesc := "每次进入应用自动检测 GitHub Release 新版本"
+						if a.canInAppUpdate() {
+							updateDesc = "每次进入应用自动检测新版本，支持应用内下载并更新"
+						}
+						ui.Text(c, updateDesc).
+							FontSize(11).TextColor(pal.TextMuted)
+					})
+					chkBtn := ui.Row(c.Key("about-check-update-btn")).
+						Padding(7, 13).
+						Gap(6).
+						Radius(999).
+						AlignItems(ui.Center).
+						Background(pal.Accent).
+						Cursor(ui.CursorPointer).
+						Disabled(updChecking)
+					theme.ApplyPressScale(chkBtn, 0.95)
+					chkBtn.Children(func() {
+						if updChecking {
+							ui.Spinner(c.Key("upd-spin")).FontSize(13).TextColor(pal.AccentText).Label("检查中")
+							ui.Text(c, "检查中…").FontSize(12).Bold().TextColor(pal.AccentText)
+						} else {
+							ui.Icon(c, components.IconRefresh).Width(13).Height(13).TextColor(pal.AccentText)
+							ui.Text(c, "检查更新").FontSize(12).Bold().TextColor(pal.AccentText)
+						}
+					})
+					if chkBtn.Clicked() && !updChecking {
+						a.checkAppUpdateAsync()
+					}
+				})
+
+				a.renderAboutUpdateStatus(c, pal, updChecking, updRes, updErr)
+
+				a.renderSettingsDivider(c, pal)
+
+				a.renderAboutChangelogEntry(c, pal, changelog)
+			})
+	})
+}
+
+func (a *AppUI) renderAboutContact(c *ui.Context, pal theme.Palette, appVer string) {
+	// 邮件联系
+	ui.Row(c.Key("about-email-row")).
+		FillWidth().
+		Padding(12, 2).
+		Gap(8).
+		AlignItems(ui.Center).
+		Children(func() {
+			ui.Icon(c, components.IconMail).Width(18).Height(18).TextColor(pal.TextSecondary)
+			ui.Column(c).Grow(1).Gap(2).Children(func() {
+				ui.Text(c, "邮件联系").FontSize(14).TextColor(pal.TextPrimary)
+				ui.Text(c, app.ContactEmail).Font(theme.FontMono).FontSize(11).TextColor(pal.TextMuted).MaxLines(1)
+			})
+			copyBtn := ui.Box(c.Key("about-email-copy")).
+				Padding(6, 10).
+				Radius(999).
+				Background(pal.Background).
+				Border(1, pal.Border).
+				Cursor(ui.CursorPointer)
+			theme.ApplyPressScale(copyBtn, 0.95)
+			copyBtn.Children(func() {
+				ui.Text(c, "复制").FontSize(11).TextColor(pal.TextSecondary)
+			})
+			if copyBtn.Clicked() {
+				a.copyContactEmail()
+			}
+			mailBtn := ui.Box(c.Key("about-email-send")).
+				Padding(6, 10).
+				Radius(999).
+				Background(pal.Background).
+				Border(1, pal.Accent).
+				Cursor(ui.CursorPointer)
+			theme.ApplyPressScale(mailBtn, 0.95)
+			mailBtn.Children(func() {
+				ui.Text(c, "发邮件").FontSize(11).Bold().TextColor(pal.Accent)
+			})
+			if mailBtn.Clicked() {
+				a.openContactEmail(appVer)
+			}
+		})
+}
+
+func (a *AppUI) renderAboutDiagnostics(c *ui.Context, pal theme.Palette, expLog bool, expStatus string, diagSize int64) {
+	// 分析日志导出
+	ui.Column(c.Key("about-diag-wrap")).FillWidth().Padding(12, 2).Gap(10).Children(func() {
+		ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, components.IconFileText).Width(18).Height(18).TextColor(pal.TextSecondary)
+			ui.Column(c).Grow(1).Gap(2).Children(func() {
+				ui.Text(c, "分析日志").FontSize(14).TextColor(pal.TextPrimary)
+				ui.Textf(c, "导出脱敏运行与同步诊断日志（约 %s），不含 WebDAV 账号密码",
+					formatBytesSize(diagSize)).
+					FontSize(11).LineHeight(1.45).TextColor(pal.TextMuted).MaxLines(2)
+			})
+			expBtn := ui.Row(c.Key("about-export-log-btn")).
+				Padding(7, 13).
+				Gap(6).
+				Radius(999).
+				AlignItems(ui.Center).
+				Background(pal.Background).
+				Border(1, pal.Accent).
+				Cursor(ui.CursorPointer).
+				Disabled(expLog)
+			theme.ApplyPressScale(expBtn, 0.95)
+			expBtn.Children(func() {
+				if expLog {
+					ui.Spinner(c.Key("exp-log-spin")).FontSize(13).TextColor(pal.Accent).Label("正在导出日志")
+					ui.Text(c, "导出中…").FontSize(12).Bold().TextColor(pal.Accent)
+				} else {
+					ui.Icon(c, components.IconDownload).Width(13).Height(13).TextColor(pal.Accent)
+					ui.Text(c, "导出日志").FontSize(12).Bold().TextColor(pal.Accent)
+				}
+			})
+			if expBtn.Clicked() && !expLog {
+				a.exportDiagnosticLogAsync()
+			}
+		})
+
+		if expStatus != "" {
+			ui.Box(c.Key("about-export-status")).
+				FillWidth().
+				Padding(8, 12).
+				Radius(8).
+				Background(pal.Background).
+				Border(1, pal.Border).
+				Children(func() {
+					ui.Text(c, expStatus).FontSize(11).LineHeight(1.45).TextColor(pal.TextSecondary)
+				})
+		}
+	})
+}
+
+func (a *AppUI) renderAboutSupportCard(c *ui.Context, pal theme.Palette, appVer string, expLog bool, expStatus string, diagSize int64) {
+	// 3. 联系与诊断卡（邮件联系 + 导出分析日志）
+	ui.Column(c.Key("about-support-group")).FillWidth().Gap(8).Children(func() {
+		a.renderSettingsGroupLabel(c, pal, "反馈与诊断")
+		ui.Column(c.Key("about-support-card")).
+			FillWidth().
+			Padding(6, 18).
+			Gap(0).
+			Radius(12).
+			Background(pal.Surface).
+			Border(1, pal.Border).
+			Children(func() {
+				a.renderAboutContact(c, pal, appVer)
+
+				a.renderSettingsDivider(c, pal)
+
+				a.renderAboutDiagnostics(c, pal, expLog, expStatus, diagSize)
+			})
+	})
 }

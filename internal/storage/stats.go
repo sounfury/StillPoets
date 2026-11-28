@@ -227,77 +227,40 @@ type RecordReadingEventInput struct {
 // RecordReadingEvent 记录一次有效读诗事件（单日同书同诗自动去重，并区分初读与重读）。
 // 若当日已有该诗的记录，则不产生冗余写入，返回 inserted=false。
 func (s *Store) RecordReadingEvent(ctx context.Context, in RecordReadingEventInput) (domain.ReadingEvent, bool, error) {
-	bookID := strings.TrimSpace(in.BookID)
-	poemID := strings.TrimSpace(in.PoemID)
-	poemTitle := in.PoemTitle
-	author := in.Author
-	readAt := in.ReadAt
-	wasReadBefore := in.WasReadBefore
-	if bookID == "" || poemID == "" {
+	in.BookID = strings.TrimSpace(in.BookID)
+	in.PoemID = strings.TrimSpace(in.PoemID)
+	if in.BookID == "" || in.PoemID == "" {
 		return domain.ReadingEvent{}, false, errors.New("storage: bookID and poemID are required")
 	}
-	if readAt.IsZero() {
-		readAt = time.Now()
+	if in.ReadAt.IsZero() {
+		in.ReadAt = time.Now()
 	}
-	readDate := readAt.Format("2006-01-02")
-	readHour := readAt.Hour()
-	readAtMs := readAt.UTC().UnixMilli()
-
-	var (
-		out      domain.ReadingEvent
-		inserted bool
-	)
+	readDate := in.ReadAt.Format("2006-01-02")
+	var out domain.ReadingEvent
+	var inserted bool
 	err := s.mutate(ctx, func(v domain.Version, _ int64) ([]sqlite.Statement, error) {
-		bookRow, err := s.firstRow(ctx, `SELECT author FROM books WHERE id = ? AND deleted = 0`, bookID)
+		bookRow, err := s.firstRow(ctx, `SELECT author FROM books WHERE id = ? AND deleted = 0`, in.BookID)
 		if err != nil {
 			return nil, err
 		}
-		// 单日同书同诗去重：同一天反复翻看只计 1 篇，保留首次有效阅读记录
-		if existingRow, err := s.firstRow(ctx, `SELECT `+readingEventColumns+` FROM reading_events WHERE book_id = ? AND poem_id = ? AND read_date = ?`,
-			bookID, poemID, readDate); err == nil {
+		// Keep the first effective reading of a poem on each local date.
+		existingRow, err := s.firstRow(ctx, `SELECT `+readingEventColumns+` FROM reading_events WHERE book_id = ? AND poem_id = ? AND read_date = ?`,
+			in.BookID, in.PoemID, readDate)
+		if err == nil {
 			out, err = decodeReadingEvent(existingRow)
 			return nil, err
-		} else if !errors.Is(err, ErrNotFound) {
+		}
+		if !errors.Is(err, ErrNotFound) {
 			return nil, err
 		}
-
-		// 若尚未传入诗题或作者，从本地已缓存正文或书目元数据补齐（保证未下载设备下钻可用）
-		title := strings.TrimSpace(poemTitle)
-		poet := strings.TrimSpace(author)
-		if title == "" || poet == "" {
-			if pRow, err := s.firstRow(ctx, `SELECT title, author FROM poems WHERE book_id = ? AND id = ?`, bookID, poemID); err == nil {
-				if title == "" {
-					title = strings.TrimSpace(pRow.text(0))
-				}
-				if poet == "" {
-					poet = strings.TrimSpace(pRow.text(1))
-				}
-			}
-		}
-		if poet == "" {
-			poet = strings.TrimSpace(bookRow.text(0))
-		}
-
-		// 判断初读 / 重读：更早日期存在阅读事件或此前已在已读集合中均视为重读
-		isReread := wasReadBefore
-		if !isReread {
-			if _, err := s.firstRow(ctx, `SELECT 1 FROM reading_events WHERE book_id = ? AND poem_id = ? AND read_date <> ? LIMIT 1`,
-				bookID, poemID, readDate); err == nil {
-				isReread = true
-			}
-		}
-
+		title, poet := s.readingEventMetadata(ctx, in, bookRow)
+		isReread := in.WasReadBefore || s.hasOtherReadingDate(ctx, in.BookID, in.PoemID, readDate)
 		out = domain.ReadingEvent{
-			ID:        domain.NewID(),
-			BookID:    bookID,
-			PoemID:    poemID,
-			PoemTitle: title,
-			Author:    poet,
-			ReadDate:  readDate,
-			ReadHour:  readHour,
-			ReadAt:    readAtMs,
-			IsReread:  isReread,
-			DeviceID:  v.InstallID,
+			ID: domain.NewID(), BookID: in.BookID, PoemID: in.PoemID,
+			PoemTitle: title, Author: poet, ReadDate: readDate,
+			ReadHour: in.ReadAt.Hour(), ReadAt: in.ReadAt.UTC().UnixMilli(),
+			IsReread: isReread,
+			DeviceID: v.InstallID,
 		}
 		inserted = true
 		return putReadingEventStmts(out), nil
@@ -306,6 +269,33 @@ func (s *Store) RecordReadingEvent(ctx context.Context, in RecordReadingEventInp
 		return domain.ReadingEvent{}, false, err
 	}
 	return out, inserted, nil
+}
+
+// Fill missing values from cached content and fall back to the book author.
+func (s *Store) readingEventMetadata(ctx context.Context, in RecordReadingEventInput, bookRow row) (string, string) {
+	title := strings.TrimSpace(in.PoemTitle)
+	poet := strings.TrimSpace(in.Author)
+	if title == "" || poet == "" {
+		pRow, err := s.firstRow(ctx, `SELECT title, author FROM poems WHERE book_id = ? AND id = ?`, in.BookID, in.PoemID)
+		if err == nil {
+			if title == "" {
+				title = strings.TrimSpace(pRow.text(0))
+			}
+			if poet == "" {
+				poet = strings.TrimSpace(pRow.text(1))
+			}
+		}
+	}
+	if poet == "" {
+		poet = strings.TrimSpace(bookRow.text(0))
+	}
+	return title, poet
+}
+
+func (s *Store) hasOtherReadingDate(ctx context.Context, bookID, poemID, readDate string) bool {
+	_, err := s.firstRow(ctx, `SELECT 1 FROM reading_events WHERE book_id = ? AND poem_id = ? AND read_date <> ? LIMIT 1`,
+		bookID, poemID, readDate)
+	return err == nil
 }
 
 // ListReadingEventsByDate 返回某一天（YYYY-MM-DD）的全部有效读诗明细，按阅读时间倒序。

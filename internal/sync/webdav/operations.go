@@ -363,15 +363,8 @@ func (c *Client) ListDir(ctx context.Context, relDir string) ([]Entry, error) {
 		return nil, err
 	}
 
-	if res.StatusCode == http.StatusNotFound {
-		c.invalidateDir(relDir, true)
-		return nil, ErrNotFound
-	}
-	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
-		return nil, ErrUnauthorized
-	}
-	if res.StatusCode != http.StatusMultiStatus && res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("webdav: list %s unexpected status %d", relDir, res.StatusCode)
+	if err := c.checkListStatus(relDir, res.StatusCode); err != nil {
+		return nil, err
 	}
 
 	var ms multiStatusXML
@@ -379,37 +372,9 @@ func (c *Client) ListDir(ctx context.Context, relDir string) ([]Entry, error) {
 		return nil, fmt.Errorf("webdav: parse propfind xml: %w", err)
 	}
 
-	baseSegs := splitEscapedPath(targetURL.EscapedPath())
-	entries := make([]Entry, 0, len(ms.Responses))
-	confirmed := false
-	for _, r := range ms.Responses {
-		segs := hrefSegments(targetURL, r.Href)
-		if segs == nil {
-			continue
-		}
-		entry, ok := r.entry()
-		if samePathSegments(baseSegs, segs) {
-			switch davStatusCode(r.Status) {
-			case http.StatusNotFound:
-				c.invalidateDir(relDir, true)
-				return nil, ErrNotFound
-			case http.StatusForbidden, http.StatusUnauthorized:
-				return nil, ErrUnauthorized
-			}
-			if ok && !entry.IsDir && r.hasResourceType() {
-				c.InvalidateDir(relDir)
-				return nil, fmt.Errorf("webdav: list %s: target is not a collection", relDir)
-			}
-			confirmed = confirmed || (ok && entry.IsDir)
-			continue
-		}
-		if !ok || len(segs) != len(baseSegs)+1 || !samePathSegments(baseSegs, segs[:len(baseSegs)]) {
-			continue
-		}
-		if name := decodePathSegment(segs[len(segs)-1]); name != "" && name != "." && name != ".." && !strings.Contains(name, "/") {
-			entry.Name = name
-			entries = append(entries, entry)
-		}
+	entries, confirmed, err := c.listDirectChildren(relDir, targetURL, ms.Responses)
+	if err != nil {
+		return nil, err
 	}
 	if confirmed || len(entries) > 0 {
 		c.dirMu.Lock()
@@ -419,6 +384,68 @@ func (c *Client) ListDir(ctx context.Context, relDir string) ([]Entry, error) {
 		c.dirMu.Unlock()
 	}
 	return entries, nil
+}
+
+func (c *Client) checkListStatus(relDir string, status int) error {
+	if status == http.StatusNotFound {
+		c.invalidateDir(relDir, true)
+		return ErrNotFound
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return ErrUnauthorized
+	}
+	if status != http.StatusMultiStatus && status != http.StatusOK {
+		return fmt.Errorf("webdav: list %s unexpected status %d", relDir, status)
+	}
+
+	return nil
+}
+
+func (c *Client) listDirectChildren(relDir string, targetURL *url.URL, responses []responseXML) ([]Entry, bool, error) {
+	baseSegs := splitEscapedPath(targetURL.EscapedPath())
+	entries := make([]Entry, 0, len(responses))
+	confirmed := false
+	for _, r := range responses {
+		segs := hrefSegments(targetURL, r.Href)
+		if segs == nil {
+			continue
+		}
+		entry, ok := r.entry()
+		if samePathSegments(baseSegs, segs) {
+			if err := c.checkListedCollection(relDir, r, entry, ok); err != nil {
+				return nil, false, err
+			}
+			confirmed = confirmed || (ok && entry.IsDir)
+			continue
+		}
+		if !ok || len(segs) != len(baseSegs)+1 || !samePathSegments(baseSegs, segs[:len(baseSegs)]) {
+			continue
+		}
+		if name := decodePathSegment(segs[len(segs)-1]); validListedChildName(name) {
+			entry.Name = name
+			entries = append(entries, entry)
+		}
+	}
+	return entries, confirmed, nil
+}
+
+func (c *Client) checkListedCollection(relDir string, r responseXML, entry Entry, ok bool) error {
+	switch davStatusCode(r.Status) {
+	case http.StatusNotFound:
+		c.invalidateDir(relDir, true)
+		return ErrNotFound
+	case http.StatusForbidden, http.StatusUnauthorized:
+		return ErrUnauthorized
+	}
+	if ok && !entry.IsDir && r.hasResourceType() {
+		c.InvalidateDir(relDir)
+		return fmt.Errorf("webdav: list %s: target is not a collection", relDir)
+	}
+	return nil
+}
+
+func validListedChildName(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.Contains(name, "/")
 }
 
 const entryPropfindBody = `<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:displayname/><d:getcontentlength/><d:getetag/><d:getlastmodified/><d:resourcetype/></d:prop></d:propfind>`

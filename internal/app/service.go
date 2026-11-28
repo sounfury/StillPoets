@@ -412,7 +412,6 @@ func (s *Service) CacheSizeBytes() int64 {
 	return total
 }
 
-
 func (s *Service) emitSyncToast(st SyncToastState) {
 	s.mu.Lock()
 	cb := s.onSyncToast

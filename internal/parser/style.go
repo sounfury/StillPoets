@@ -159,25 +159,13 @@ func (d *document) style(n *html.Node) map[string]string {
 	nodeID := attr(n, "id")
 	nodeClass := attr(n, "class")
 	for _, rule := range d.css {
-		if rule.tag != "" && rule.tag != n.Data {
+		if !rule.matches(n.Data, nodeID, nodeClass) {
 			continue
 		}
-		if rule.id != "" && nodeID != rule.id {
-			continue
-		}
-		match := true
-		for _, cls := range rule.classes {
-			if !hasToken(nodeClass, cls) {
-				match = false
-				break
-			}
-		}
-		if match {
-			for k, v := range rule.values {
-				if rule.score >= scores[k] {
-					out[k] = v
-					scores[k] = rule.score
-				}
+		for k, v := range rule.values {
+			if rule.score >= scores[k] {
+				out[k] = v
+				scores[k] = rule.score
 			}
 		}
 	}
@@ -187,6 +175,18 @@ func (d *document) style(n *html.Node) map[string]string {
 		}
 	}
 	return out
+}
+
+func (r styleRule) matches(tag, id, classes string) bool {
+	if r.tag != "" && r.tag != tag || r.id != "" && r.id != id {
+		return false
+	}
+	for _, class := range r.classes {
+		if !hasToken(classes, class) {
+			return false
+		}
+	}
+	return true
 }
 
 func emLength(s string) float64 {

@@ -51,7 +51,6 @@ func main() {
 		mu         sync.Mutex
 		svc        *app.Service
 		appUI      *views.AppUI
-		win        *mygo.Window
 		pendingURL string
 	)
 
@@ -74,159 +73,9 @@ func main() {
 	})
 
 	mygo.App.WhenReady(func() {
-		dataDir, err := mygo.App.Path(mygo.PathUserData)
-		if err != nil || dataDir == "" {
-			cwd, _ := os.Getwd()
-			dataDir = filepath.Join(cwd, ".stillpoets-data")
-		} else {
-			dataDir = filepath.Join(dataDir, "StillPoets")
-		}
-
-		secrets := mygoSecretsAdapter{mod: mygo.Secrets.Service("com.stillpoets.webdav")}
-		svc, err = app.Open(context.Background(), dataDir, secrets)
-		if err != nil {
-			log.Fatalf("初始化 StillPoets 数据层失败：%v", err)
-		}
-
-		// 绑定原生桌面小组件刷新通道，并在启动后同步一次最新快照路径与内容
-		svc.SetWidgetUpdatedCallback(widgetbridge.Reload)
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if _, err := svc.RebuildWidgetTimeline(ctx); err != nil {
-				widgetbridge.Reload(svc.WidgetTimelinePath(), svc.FontsDir())
-			}
-		}()
-
-		pickFile := func(title string, extensions []string) (string, error) {
-			paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
-				Parent: win,
-				Title:  title,
-				Filters: []mygo.FileFilter{
-					{Name: title, Extensions: extensions},
-				},
-			})
-			if err != nil || len(paths) == 0 {
-				return "", err
-			}
-			return paths[0], nil
-		}
-
-		initialDark := mygo.Theme.IsDark()
-		initialPal := theme.Resolve(theme.PresetArtbook, true, initialDark)
-		if st, err := svc.LoadSettings(context.Background()); err == nil {
-			initialPal = theme.Resolve(theme.PresetID(st.ThemePreset), st.ShouldFollowSystemDark(), initialDark)
-		}
-
-		uiInst := views.NewAppUI(svc, pickFile, nil)
-		uiInst.SetAppVersion(mygo.App.Version())
-		if appupdater.Available() {
-			uiInst.SetAppUpdater(mygoAppUpdaterAdapter{})
-		}
-		uiInst.SetOpenURLFunc(func(rawURL string) error {
-			return mygo.Shell.OpenExternal(rawURL)
-		})
-		uiInst.SetExportFileFunc(func(filePath string) (string, error) {
-			err := mygo.Share(mygo.ShareOptions{
-				Text:  "StillPoets 诊断分析日志",
-				Files: []string{filePath},
-			})
-			if err == nil {
-				return filePath, nil
-			}
-			if errors.Is(err, errors.ErrUnsupported) {
-				saved, saveErr := mygo.Dialog.SaveCopy(filePath, filepath.Base(filePath))
-				if saveErr != nil {
-					return "", saveErr
-				}
-				return saved, nil
-			}
-			// 移动端若系统分享不可用，回退到系统文件保存器（iOS Files / Android SAF）
-			if saved, saveErr := mygo.Dialog.SaveCopy(filePath, filepath.Base(filePath)); saveErr == nil {
-				return saved, nil
-			}
-			return "", err
-		})
-		uiInst.SetSavePhotoFunc(func(filePath string) (string, error) {
-			if err := photosaver.SaveImage(filePath, "StillPoets"); err == nil {
-				return "系统相册", nil
-			} else if !errors.Is(err, errors.ErrUnsupported) {
-				return "", err
-			}
-			// 桌面预览等无相册平台回退至系统另存为文件框
-			saved, saveErr := mygo.Dialog.SaveCopy(filePath, filepath.Base(filePath))
-			if saveErr != nil {
-				return "", saveErr
-			}
-			if saved == "" {
-				return "", context.Canceled
-			}
-			return saved, nil
-		})
-		uiInst.SetShareImageFunc(func(filePath, _ string) error {
-			// 纯图片分享不附带 Text，确保 Android ACTION_SEND 以 image/png 直达微信/小红书等社交应用
-			err := mygo.Share(mygo.ShareOptions{
-				Files: []string{filePath},
-			})
-			if err == nil {
-				return nil
-			}
-			if errors.Is(err, errors.ErrUnsupported) {
-				saved, saveErr := mygo.Dialog.SaveCopy(filePath, filepath.Base(filePath))
-				if saveErr != nil {
-					return saveErr
-				}
-				if saved == "" {
-					return context.Canceled
-				}
-				return nil
-			}
-			if saved, saveErr := mygo.Dialog.SaveCopy(filePath, filepath.Base(filePath)); saveErr == nil {
-				if saved == "" {
-					return context.Canceled
-				}
-				return nil
-			}
-			return err
-		})
-		uiInst.SetCopyTextFunc(func(text string) {
-			mygo.Clipboard.WriteText(text)
-		})
-		uiInst.SetInitialSystemDark(initialDark)
-		win = mygo.NewWindow(mygo.WindowOptions{
-			Title:           "StillPoets",
-			Width:           1080,
-			Height:          720,
-			MinWidth:        360,
-			MinHeight:       600,
-			BackgroundColor: initialPal.BgHex,
-			StateKey:        "stillpoets-main",
-			Content:         ui.View(uiInst.Render),
-		})
-		uiInst.SetUIDispatch(win.Update)
-		uiInst.SetWindowBgFunc(func(hex string) {
-			_ = win.SetBackgroundColor(hex)
-		})
-		syncSystemBars := func(darkContent bool) {
-			if darkContent {
-				mygo.SystemBars.SetStyle(mygo.BarStyleLight)
-			} else {
-				mygo.SystemBars.SetStyle(mygo.BarStyleDark)
-			}
-		}
-		uiInst.SetSystemBarStyleFunc(syncSystemBars)
-		syncSystemBars(initialPal.ID == theme.PresetDarkMinimal)
-
-		// 监听手机系统深色/浅色模式变化，实时通知 UI 自动切换暗夜极简或恢复日间主题，并同步刷新桌面小组件配色
-		mygo.Theme.OnUpdated(func() {
-			uiInst.NotifySystemDarkMode(mygo.Theme.IsDark())
-			go widgetbridge.Reload(svc.WidgetTimelinePath(), svc.FontsDir())
-		})
-
-		// 每次用户切回/点进应用时自动检测一次更新（并在授权未知应用安装权限返回后自动衔接安装）
-		mygo.App.OnActivate(func(_ bool) {
-			uiInst.OnAppActivated()
-		})
+		svc = openService()
+		initializeWidget(svc)
+		uiInst := openAppWindow(svc)
 
 		mu.Lock()
 		appUI = uiInst
@@ -244,4 +93,153 @@ func main() {
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func openService() *app.Service {
+	dataDir, err := mygo.App.Path(mygo.PathUserData)
+	if err != nil || dataDir == "" {
+		cwd, _ := os.Getwd()
+		dataDir = filepath.Join(cwd, ".stillpoets-data")
+	} else {
+		dataDir = filepath.Join(dataDir, "StillPoets")
+	}
+
+	secrets := mygoSecretsAdapter{mod: mygo.Secrets.Service("com.stillpoets.webdav")}
+	svc, err := app.Open(context.Background(), dataDir, secrets)
+	if err != nil {
+		log.Fatalf("初始化 StillPoets 数据层失败：%v", err)
+	}
+	return svc
+}
+
+func initializeWidget(svc *app.Service) {
+	// 绑定原生桌面小组件刷新通道，并在启动后同步一次最新快照路径与内容
+	svc.SetWidgetUpdatedCallback(widgetbridge.Reload)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := svc.RebuildWidgetTimeline(ctx); err != nil {
+			widgetbridge.Reload(svc.WidgetTimelinePath(), svc.FontsDir())
+		}
+	}()
+}
+
+func openAppWindow(svc *app.Service) *views.AppUI {
+	var win *mygo.Window
+	pickFile := func(title string, extensions []string) (string, error) {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+			Parent: win,
+			Title:  title,
+			Filters: []mygo.FileFilter{
+				{Name: title, Extensions: extensions},
+			},
+		})
+		if err != nil || len(paths) == 0 {
+			return "", err
+		}
+		return paths[0], nil
+	}
+
+	initialDark := mygo.Theme.IsDark()
+	initialPal := theme.Resolve(theme.PresetArtbook, true, initialDark)
+	if st, err := svc.LoadSettings(context.Background()); err == nil {
+		initialPal = theme.Resolve(theme.PresetID(st.ThemePreset), st.ShouldFollowSystemDark(), initialDark)
+	}
+
+	uiInst := views.NewAppUI(svc, pickFile, nil)
+	configureAppUI(uiInst)
+	uiInst.SetInitialSystemDark(initialDark)
+	win = mygo.NewWindow(mygo.WindowOptions{
+		Title:           "StillPoets",
+		Width:           1080,
+		Height:          720,
+		MinWidth:        360,
+		MinHeight:       600,
+		BackgroundColor: initialPal.BgHex,
+		StateKey:        "stillpoets-main",
+		Content:         ui.View(uiInst.Render),
+	})
+	uiInst.SetUIDispatch(win.Update)
+	uiInst.SetWindowBgFunc(func(hex string) {
+		_ = win.SetBackgroundColor(hex)
+	})
+	syncSystemBars := func(darkContent bool) {
+		if darkContent {
+			mygo.SystemBars.SetStyle(mygo.BarStyleLight)
+		} else {
+			mygo.SystemBars.SetStyle(mygo.BarStyleDark)
+		}
+	}
+	uiInst.SetSystemBarStyleFunc(syncSystemBars)
+	syncSystemBars(initialPal.ID == theme.PresetDarkMinimal)
+
+	// 监听手机系统深色/浅色模式变化，实时通知 UI 自动切换暗夜极简或恢复日间主题，并同步刷新桌面小组件配色
+	mygo.Theme.OnUpdated(func() {
+		uiInst.NotifySystemDarkMode(mygo.Theme.IsDark())
+		go widgetbridge.Reload(svc.WidgetTimelinePath(), svc.FontsDir())
+	})
+
+	// 每次用户切回/点进应用时自动检测一次更新（并在授权未知应用安装权限返回后自动衔接安装）
+	mygo.App.OnActivate(func(_ bool) {
+		uiInst.OnAppActivated()
+	})
+	return uiInst
+}
+
+func configureAppUI(uiInst *views.AppUI) {
+	uiInst.SetAppVersion(mygo.App.Version())
+	if appupdater.Available() {
+		uiInst.SetAppUpdater(mygoAppUpdaterAdapter{})
+	}
+	uiInst.SetOpenURLFunc(func(rawURL string) error {
+		return mygo.Shell.OpenExternal(rawURL)
+	})
+	uiInst.SetExportFileFunc(exportDiagnosticFile)
+	uiInst.SetSavePhotoFunc(savePhoto)
+	uiInst.SetShareImageFunc(shareImage)
+	uiInst.SetCopyTextFunc(func(text string) {
+		mygo.Clipboard.WriteText(text)
+	})
+}
+
+func exportDiagnosticFile(filePath string) (string, error) {
+	return shareOrSaveFile(filePath, "StillPoets 诊断分析日志")
+}
+
+func savePhoto(filePath string) (string, error) {
+	if err := photosaver.SaveImage(filePath, "StillPoets"); err == nil {
+		return "系统相册", nil
+	} else if !errors.Is(err, errors.ErrUnsupported) {
+		return "", err
+	}
+	// 桌面预览等无相册平台回退至系统另存为文件框
+	saved, saveErr := mygo.Dialog.SaveCopy(filePath, filepath.Base(filePath))
+	if saveErr != nil {
+		return "", saveErr
+	}
+	if saved == "" {
+		return "", context.Canceled
+	}
+	return saved, nil
+}
+
+func shareImage(filePath, _ string) error {
+	// 纯图片分享使用 image/png。若退回另存为，空路径表示取消。
+	saved, err := shareOrSaveFile(filePath, "")
+	if err == nil && saved == "" {
+		return context.Canceled
+	}
+	return err
+}
+
+func shareOrSaveFile(filePath, text string) (string, error) {
+	err := mygo.Share(mygo.ShareOptions{Text: text, Files: []string{filePath}})
+	if err == nil {
+		return filePath, nil
+	}
+	saved, saveErr := mygo.Dialog.SaveCopy(filePath, filepath.Base(filePath))
+	if saveErr == nil || errors.Is(err, errors.ErrUnsupported) {
+		return saved, saveErr
+	}
+	return "", err
 }

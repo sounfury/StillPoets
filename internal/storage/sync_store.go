@@ -99,14 +99,8 @@ func (s *Store) ApplyMergedSnapshot(ctx context.Context, merged booksync.Snapsho
 // 防止部分发布后误清脏标记导致新书长期漏发（P1-1），并拒绝超过 MaxInt64 的异常 Lamport 计数（P1-13）。
 // remoteDeviceRevs 非 nil 时，随合并数据提交整个工作区的已验证远端代次记录。
 func (s *Store) ApplyMergedSnapshotEx(ctx context.Context, merged booksync.SnapshotData, opts ApplySnapshotOptions) error {
-	exportedDirtySeq := opts.ExportedDirtySeq
-	maxCounter := opts.MaxCounter
-	publishedRev := opts.PublishedRev
-	published := opts.Published
-	keepDirty := opts.KeepDirty
-	remoteDeviceRevs := opts.RemoteDeviceRevs
-	if maxCounter > math.MaxInt64 {
-		return fmt.Errorf("storage: remote lamport counter %d exceeds int64 limit", maxCounter)
+	if opts.MaxCounter > math.MaxInt64 {
+		return fmt.Errorf("storage: remote lamport counter %d exceeds int64 limit", opts.MaxCounter)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -114,7 +108,7 @@ func (s *Store) ApplyMergedSnapshotEx(ctx context.Context, merged booksync.Snaps
 	if err != nil {
 		return err
 	}
-	changedDuringSync := meta.DirtySeq != exportedDirtySeq
+	changedDuringSync := meta.DirtySeq != opts.ExportedDirtySeq
 	if changedDuringSync {
 		current, err := s.snapshotData(ctx)
 		if err != nil {
@@ -123,15 +117,16 @@ func (s *Store) ApplyMergedSnapshotEx(ctx context.Context, merged booksync.Snaps
 		merged = booksync.MergeSnapshotData(merged, current)
 	}
 
-	// 跨端读完收敛（P1-14）：若合并后的已读并集覆盖整本诗集全部有效诗篇，则自动推进为 finished。
-	bookPoemCounts := make(map[string]int, len(merged.Books))
-	for _, b := range merged.Books {
-		if !b.Deleted && b.PoemCount > 0 {
-			bookPoemCounts[b.ID] = b.PoemCount
-		}
-	}
-
 	now := domain.NowMillis()
+	statements := snapshotStatements(merged, now)
+	statements, err = appendSnapshotSyncState(statements, meta.LamportCounter, opts, changedDuringSync, now)
+	if err != nil {
+		return err
+	}
+	return s.transact(ctx, statements)
+}
+
+func snapshotStatements(merged booksync.SnapshotData, now int64) []sqlite.Statement {
 	statements := []sqlite.Statement{stmt(`DELETE FROM quotes_fts`)}
 	for _, group := range merged.Groups {
 		statements = append(statements, putGroup(group))
@@ -151,41 +146,61 @@ func (s *Store) ApplyMergedSnapshotEx(ctx context.Context, merged booksync.Snaps
 			statements = append(statements, indexQuote(quote.ID, quote.Content, quote.Author, quote.SourceBook))
 		}
 	}
+	bookPoemCounts := snapshotPoemCounts(merged.Books)
 	for _, progress := range merged.Progress {
-		if progress.Status != domain.ReadStatusFinished {
-			if total := bookPoemCounts[progress.BookID]; total > 0 && len(progress.ReadPoemIDs) >= total {
-				progress.Status = domain.ReadStatusFinished
-				if progress.FinishedAt == 0 {
-					progress.FinishedAt = now
-				}
-			}
-		}
+		reconcileSnapshotCompletion(&progress, bookPoemCounts[progress.BookID], now)
 		statements = append(statements, putProgress(progress))
 	}
 	for _, ev := range merged.ReadingEvents {
 		statements = append(statements, putReadingEventStmts(ev)...)
 	}
 
+	return statements
+}
+
+func snapshotPoemCounts(books []domain.Book) map[string]int {
+	// 跨端读完收敛（P1-14）：若合并后的已读并集覆盖整本诗集全部有效诗篇，则自动推进为 finished。
+	bookPoemCounts := make(map[string]int, len(books))
+	for _, b := range books {
+		if !b.Deleted && b.PoemCount > 0 {
+			bookPoemCounts[b.ID] = b.PoemCount
+		}
+	}
+
+	return bookPoemCounts
+}
+
+func reconcileSnapshotCompletion(progress *domain.ReadingProgress, total int, now int64) {
+	if progress.Status == domain.ReadStatusFinished || total <= 0 || len(progress.ReadPoemIDs) < total {
+		return
+	}
+	progress.Status = domain.ReadStatusFinished
+	if progress.FinishedAt == 0 {
+		progress.FinishedAt = now
+	}
+}
+
+func appendSnapshotSyncState(statements []sqlite.Statement, localCounter uint64, opts ApplySnapshotOptions, changedDuringSync bool, now int64) ([]sqlite.Statement, error) {
 	statements = append(statements,
-		setSyncState("lamport_counter", strconv.FormatUint(max(meta.LamportCounter, maxCounter), 10), now),
+		setSyncState("lamport_counter", strconv.FormatUint(max(localCounter, opts.MaxCounter), 10), now),
 		setSyncState("last_sync_at", strconv.FormatInt(now, 10), now),
 	)
-	if remoteDeviceRevs != nil {
-		revs, err := json.Marshal(remoteDeviceRevs)
+	if opts.RemoteDeviceRevs != nil {
+		revs, err := json.Marshal(opts.RemoteDeviceRevs)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		statements = append(statements, setSyncState("remote_device_revs", string(revs), now))
 	}
-	if published {
-		statements = append(statements, setSyncState("local_rev", strconv.FormatUint(publishedRev, 10), now))
-		if !changedDuringSync && !keepDirty {
+	if opts.Published {
+		statements = append(statements, setSyncState("local_rev", strconv.FormatUint(opts.PublishedRev, 10), now))
+		if !changedDuringSync && !opts.KeepDirty {
 			statements = append(statements, setSyncState("dirty", "0", now))
-		} else if keepDirty {
+		} else if opts.KeepDirty {
 			statements = append(statements, setSyncState("dirty", "1", now))
 		}
 	}
-	return s.transact(ctx, statements)
+	return statements, nil
 }
 
 const (

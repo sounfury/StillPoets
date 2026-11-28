@@ -12,17 +12,21 @@ import (
 )
 
 func buildHeatmap(events []domain.ReadingEvent, year int, now time.Time) HeatmapData {
-	loc := now.Location()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-	todayStr := today.Format("2006-01-02")
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	byDate, years := aggregateHeatmapDays(events, now.Year())
+	bounds := heatmapBounds(year, today)
+	hm := HeatmapData{Year: year, ModeLabel: bounds.label, AvailableYears: years}
+	populateHeatmap(&hm, bounds, today, byDate)
+	return hm
+}
 
-	type dayAgg struct {
-		total   int
-		initial int
-		reread  int
-	}
-	byDate := make(map[string]*dayAgg)
-	yearSet := map[int]struct{}{now.Year(): {}}
+type heatmapDayCounts struct {
+	total, initial, reread int
+}
+
+func aggregateHeatmapDays(events []domain.ReadingEvent, currentYear int) (map[string]*heatmapDayCounts, []int) {
+	byDate := make(map[string]*heatmapDayCounts)
+	yearSet := map[int]struct{}{currentYear: {}}
 	for _, ev := range events {
 		if len(ev.ReadDate) >= 4 {
 			if y, err := strconv.Atoi(ev.ReadDate[:4]); err == nil && y > 1970 {
@@ -31,7 +35,7 @@ func buildHeatmap(events []domain.ReadingEvent, year int, now time.Time) Heatmap
 		}
 		agg := byDate[ev.ReadDate]
 		if agg == nil {
-			agg = &dayAgg{}
+			agg = &heatmapDayCounts{}
 			byDate[ev.ReadDate] = agg
 		}
 		agg.total++
@@ -48,45 +52,40 @@ func buildHeatmap(events []domain.ReadingEvent, year int, now time.Time) Heatmap
 	}
 	slices.Sort(availYears)
 
-	var (
-		rangeStart time.Time
-		rangeEnd   time.Time
-		gridStart  time.Time
-		gridEnd    time.Time
-		modeLabel  string
-	)
+	return byDate, availYears
+}
+
+type heatmapDateRange struct {
+	rangeStart, rangeEnd time.Time
+	gridStart, gridEnd   time.Time
+	label                string
+}
+
+func heatmapBounds(year int, today time.Time) heatmapDateRange {
 	if year <= 0 {
 		// 默认近 52 周滚动视图，右端自然对齐本周日
 		offset := (int(today.Weekday()) + 6) % 7
 		thisMonday := today.AddDate(0, 0, -offset)
-		gridStart = thisMonday.AddDate(0, 0, -51*7)
-		gridEnd = thisMonday.AddDate(0, 0, 6)
-		rangeStart = gridStart
-		rangeEnd = today
-		modeLabel = "近一年"
-	} else {
-		rangeStart = time.Date(year, 1, 1, 0, 0, 0, 0, loc)
-		rangeEnd = time.Date(year, 12, 31, 0, 0, 0, 0, loc)
-		startOffset := (int(rangeStart.Weekday()) + 6) % 7
-		gridStart = rangeStart.AddDate(0, 0, -startOffset)
-		endOffset := (7 - ((int(rangeEnd.Weekday()) + 6) % 7) - 1)
-		gridEnd = rangeEnd.AddDate(0, 0, endOffset)
-		modeLabel = fmt.Sprintf("%d 年", year)
+		gridStart := thisMonday.AddDate(0, 0, -51*7)
+		return heatmapDateRange{gridStart, today, gridStart, thisMonday.AddDate(0, 0, 6), "近一年"}
 	}
+	loc := today.Location()
+	rangeStart := time.Date(year, 1, 1, 0, 0, 0, 0, loc)
+	rangeEnd := time.Date(year, 12, 31, 0, 0, 0, 0, loc)
+	startOffset := (int(rangeStart.Weekday()) + 6) % 7
+	endOffset := 6 - (int(rangeEnd.Weekday())+6)%7
+	return heatmapDateRange{rangeStart, rangeEnd, rangeStart.AddDate(0, 0, -startOffset), rangeEnd.AddDate(0, 0, endOffset), fmt.Sprintf("%d 年", year)}
+}
 
-	hm := HeatmapData{
-		Year:           year,
-		ModeLabel:      modeLabel,
-		AvailableYears: availYears,
-	}
-
+func populateHeatmap(hm *HeatmapData, bounds heatmapDateRange, today time.Time, byDate map[string]*heatmapDayCounts) {
+	todayStr := today.Format("2006-01-02")
 	lastLabeledMonth := time.Month(0)
-	for weekStart := gridStart; !weekStart.After(gridEnd); weekStart = weekStart.AddDate(0, 0, 7) {
+	for weekStart := bounds.gridStart; !weekStart.After(bounds.gridEnd); weekStart = weekStart.AddDate(0, 0, 7) {
 		var w HeatmapWeek
 		for d := 0; d < 7; d++ {
 			cur := weekStart.AddDate(0, 0, d)
 			dateStr := cur.Format("2006-01-02")
-			outOfRange := cur.Before(rangeStart) || cur.After(rangeEnd)
+			outOfRange := cur.Before(bounds.rangeStart) || cur.After(bounds.rangeEnd)
 			inFuture := cur.After(today)
 
 			// 标注每个自然月首次出现的列
@@ -95,30 +94,30 @@ func buildHeatmap(events []domain.ReadingEvent, year int, now time.Time) Heatmap
 				lastLabeledMonth = cur.Month()
 			}
 
-			cell := HeatmapDay{
-				Date:       dateStr,
-				InFuture:   inFuture,
-				OutOfRange: outOfRange,
-			}
-			if agg := byDate[dateStr]; !outOfRange && !inFuture && agg != nil && agg.total > 0 {
-				cell.Count = agg.total
-				cell.InitialCount = agg.initial
-				cell.RereadCount = agg.reread
-				cell.Level = heatmapLevel(agg.total)
-				hm.ActiveDays++
-				hm.TotalEvents += agg.total
-				if agg.total > hm.MaxDayCount {
-					hm.MaxDayCount = agg.total
-				}
-				if dateStr <= todayStr && dateStr > hm.LatestActiveDate {
-					hm.LatestActiveDate = dateStr
-				}
+			cell := HeatmapDay{Date: dateStr, InFuture: inFuture, OutOfRange: outOfRange}
+			if !outOfRange && !inFuture {
+				applyHeatmapDayCounts(hm, &cell, byDate[dateStr], todayStr)
 			}
 			w.Days[d] = cell
 		}
 		hm.Weeks = append(hm.Weeks, w)
 	}
-	return hm
+}
+
+func applyHeatmapDayCounts(hm *HeatmapData, cell *HeatmapDay, agg *heatmapDayCounts, today string) {
+	if agg == nil || agg.total <= 0 {
+		return
+	}
+	cell.Count = agg.total
+	cell.InitialCount = agg.initial
+	cell.RereadCount = agg.reread
+	cell.Level = heatmapLevel(agg.total)
+	hm.ActiveDays++
+	hm.TotalEvents += agg.total
+	hm.MaxDayCount = max(hm.MaxDayCount, agg.total)
+	if cell.Date <= today && cell.Date > hm.LatestActiveDate {
+		hm.LatestActiveDate = cell.Date
+	}
 }
 
 func heatmapLevel(count int) int {
@@ -221,85 +220,97 @@ type authorCloudInput struct {
 }
 
 func buildAuthorCloud(in authorCloudInput) []AuthorStat {
-	windowEvents := in.windowEvents
-	historicalReadPairs := in.historicalReadPairs
-	includeHistorical := in.includeHistorical
-	windowFavorites := in.windowFavorites
-	windowQuotes := in.windowQuotes
-	bookMap := in.bookMap
-	poemAuthors := in.poemAuthors
-	mode := in.mode
-	type acc struct {
-		readPairs map[poemPair]struct{}
-		books     map[string]struct{}
-		favCount  int
-		quoteCnt  int
-	}
-	byAuthor := make(map[string]*acc)
-	ensure := func(name string) *acc {
-		a := byAuthor[name]
-		if a == nil {
-			a = &acc{
-				readPairs: make(map[poemPair]struct{}),
-				books:     make(map[string]struct{}),
-			}
-			byAuthor[name] = a
-		}
-		return a
-	}
+	authors := make(authorCloudTotals)
+	authors.addReads(in)
+	authors.addCollections(in)
+	ranked := authors.rank(in.mode)
+	assignAuthorTiers(ranked)
+	return ranked
+}
 
-	for _, ev := range windowEvents {
-		b := bookMap[ev.BookID]
-		poet := resolvePoemAuthor(ev.Author, poemAuthors[poemPair{bookID: ev.BookID, poemID: ev.PoemID}], b.Author)
+type authorTotals struct {
+	readPairs map[poemPair]struct{}
+	books     map[string]struct{}
+	favCount  int
+	quoteCnt  int
+}
+
+type authorCloudTotals map[string]*authorTotals
+
+func (byAuthor authorCloudTotals) ensure(name string) *authorTotals {
+	a := byAuthor[name]
+	if a == nil {
+		a = &authorTotals{
+			readPairs: make(map[poemPair]struct{}),
+			books:     make(map[string]struct{}),
+		}
+		byAuthor[name] = a
+	}
+	return a
+}
+
+func (byAuthor authorCloudTotals) addReads(in authorCloudInput) {
+	for _, ev := range in.windowEvents {
+		b := in.bookMap[ev.BookID]
+		poet := resolvePoemAuthor(ev.Author, in.poemAuthors[poemPair{bookID: ev.BookID, poemID: ev.PoemID}], b.Author)
 		if poet == "" {
 			continue
 		}
-		a := ensure(poet)
+		a := byAuthor.ensure(poet)
 		a.readPairs[poemPair{bookID: ev.BookID, poemID: ev.PoemID}] = struct{}{}
 		a.books[ev.BookID] = struct{}{}
 	}
 
-	if includeHistorical {
-		for pair := range historicalReadPairs {
-			b, ok := bookMap[pair.bookID]
-			if !ok {
-				continue
-			}
-			poet := resolvePoemAuthor("", poemAuthors[pair], b.Author)
-			if poet == "" {
-				continue
-			}
-			a := ensure(poet)
-			a.readPairs[pair] = struct{}{}
-			a.books[pair.bookID] = struct{}{}
-		}
+	if in.includeHistorical {
+		byAuthor.addHistoricalReads(in)
 	}
+}
 
-	for _, f := range windowFavorites {
-		b := bookMap[f.BookID]
-		poet := resolvePoemAuthor(f.Author, poemAuthors[poemPair{bookID: f.BookID, poemID: f.PoemID}], b.Author)
+func (byAuthor authorCloudTotals) addHistoricalReads(in authorCloudInput) {
+	for pair := range in.historicalReadPairs {
+		b, ok := in.bookMap[pair.bookID]
+		if !ok {
+			continue
+		}
+		poet := resolvePoemAuthor("", in.poemAuthors[pair], b.Author)
 		if poet == "" {
 			continue
 		}
-		a := ensure(poet)
+		a := byAuthor.ensure(poet)
+		a.readPairs[pair] = struct{}{}
+		a.books[pair.bookID] = struct{}{}
+	}
+}
+
+func (byAuthor authorCloudTotals) addCollections(in authorCloudInput) {
+	for _, f := range in.windowFavorites {
+		b := in.bookMap[f.BookID]
+		poet := resolvePoemAuthor(f.Author, in.poemAuthors[poemPair{bookID: f.BookID, poemID: f.PoemID}], b.Author)
+		if poet == "" {
+			continue
+		}
+		a := byAuthor.ensure(poet)
 		a.favCount++
 		a.books[f.BookID] = struct{}{}
 	}
 
-	for _, q := range windowQuotes {
+	for _, q := range in.windowQuotes {
 		poet := normalizePoetName(q.Author)
 		if poet == "" {
 			continue
 		}
-		a := ensure(poet)
+		a := byAuthor.ensure(poet)
 		a.quoteCnt++
 		if q.BookID != "" {
-			if _, ok := bookMap[q.BookID]; ok {
+			if _, ok := in.bookMap[q.BookID]; ok {
 				a.books[q.BookID] = struct{}{}
 			}
 		}
 	}
 
+}
+
+func (byAuthor authorCloudTotals) rank(mode AuthorWeightMode) []AuthorStat {
 	list := make([]AuthorStat, 0, len(byAuthor))
 	for name, a := range byAuthor {
 		readCnt := len(a.readPairs)
@@ -340,6 +351,10 @@ func buildAuthorCloud(in authorCloudInput) []AuthorStat {
 		list = list[:36]
 	}
 
+	return list
+}
+
+func assignAuthorTiers(list []AuthorStat) {
 	// 按对数分档映射到 1..5 视觉阶梯，拉开高频与低频诗人的排版层次感
 	if len(list) > 0 {
 		maxScore := float64(list[0].Score)
@@ -356,7 +371,6 @@ func buildAuthorCloud(in authorCloudInput) []AuthorStat {
 			list[i].Tier = max(1, min(5, tier))
 		}
 	}
-	return list
 }
 
 func resolvePoemAuthor(explicitAuthor, cachedPoemAuthor, bookAuthor string) string {

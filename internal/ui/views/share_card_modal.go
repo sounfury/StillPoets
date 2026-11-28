@@ -278,159 +278,16 @@ func (a *AppUI) renderShareCardModal(c *ui.Context, pal theme.Palette) {
 			}
 		})
 
-		// 2. 实时可滚动预览画板（预览宽度适配弹窗，严格复用 sharecard.RenderCard）
-		previewW := min(float32(348), max(float32(252), dlgW-68))
-		previewMaxH := max(float32(220), dlgMaxH-296)
-		stageBg := pal.SurfaceMuted
-		if pal.IsDark() {
-			stageBg = ui.Hex("#111214")
-		}
+		a.renderShareCardPreview(c, pal, dlgW, dlgMaxH)
 
-		ui.Box(c.Key("sc-preview-stage")).
-			FillWidth().
-			MaxHeight(previewMaxH).
-			Grow(1).
-			Radius(10).
-			Background(stageBg).
-			Border(0.75, pal.Border).
-			Clip().
-			Children(func() {
-				ui.Scroll(c.Key("sc-preview-scroll")).
-					TrackScroll(&a.shareCardScroll).
-					Fill().
-					Children(func() {
-						ui.Column(c.Key("sc-preview-center")).
-							FillWidth().
-							AlignItems(ui.Center).
-							Padding(16, 12, 16, 12).
-							Children(func() {
-								cardShadow := ui.RGBA(20, 18, 14, 0.18)
-								if pal.IsDark() {
-									cardShadow = ui.RGBA(0, 0, 0, 0.48)
-								}
-								ui.Box(c.Key("sc-preview-frame")).
-									Width(previewW).
-									Radius(4).
-									Clip().
-									Shadow(0, 6, 18, -2, cardShadow).
-									Children(func() {
-										sharecard.RenderCard(c, a.shareCardData, a.shareCardOpts, previewW)
-									})
-							})
-					})
-			})
-
-		// 3. 模板选择器（5 套模板横向滑动胶囊）
-		ui.Column(c.Key("sc-controls")).FillWidth().Gap(9).Children(func() {
-			ui.ScrollHorizontal(c.Key("sc-tpl-scroll")).FillWidth().Children(func() {
-				ui.Row(c.Key("sc-tpl-row")).Gap(6).AlignItems(ui.Center).Children(func() {
-					for _, tpl := range sharecard.Templates() {
-						tpl := tpl
-						active := a.shareCardOpts.Template == tpl.ID
-						bg, fg, bd := pal.Background, pal.TextSecondary, pal.Border
-						if active {
-							bg, fg, bd = pal.Accent, pal.AccentText, pal.Accent
-						}
-						pill := ui.Box(c.Key("sc-tpl-"+string(tpl.ID))).
-							Padding(5, 11).
-							Radius(999).
-							Background(bg).
-							Border(0.9, bd).
-							Cursor(ui.CursorPointer).
-							Transition(theme.ColorTransition())
-						theme.ApplyPressScale(pill, 0.95)
-						pill.Children(func() {
-							txt := ui.Text(c, tpl.Name).Font(theme.FontSans).FontSize(11.5).TextColor(fg)
-							if active {
-								txt.Bold()
-							}
-						})
-						if pill.Clicked() && !a.shareCardBusy {
-							a.shareCardOpts.Template = tpl.ID
-							a.shareCardStatus = ""
-						}
-					}
-				})
-			})
-
-			// 4. 纸面主题色板选择器 + 水印角标开关
-			ui.Row(c.Key("sc-theme-row")).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-				ui.ScrollHorizontal(c.Key("sc-theme-scroll")).Grow(1).Children(func() {
-					ui.Row(c.Key("sc-theme-pills")).Gap(6).AlignItems(ui.Center).Children(func() {
-						for _, th := range sharecard.AllThemes() {
-							th := th
-							active := a.shareCardOpts.Theme == th.ID
-							bg, fg, bd := pal.Background, pal.TextSecondary, pal.Border
-							if active {
-								bg, fg, bd = pal.Surface, pal.TextPrimary, pal.Accent
-							}
-							chip := ui.Row(c.Key("sc-th-"+string(th.ID))).
-								Padding(4, 9, 4, 7).
-								Gap(5).
-								Radius(999).
-								Background(bg).
-								Border(1.1, bd).
-								AlignItems(ui.Center).
-								Cursor(ui.CursorPointer).
-								Transition(theme.ColorTransition())
-							theme.ApplyPressScale(chip, 0.95)
-							chip.Children(func() {
-								ui.Box(c.Key("sc-th-dot-"+string(th.ID))).
-									Width(11).Height(11).Radius(99).
-									Background(th.SwatchDot).
-									Border(0.75, pal.Border)
-								txt := ui.Text(c, th.Name).Font(theme.FontSans).FontSize(11).TextColor(fg)
-								if active {
-									txt.Bold()
-								}
-							})
-							if chip.Clicked() && !a.shareCardBusy {
-								a.shareCardOpts.Theme = th.ID
-								a.shareCardStatus = ""
-							}
-						}
-					})
-				})
-
-				// 极轻品牌角标开关
-				wm := a.shareCardOpts.ShowWatermark
-				ui.Row(c.Key("sc-wm-toggle")).Gap(5).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, "角标").Font(theme.FontSans).FontSize(11).TextColor(pal.TextMuted)
-					if mobile.Switch(c.Key("sc-wm-sw"), &wm).Changed() && !a.shareCardBusy {
-						a.shareCardOpts.ShowWatermark = wm
-					}
-				})
-			})
-		})
+		a.renderShareCardControls(c, pal)
 
 		// 导出结果/错误提示行
 		if a.shareCardStatus != "" {
 			ui.Text(c, a.shareCardStatus).Font(theme.FontSans).FontSize(11.5).TextColor(pal.Accent)
 		}
 
-		// 5. 底部操作按钮：保存到相册 / 系统分享
-		ui.Row(c.Key("sc-actions")).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
-			if a.shareCardBusy {
-				ui.Row(c.Key("sc-busy-row")).FillWidth().Center().Gap(8).Padding(6, 0).Children(func() {
-					ui.Spinner(c)
-					msg := a.shareCardBusyLabel
-					if msg == "" {
-						msg = "正在生成 3× 高清图片…"
-					}
-					ui.Text(c, msg).Font(theme.FontSans).FontSize(12.5).TextColor(pal.TextSecondary)
-				})
-				return
-			}
-
-			saveBtn := ui.Button(c.Key("sc-btn-save"), "保存到相册").Grow(1)
-			if saveBtn.Clicked() {
-				a.exportShareCardAsync("save")
-			}
-			shareBtn := ui.PrimaryButton(c.Key("sc-btn-share"), "系统分享").Grow(1)
-			if shareBtn.Clicked() {
-				a.exportShareCardAsync("share")
-			}
-		})
+		a.renderShareCardActions(c, pal)
 	})
 }
 
@@ -469,55 +326,226 @@ func (a *AppUI) exportShareCardAsync(mode string) {
 		}
 
 		if mode == "save" {
-			var savedInfo string
-			var saveErr error
-			if savePhotoFn != nil {
-				savedInfo, saveErr = savePhotoFn(res.FilePath)
-			} else if exportFileFn != nil {
-				savedInfo, saveErr = exportFileFn(res.FilePath)
-			} else {
-				savedInfo = res.FilePath
-			}
-			a.dispatchUI(func() {
-				a.shareCardBusy = false
-				a.shareCardBusyLabel = ""
-				if saveErr != nil {
-					if errors.Is(saveErr, context.Canceled) {
-						a.shareCardStatus = ""
-						return
+			a.saveShareCard(res, savePhotoFn, exportFileFn)
+			return
+		}
+
+		a.shareExportedCard(res.FilePath, data.Kind, shareImageFn, exportFileFn)
+	}()
+}
+
+func (a *AppUI) renderShareCardPreview(c *ui.Context, pal theme.Palette, dlgW, dlgMaxH float32) {
+	// 2. 实时可滚动预览画板（预览宽度适配弹窗，严格复用 sharecard.RenderCard）
+	previewW := min(float32(348), max(float32(252), dlgW-68))
+	previewMaxH := max(float32(220), dlgMaxH-296)
+	stageBg := pal.SurfaceMuted
+	if pal.IsDark() {
+		stageBg = ui.Hex("#111214")
+	}
+
+	ui.Box(c.Key("sc-preview-stage")).
+		FillWidth().
+		MaxHeight(previewMaxH).
+		Grow(1).
+		Radius(10).
+		Background(stageBg).
+		Border(0.75, pal.Border).
+		Clip().
+		Children(func() {
+			ui.Scroll(c.Key("sc-preview-scroll")).
+				TrackScroll(&a.shareCardScroll).
+				Fill().
+				Children(func() {
+					ui.Column(c.Key("sc-preview-center")).
+						FillWidth().
+						AlignItems(ui.Center).
+						Padding(16, 12, 16, 12).
+						Children(func() {
+							cardShadow := ui.RGBA(20, 18, 14, 0.18)
+							if pal.IsDark() {
+								cardShadow = ui.RGBA(0, 0, 0, 0.48)
+							}
+							ui.Box(c.Key("sc-preview-frame")).
+								Width(previewW).
+								Radius(4).
+								Clip().
+								Shadow(0, 6, 18, -2, cardShadow).
+								Children(func() {
+									sharecard.RenderCard(c, a.shareCardData, a.shareCardOpts, previewW)
+								})
+						})
+				})
+		})
+}
+
+func (a *AppUI) renderShareCardTemplate(c *ui.Context, pal theme.Palette, tpl sharecard.TemplateMeta) {
+	active := a.shareCardOpts.Template == tpl.ID
+	bg, fg, bd := pal.Background, pal.TextSecondary, pal.Border
+	if active {
+		bg, fg, bd = pal.Accent, pal.AccentText, pal.Accent
+	}
+	pill := ui.Box(c.Key("sc-tpl-"+string(tpl.ID))).
+		Padding(5, 11).
+		Radius(999).
+		Background(bg).
+		Border(0.9, bd).
+		Cursor(ui.CursorPointer).
+		Transition(theme.ColorTransition())
+	theme.ApplyPressScale(pill, 0.95)
+	pill.Children(func() {
+		txt := ui.Text(c, tpl.Name).Font(theme.FontSans).FontSize(11.5).TextColor(fg)
+		if active {
+			txt.Bold()
+		}
+	})
+	if pill.Clicked() && !a.shareCardBusy {
+		a.shareCardOpts.Template = tpl.ID
+		a.shareCardStatus = ""
+	}
+}
+
+func (a *AppUI) renderShareCardTheme(c *ui.Context, pal theme.Palette, th sharecard.CardPalette) {
+	active := a.shareCardOpts.Theme == th.ID
+	bg, fg, bd := pal.Background, pal.TextSecondary, pal.Border
+	if active {
+		bg, fg, bd = pal.Surface, pal.TextPrimary, pal.Accent
+	}
+	chip := ui.Row(c.Key("sc-th-"+string(th.ID))).
+		Padding(4, 9, 4, 7).
+		Gap(5).
+		Radius(999).
+		Background(bg).
+		Border(1.1, bd).
+		AlignItems(ui.Center).
+		Cursor(ui.CursorPointer).
+		Transition(theme.ColorTransition())
+	theme.ApplyPressScale(chip, 0.95)
+	chip.Children(func() {
+		ui.Box(c.Key("sc-th-dot-"+string(th.ID))).
+			Width(11).Height(11).Radius(99).
+			Background(th.SwatchDot).
+			Border(0.75, pal.Border)
+		txt := ui.Text(c, th.Name).Font(theme.FontSans).FontSize(11).TextColor(fg)
+		if active {
+			txt.Bold()
+		}
+	})
+	if chip.Clicked() && !a.shareCardBusy {
+		a.shareCardOpts.Theme = th.ID
+		a.shareCardStatus = ""
+	}
+}
+
+func (a *AppUI) renderShareCardControls(c *ui.Context, pal theme.Palette) {
+	// 3. 模板选择器（5 套模板横向滑动胶囊）
+	ui.Column(c.Key("sc-controls")).FillWidth().Gap(9).Children(func() {
+		ui.ScrollHorizontal(c.Key("sc-tpl-scroll")).FillWidth().Children(func() {
+			ui.Row(c.Key("sc-tpl-row")).Gap(6).AlignItems(ui.Center).Children(func() {
+				for _, tpl := range sharecard.Templates() {
+					tpl := tpl
+					a.renderShareCardTemplate(c, pal, tpl)
+				}
+			})
+		})
+
+		// 4. 纸面主题色板选择器 + 水印角标开关
+		ui.Row(c.Key("sc-theme-row")).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.ScrollHorizontal(c.Key("sc-theme-scroll")).Grow(1).Children(func() {
+				ui.Row(c.Key("sc-theme-pills")).Gap(6).AlignItems(ui.Center).Children(func() {
+					for _, th := range sharecard.AllThemes() {
+						th := th
+						a.renderShareCardTheme(c, pal, th)
 					}
-					a.shareCardStatus = saveErr.Error()
-					return
+				})
+			})
+
+			// 极轻品牌角标开关
+			wm := a.shareCardOpts.ShowWatermark
+			ui.Row(c.Key("sc-wm-toggle")).Gap(5).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "角标").Font(theme.FontSans).FontSize(11).TextColor(pal.TextMuted)
+				if mobile.Switch(c.Key("sc-wm-sw"), &wm).Changed() && !a.shareCardBusy {
+					a.shareCardOpts.ShowWatermark = wm
 				}
-				msg := fmt.Sprintf("已保存高清卡片（%d×%d）", res.WidthPx, res.HeightPx)
-				if savedInfo != "" && savedInfo != res.FilePath {
-					msg = fmt.Sprintf("已保存高清卡片（%d×%d）", res.WidthPx, res.HeightPx)
+			})
+		})
+	})
+}
+
+func (a *AppUI) renderShareCardActions(c *ui.Context, pal theme.Palette) {
+	// 5. 底部操作按钮：保存到相册 / 系统分享
+	ui.Row(c.Key("sc-actions")).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
+		if a.shareCardBusy {
+			ui.Row(c.Key("sc-busy-row")).FillWidth().Center().Gap(8).Padding(6, 0).Children(func() {
+				ui.Spinner(c)
+				msg := a.shareCardBusyLabel
+				if msg == "" {
+					msg = "正在生成 3× 高清图片…"
 				}
-				a.shareCardStatus = ""
-				a.showTransientToastOnUI(msg)
+				ui.Text(c, msg).Font(theme.FontSans).FontSize(12.5).TextColor(pal.TextSecondary)
 			})
 			return
 		}
 
-		// mode == "share"
-		var shareErr error
-		if shareImageFn != nil {
-			shareErr = shareImageFn(res.FilePath, "StillPoets · "+data.Kind.Label())
-		} else if exportFileFn != nil {
-			_, shareErr = exportFileFn(res.FilePath)
+		saveBtn := ui.Button(c.Key("sc-btn-save"), "保存到相册").Grow(1)
+		if saveBtn.Clicked() {
+			a.exportShareCardAsync("save")
 		}
-		a.dispatchUI(func() {
-			a.shareCardBusy = false
-			a.shareCardBusyLabel = ""
-			if shareErr != nil {
-				if errors.Is(shareErr, context.Canceled) {
-					a.shareCardStatus = ""
-					return
-				}
-				a.shareCardStatus = "分享失败：" + shareErr.Error()
+		shareBtn := ui.PrimaryButton(c.Key("sc-btn-share"), "系统分享").Grow(1)
+		if shareBtn.Clicked() {
+			a.exportShareCardAsync("share")
+		}
+	})
+}
+
+func (a *AppUI) saveShareCard(res sharecard.ExportResult, savePhotoFn, exportFileFn func(string) (string, error)) {
+	var savedInfo string
+	var saveErr error
+	if savePhotoFn != nil {
+		savedInfo, saveErr = savePhotoFn(res.FilePath)
+	} else if exportFileFn != nil {
+		savedInfo, saveErr = exportFileFn(res.FilePath)
+	} else {
+		savedInfo = res.FilePath
+	}
+	a.dispatchUI(func() {
+		a.shareCardBusy = false
+		a.shareCardBusyLabel = ""
+		if saveErr != nil {
+			if errors.Is(saveErr, context.Canceled) {
+				a.shareCardStatus = ""
 				return
 			}
-			a.shareCardStatus = ""
-		})
-	}()
+			a.shareCardStatus = saveErr.Error()
+			return
+		}
+		msg := fmt.Sprintf("已保存高清卡片（%d×%d）", res.WidthPx, res.HeightPx)
+		if savedInfo != "" && savedInfo != res.FilePath {
+			msg = fmt.Sprintf("已保存高清卡片（%d×%d）", res.WidthPx, res.HeightPx)
+		}
+		a.shareCardStatus = ""
+		a.showTransientToastOnUI(msg)
+	})
+}
+
+func (a *AppUI) shareExportedCard(path string, kind sharecard.CardKind, shareImageFn func(string, string) error, exportFileFn func(string) (string, error)) {
+	// mode == "share"
+	var shareErr error
+	if shareImageFn != nil {
+		shareErr = shareImageFn(path, "StillPoets · "+kind.Label())
+	} else if exportFileFn != nil {
+		_, shareErr = exportFileFn(path)
+	}
+	a.dispatchUI(func() {
+		a.shareCardBusy = false
+		a.shareCardBusyLabel = ""
+		if shareErr != nil {
+			if errors.Is(shareErr, context.Canceled) {
+				a.shareCardStatus = ""
+				return
+			}
+			a.shareCardStatus = "分享失败：" + shareErr.Error()
+			return
+		}
+		a.shareCardStatus = ""
+	})
 }

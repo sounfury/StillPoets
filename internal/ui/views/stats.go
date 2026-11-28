@@ -2,7 +2,6 @@ package views
 
 import (
 	"fmt"
-	"math"
 
 	"github.com/egoist/mygo/ui"
 
@@ -332,58 +331,9 @@ func (a *AppUI) renderHeatmapGrid(c *ui.Context, pal theme.Palette, hm storage.H
 			Scrollbars(false).
 			Children(func() {
 				ui.Column(c.Key("hm-weeks-wrap")).Width(gridW).Gap(4).Children(func() {
-					// 月份顶栏矢量绘制，避免窄列文字被裁剪
-					ui.Box(c.Key("hm-months")).Width(gridW).Height(monthH).Draw(func(p *ui.Painter, r ui.Rect) {
-						lastX := float32(-99)
-						for i, w := range hm.Weeks {
-							if w.MonthLabel == "" {
-								continue
-							}
-							x := r.X + float32(i)*step
-							if x-lastX < 28 {
-								continue
-							}
-							p.Text(x, r.Y+1, w.MonthLabel, 10, pal.TextMuted)
-							lastX = x
-						}
-					})
+					renderHeatmapMonths(c, pal, hm.Weeks, gridW, monthH, step)
 
-					// 7 行 × N 列日期方格
-					ui.Row(c.Key("hm-cols")).Gap(cellGap).Children(func() {
-						for wi, week := range hm.Weeks {
-							ui.Column(c.Key(fmt.Sprintf("hm-w-%d", wi))).Gap(cellGap).Children(func() {
-								for di := 0; di < 7; di++ {
-									day := week.Days[di]
-									if day.OutOfRange {
-										ui.Box(c.Key(fmt.Sprintf("hm-o-%d-%d", wi, di))).Width(cellSize).Height(cellSize)
-										continue
-									}
-									lv := max(0, min(4, day.Level))
-									bg := colors[lv]
-									if day.InFuture {
-										bg = pal.SurfaceMuted.Alpha(0.35)
-									}
-									selected := a.statsSelectedDate == day.Date
-									cell := ui.Box(c.Key("hm-d-" + day.Date)).
-										Width(cellSize).
-										Height(cellSize).
-										Radius(2.5).
-										Background(bg)
-									if selected {
-										cell.Border(1.5, pal.TextPrimary)
-									} else if lv == 0 && !day.InFuture {
-										cell.Border(0.5, pal.Border.Alpha(0.7))
-									}
-									if !day.InFuture {
-										cell.Cursor(ui.CursorPointer)
-										if cell.Clicked() {
-											a.selectHeatmapDate(day.Date)
-										}
-									}
-								}
-							})
-						}
-					})
+					a.renderHeatmapWeeks(c, pal, hm.Weeks, colors)
 				})
 			})
 	})
@@ -401,28 +351,7 @@ func (a *AppUI) renderHeatmapDayDetail(c *ui.Context, pal theme.Palette, isTable
 	}
 
 	ui.Column(c.Key("hm-day-detail")).FillWidth().Gap(8).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-			title := formatCNDate(a.statsSelectedDate)
-			if len(items) > 0 {
-				title += fmt.Sprintf(" · 共读 %d 首", len(items))
-			}
-			ui.Text(c, title).Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextPrimary).Grow(1)
-			if len(items) > 0 {
-				sub := fmt.Sprintf("%d 初读", initialCnt)
-				if rereadCnt > 0 {
-					sub += fmt.Sprintf(" · %d 重读", rereadCnt)
-				}
-				ui.Text(c, sub).Font(theme.FontMono).FontFeatures("tnum").FontSize(11).TextColor(pal.TextMuted)
-			}
-			closeBtn := ui.Box(c.Key("hm-day-close")).Padding(3).Cursor(ui.CursorPointer)
-			closeBtn.Children(func() {
-				ui.Icon(c, components.IconClose).Width(13).Height(13).TextColor(pal.TextMuted)
-			})
-			if closeBtn.Clicked() {
-				a.statsSelectedDate = ""
-				a.statsDayEvents = nil
-			}
-		})
+		a.renderHeatmapDayHeader(c, pal, len(items), initialCnt, rereadCnt)
 
 		if a.statsDayLoading {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(4, 0).Children(func() {
@@ -439,41 +368,7 @@ func (a *AppUI) renderHeatmapDayDetail(c *ui.Context, pal theme.Palette, isTable
 		ui.Column(c.Key("hm-day-list")).FillWidth().Gap(6).Children(func() {
 			for i, it := range items {
 				it := it
-				row := renderStatsEventRowBox(c, fmt.Sprintf("hm-ev-%d-%s", i, it.Event.ID), pal, 9, 10)
-				row.Children(func() {
-					ui.Column(c).Grow(1).Gap(2).Children(func() {
-						ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-							poemTitle := it.Event.PoemTitle
-							if poemTitle == "" {
-								poemTitle = "无题"
-							}
-							ui.Text(c, poemTitle).Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextPrimary).MaxLines(1)
-							if it.Event.IsReread {
-								ui.Box(c).Padding(1, 5).Radius(4).Background(pal.SurfaceMuted).Children(func() {
-									ui.Text(c, "重读").Font(theme.FontSans).FontSize(9.5).TextColor(pal.TextSecondary)
-								})
-							}
-							if it.IsFavorite {
-								ui.Icon(c, components.IconHeartFilled).Width(12).Height(12).TextColor(pal.Accent)
-							}
-							if it.BookLocalState != domain.LocalStateDownloaded {
-								ui.Icon(c, components.IconCloud).Width(12).Height(12).TextColor(pal.TextMuted)
-							}
-						})
-						meta := fmt.Sprintf("《%s》", it.BookTitle)
-						if it.Event.Author != "" {
-							meta += " · " + it.Event.Author
-						}
-						ui.Text(c, meta).Font(theme.FontNote).FontSize(11.5).TextColor(pal.TextMuted).MaxLines(1)
-					})
-
-					timeLabel := formatEventClock(it.Event.ReadAt, it.Event.ReadHour)
-					ui.Text(c, timeLabel).Font(theme.FontMono).FontFeatures("tnum").FontSize(11).TextColor(pal.TextMuted)
-					ui.Icon(c, components.IconChevronRight).Width(13).Height(13).TextColor(pal.TextMuted)
-				})
-				if row.Clicked() {
-					a.jumpToPoemFromStats(it.Event.BookID, it.Event.PoemID, nil, !isTablet)
-				}
+				a.renderHeatmapDayEvent(c, pal, it, i, isTablet)
 			}
 		})
 	})
@@ -536,80 +431,16 @@ func (a *AppUI) renderStatsRhythmSection(c *ui.Context, pal theme.Palette, rhyth
 func (a *AppUI) renderRhythmFiveSlots(c *ui.Context, pal theme.Palette, rhythm storage.ReadingRhythm, isTablet bool) {
 	slotColors := rhythmSlotColors(pal)
 
-	renderDonut := func() {
-		ui.Box(c.Key("rhythm-donut")).Width(122).Height(122).Center().Draw(func(p *ui.Painter, r ui.Rect) {
-			cx := r.X + r.W/2
-			cy := r.Y + r.H/2
-			radius := min(r.W, r.H)/2 - 11
-			const strokeW = float32(13)
-
-			if rhythm.TotalEvents == 0 {
-				ring := (&ui.Path{}).Circle(cx, cy, radius)
-				p.StrokePath(ring, strokeW, pal.Border)
-				return
-			}
-
-			nonZero := 0
-			for _, sl := range rhythm.Slots {
-				if sl.Count > 0 {
-					nonZero++
-				}
-			}
-			gap := float32(0)
-			if nonZero > 1 {
-				gap = 0.01
-			}
-			cursor := float32(0)
-			for i, sl := range rhythm.Slots {
-				if sl.Count <= 0 {
-					continue
-				}
-				span := float32(sl.Ratio)
-				from := cursor + gap/2
-				to := cursor + span - gap/2
-				if to <= from {
-					to = from + 0.006
-				}
-				arc := (&ui.Path{}).Circle(cx, cy, radius).Trim(from, min(1, to))
-				p.StrokePath(arc, strokeW, slotColors[i])
-				cursor += span
-			}
-		}).Children(func() {
-			ui.Column(c).Center().Gap(1).Children(func() {
-				ui.Textf(c, "%d", rhythm.TotalEvents).
-					Font(theme.FontSerif).FontFeatures("tnum").FontSize(22).Bold().TextColor(pal.TextPrimary)
-				ui.Text(c, "次读诗").Font(theme.FontSans).FontSize(10.5).TextColor(pal.TextMuted)
-			})
-		})
-	}
-
-	renderBreakdown := func() {
-		ui.Column(c.Key("rhythm-slot-list")).Grow(1).FillWidth().Gap(9).Children(func() {
-			for i, sl := range rhythm.Slots {
-				pct := int(math.Round(sl.Ratio * 100))
-				ui.Column(c.Key("rh-slot-" + sl.Key)).FillWidth().Gap(4).Children(func() {
-					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(7).Children(func() {
-						ui.Box(c).Width(8).Height(8).Radius(999).Background(slotColors[i])
-						ui.Text(c, sl.Label).Font(theme.FontSerif).FontSize(12.5).Bold().TextColor(pal.TextPrimary)
-						ui.Text(c, sl.RangeText).Font(theme.FontMono).FontFeatures("tnum").FontSize(10.5).TextColor(pal.TextMuted).Grow(1)
-						ui.Textf(c, "%d 首 · %d%%", sl.Count, pct).Font(theme.FontMono).FontFeatures("tnum").FontSize(11).TextColor(pal.TextSecondary)
-					})
-					ui.Progress(c, sl.Ratio).Height(4).FillWidth().TextColor(slotColors[i]).Background(pal.SurfaceMuted)
-				})
-			}
-		})
-	}
-
 	if isTablet {
 		ui.Row(c.Key("rhythm-5-tablet")).FillWidth().Gap(22).AlignItems(ui.Center).Children(func() {
-			renderDonut()
-			renderBreakdown()
+			renderRhythmDonut(c, pal, rhythm, slotColors)
+			renderRhythmBreakdown(c, pal, rhythm, slotColors)
 		})
 		return
 	}
 	ui.Column(c.Key("rhythm-5-phone")).FillWidth().Gap(14).AlignItems(ui.Center).Children(func() {
-		renderDonut()
-		renderBreakdown()
+		renderRhythmDonut(c, pal, rhythm, slotColors)
+		renderRhythmBreakdown(c, pal, rhythm, slotColors)
 	})
 }
 
@@ -659,4 +490,129 @@ func (a *AppUI) renderRhythm24HourChart(c *ui.Context, pal theme.Palette, rhythm
 				Font(theme.FontMono).FontFeatures("tnum").FontSize(11).TextColor(pal.TextMuted)
 		}
 	})
+}
+
+func renderHeatmapMonths(c *ui.Context, pal theme.Palette, weeks []storage.HeatmapWeek, gridW, monthH, step float32) {
+	// 月份顶栏矢量绘制，避免窄列文字被裁剪
+	ui.Box(c.Key("hm-months")).Width(gridW).Height(monthH).Draw(func(p *ui.Painter, r ui.Rect) {
+		lastX := float32(-99)
+		for i, w := range weeks {
+			if w.MonthLabel == "" {
+				continue
+			}
+			x := r.X + float32(i)*step
+			if x-lastX < 28 {
+				continue
+			}
+			p.Text(x, r.Y+1, w.MonthLabel, 10, pal.TextMuted)
+			lastX = x
+		}
+	})
+}
+
+func (a *AppUI) renderHeatmapCell(c *ui.Context, pal theme.Palette, colors [5]ui.Color, day storage.HeatmapDay, wi, di int) {
+	const cellSize = float32(12)
+	if day.OutOfRange {
+		ui.Box(c.Key(fmt.Sprintf("hm-o-%d-%d", wi, di))).Width(cellSize).Height(cellSize)
+		return
+	}
+	lv := max(0, min(4, day.Level))
+	bg := colors[lv]
+	if day.InFuture {
+		bg = pal.SurfaceMuted.Alpha(0.35)
+	}
+	selected := a.statsSelectedDate == day.Date
+	cell := ui.Box(c.Key("hm-d-" + day.Date)).
+		Width(cellSize).
+		Height(cellSize).
+		Radius(2.5).
+		Background(bg)
+	if selected {
+		cell.Border(1.5, pal.TextPrimary)
+	} else if lv == 0 && !day.InFuture {
+		cell.Border(0.5, pal.Border.Alpha(0.7))
+	}
+	if !day.InFuture {
+		cell.Cursor(ui.CursorPointer)
+		if cell.Clicked() {
+			a.selectHeatmapDate(day.Date)
+		}
+	}
+}
+
+func (a *AppUI) renderHeatmapWeeks(c *ui.Context, pal theme.Palette, weeks []storage.HeatmapWeek, colors [5]ui.Color) {
+	const cellGap = float32(3)
+	// 7 行 × N 列日期方格
+	ui.Row(c.Key("hm-cols")).Gap(cellGap).Children(func() {
+		for wi, week := range weeks {
+			ui.Column(c.Key(fmt.Sprintf("hm-w-%d", wi))).Gap(cellGap).Children(func() {
+				for di := 0; di < 7; di++ {
+					a.renderHeatmapCell(c, pal, colors, week.Days[di], wi, di)
+				}
+			})
+		}
+	})
+}
+
+func (a *AppUI) renderHeatmapDayHeader(c *ui.Context, pal theme.Palette, count, initialCnt, rereadCnt int) {
+	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+		title := formatCNDate(a.statsSelectedDate)
+		if count > 0 {
+			title += fmt.Sprintf(" · 共读 %d 首", count)
+		}
+		ui.Text(c, title).Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextPrimary).Grow(1)
+		if count > 0 {
+			sub := fmt.Sprintf("%d 初读", initialCnt)
+			if rereadCnt > 0 {
+				sub += fmt.Sprintf(" · %d 重读", rereadCnt)
+			}
+			ui.Text(c, sub).Font(theme.FontMono).FontFeatures("tnum").FontSize(11).TextColor(pal.TextMuted)
+		}
+		closeBtn := ui.Box(c.Key("hm-day-close")).Padding(3).Cursor(ui.CursorPointer)
+		closeBtn.Children(func() {
+			ui.Icon(c, components.IconClose).Width(13).Height(13).TextColor(pal.TextMuted)
+		})
+		if closeBtn.Clicked() {
+			a.statsSelectedDate = ""
+			a.statsDayEvents = nil
+		}
+	})
+}
+
+func (a *AppUI) renderHeatmapDayEvent(c *ui.Context, pal theme.Palette, it storage.ReadingEventItem, i int, isTablet bool) {
+	row := renderStatsEventRowBox(c, fmt.Sprintf("hm-ev-%d-%s", i, it.Event.ID), pal, 9, 10)
+	row.Children(func() {
+		ui.Column(c).Grow(1).Gap(2).Children(func() {
+			ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+				poemTitle := it.Event.PoemTitle
+				if poemTitle == "" {
+					poemTitle = "无题"
+				}
+				ui.Text(c, poemTitle).Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextPrimary).MaxLines(1)
+				if it.Event.IsReread {
+					ui.Box(c).Padding(1, 5).Radius(4).Background(pal.SurfaceMuted).Children(func() {
+						ui.Text(c, "重读").Font(theme.FontSans).FontSize(9.5).TextColor(pal.TextSecondary)
+					})
+				}
+				if it.IsFavorite {
+					ui.Icon(c, components.IconHeartFilled).Width(12).Height(12).TextColor(pal.Accent)
+				}
+				if it.BookLocalState != domain.LocalStateDownloaded {
+					ui.Icon(c, components.IconCloud).Width(12).Height(12).TextColor(pal.TextMuted)
+				}
+			})
+			meta := fmt.Sprintf("《%s》", it.BookTitle)
+			if it.Event.Author != "" {
+				meta += " · " + it.Event.Author
+			}
+			ui.Text(c, meta).Font(theme.FontNote).FontSize(11.5).TextColor(pal.TextMuted).MaxLines(1)
+		})
+
+		timeLabel := formatEventClock(it.Event.ReadAt, it.Event.ReadHour)
+		ui.Text(c, timeLabel).Font(theme.FontMono).FontFeatures("tnum").FontSize(11).TextColor(pal.TextMuted)
+		ui.Icon(c, components.IconChevronRight).Width(13).Height(13).TextColor(pal.TextMuted)
+	})
+	if row.Clicked() {
+		a.jumpToPoemFromStats(it.Event.BookID, it.Event.PoemID, nil, !isTablet)
+	}
 }

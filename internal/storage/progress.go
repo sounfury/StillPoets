@@ -92,34 +92,11 @@ func (s *Store) recordPoemProgress(ctx context.Context, bookID, poemID string, s
 		if err != nil {
 			return nil, err
 		}
-		// 若该书正文已离线缓存，校验 poemID 确实属于该书，杜绝跨书脏进度污染同步数据（P0-2）。
-		if poemID != "" {
-			if r, err := s.firstRow(ctx, `SELECT local_content_hash FROM books WHERE id = ? AND deleted = 0`, bookID); err == nil && r.text(0) != "" {
-				if _, err := s.firstRow(ctx, `SELECT id FROM poems WHERE book_id = ? AND id = ?`, bookID, poemID); err != nil {
-					return nil, fmt.Errorf("storage: poem %q does not belong to book %q", poemID, bookID)
-				}
-			}
+		if err := s.validateCachedPoem(ctx, bookID, poemID); err != nil {
+			return nil, err
 		}
-
-		readChanged := false
-		if poemID != "" && !slices.Contains(progress.ReadPoemIDs, poemID) {
-			progress.ReadPoemIDs = append(progress.ReadPoemIDs, poemID)
-			slices.Sort(progress.ReadPoemIDs)
-			progress.ReadPoemIDs = slices.Compact(progress.ReadPoemIDs)
-			readChanged = true
-		}
-
-		statusChanged := false
-		if progress.Status != domain.ReadStatusFinished {
-			switch {
-			case totalPoems > 0 && len(progress.ReadPoemIDs) >= totalPoems:
-				progress.Status, progress.FinishedAt, progress.StatusVer = domain.ReadStatusFinished, now, v
-				statusChanged = true
-			case progress.Status == domain.ReadStatusUnread:
-				progress.Status, progress.StatusVer = domain.ReadStatusReading, v
-				statusChanged = true
-			}
-		}
+		readChanged := addReadPoem(&progress, poemID)
+		statusChanged := advanceReadStatus(&progress, totalPoems, v, now)
 
 		if updatePosition {
 			progress.LastPoemID, progress.PositionVer, progress.LocalScrollRatio = poemID, v, scrollRatio
@@ -137,6 +114,45 @@ func (s *Store) recordPoemProgress(ctx context.Context, bookID, poemID string, s
 		return domain.ReadingProgress{}, false, err
 	}
 	return progress, changed, nil
+}
+
+// Validate poem membership when the book has locally cached content (P0-2).
+func (s *Store) validateCachedPoem(ctx context.Context, bookID, poemID string) error {
+	if poemID == "" {
+		return nil
+	}
+	r, err := s.firstRow(ctx, `SELECT local_content_hash FROM books WHERE id = ? AND deleted = 0`, bookID)
+	if err != nil || r.text(0) == "" {
+		return nil
+	}
+	if _, err := s.firstRow(ctx, `SELECT id FROM poems WHERE book_id = ? AND id = ?`, bookID, poemID); err != nil {
+		return fmt.Errorf("storage: poem %q does not belong to book %q", poemID, bookID)
+	}
+	return nil
+}
+
+func addReadPoem(progress *domain.ReadingProgress, poemID string) bool {
+	if poemID == "" || slices.Contains(progress.ReadPoemIDs, poemID) {
+		return false
+	}
+	progress.ReadPoemIDs = append(progress.ReadPoemIDs, poemID)
+	slices.Sort(progress.ReadPoemIDs)
+	progress.ReadPoemIDs = slices.Compact(progress.ReadPoemIDs)
+	return true
+}
+
+func advanceReadStatus(progress *domain.ReadingProgress, totalPoems int, v domain.Version, now int64) bool {
+	switch {
+	case progress.Status == domain.ReadStatusFinished:
+		return false
+	case totalPoems > 0 && len(progress.ReadPoemIDs) >= totalPoems:
+		progress.Status, progress.FinishedAt, progress.StatusVer = domain.ReadStatusFinished, now, v
+		return true
+	case progress.Status == domain.ReadStatusUnread:
+		progress.Status, progress.StatusVer = domain.ReadStatusReading, v
+		return true
+	}
+	return false
 }
 
 func (s *Store) UpdateLocalScroll(ctx context.Context, bookID string, ratio float64) error {

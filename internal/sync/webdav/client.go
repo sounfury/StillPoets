@@ -91,7 +91,35 @@ type Client struct {
 
 // NewClient 校验配置并创建 WebDAV 客户端。
 func NewClient(cfg Config) (*Client, error) {
-	rawBase := strings.TrimSpace(cfg.BaseURL)
+	parsed, err := parseBaseURL(cfg.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	cfg = withClientDefaults(cfg)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// 禁用自动透明 gzip 解压，避免代理对 .gz 文件加 Content-Encoding: gzip 时破坏原始字节与哈希校验
+	transport.DisableCompression = true
+	if cfg.AllowInsecureTLS {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // 用户显式允许自签名局域网 NAS
+	}
+
+	c := &Client{
+		cfg:         cfg,
+		baseURL:     parsed,
+		appRoot:     cfg.AppFolder,
+		sem:         make(chan struct{}, cfg.MaxConcurrency),
+		ensuredDirs: make(map[string]struct{}),
+	}
+	c.http = &http.Client{
+		Timeout:       cfg.Timeout,
+		Transport:     transport,
+		CheckRedirect: c.checkRedirect,
+	}
+	return c, nil
+}
+
+func parseBaseURL(raw string) (*url.URL, error) {
+	rawBase := strings.TrimSpace(raw)
 	if rawBase == "" {
 		return nil, errors.New("webdav: base URL is required")
 	}
@@ -120,6 +148,10 @@ func NewClient(cfg Config) (*Client, error) {
 		parsed.Path += "/"
 	}
 
+	return parsed, nil
+}
+
+func withClientDefaults(cfg Config) Config {
 	if strings.TrimSpace(cfg.AppFolder) == "" {
 		cfg.AppFolder = DefaultAppFolder
 	}
@@ -146,26 +178,7 @@ func NewClient(cfg Config) (*Client, error) {
 		cfg.MaxDownloadBytes = DefaultMaxDownloadSize
 	}
 
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	// 禁用自动透明 gzip 解压，避免代理对 .gz 文件加 Content-Encoding: gzip 时破坏原始字节与哈希校验
-	transport.DisableCompression = true
-	if cfg.AllowInsecureTLS {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // 用户显式允许自签名局域网 NAS
-	}
-
-	c := &Client{
-		cfg:         cfg,
-		baseURL:     parsed,
-		appRoot:     cfg.AppFolder,
-		sem:         make(chan struct{}, cfg.MaxConcurrency),
-		ensuredDirs: make(map[string]struct{}),
-	}
-	c.http = &http.Client{
-		Timeout:       cfg.Timeout,
-		Transport:     transport,
-		CheckRedirect: c.checkRedirect,
-	}
-	return c, nil
+	return cfg
 }
 
 // CloseIdleConnections 关闭连接池中空闲的 HTTP 连接。
@@ -224,53 +237,39 @@ func (c *Client) AppFolder() string {
 // 严格保留 BaseURL 中原有的已转义路径段（如 %2F），仅对新增路径段执行 PathEscape。
 func (c *Client) resolveURL(relPath string, includeAppRoot bool, isDir bool) string {
 	u := *c.baseURL
-
-	var rawSegments []string
-	baseEscaped := strings.TrimSuffix(u.EscapedPath(), "/")
-	if baseEscaped != "" {
-		for _, s := range strings.Split(strings.TrimPrefix(baseEscaped, "/"), "/") {
-			if s != "" {
-				rawSegments = append(rawSegments, s)
-			}
-		}
+	rawSegments := appendURLSegments(nil, strings.TrimSuffix(u.EscapedPath(), "/"), false, false)
+	if includeAppRoot {
+		rawSegments = appendURLSegments(rawSegments, c.appRoot, true, false)
 	}
-	if includeAppRoot && c.appRoot != "" {
-		for _, s := range strings.Split(c.appRoot, "/") {
-			if s != "" {
-				rawSegments = append(rawSegments, url.PathEscape(s))
-			}
-		}
+	rawSegments = appendURLSegments(rawSegments, strings.Trim(strings.TrimSpace(relPath), "/"), true, true)
+	u.RawPath = davURLPath(rawSegments, isDir)
+	decoded := make([]string, len(rawSegments))
+	for i, segment := range rawSegments {
+		decoded[i] = decodePathSegment(segment)
 	}
-	cleaned := strings.Trim(strings.TrimSpace(relPath), "/")
-	if cleaned != "" && cleaned != "." {
-		for _, s := range strings.Split(cleaned, "/") {
-			if s != "" && s != "." && s != ".." {
-				rawSegments = append(rawSegments, url.PathEscape(s))
-			}
-		}
-	}
-
-	rawPath := "/" + strings.Join(rawSegments, "/")
-	if isDir && !strings.HasSuffix(rawPath, "/") {
-		rawPath += "/"
-	}
-
-	decodedSegments := make([]string, len(rawSegments))
-	for i, seg := range rawSegments {
-		if unesc, err := url.PathUnescape(seg); err == nil {
-			decodedSegments[i] = unesc
-		} else {
-			decodedSegments[i] = seg
-		}
-	}
-	plainPath := "/" + strings.Join(decodedSegments, "/")
-	if isDir && !strings.HasSuffix(plainPath, "/") {
-		plainPath += "/"
-	}
-
-	u.Path = plainPath
-	u.RawPath = rawPath
+	u.Path = davURLPath(decoded, isDir)
 	return u.String()
+}
+
+func appendURLSegments(dst []string, raw string, escape, skipDotSegments bool) []string {
+	for _, segment := range strings.Split(raw, "/") {
+		if segment == "" || (skipDotSegments && (segment == "." || segment == "..")) {
+			continue
+		}
+		if escape {
+			segment = url.PathEscape(segment)
+		}
+		dst = append(dst, segment)
+	}
+	return dst
+}
+
+func davURLPath(segments []string, isDir bool) string {
+	p := "/" + strings.Join(segments, "/")
+	if isDir && !strings.HasSuffix(p, "/") {
+		p += "/"
+	}
+	return p
 }
 
 // do 统一执行带并发信号量限制（覆盖完整响应体读取）、BasicAuth、User-Agent、
@@ -285,73 +284,64 @@ func (c *Client) do(ctx context.Context, method, targetURL string, body []byte, 
 
 	var lastErr error
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
-		var bodyReader io.Reader
-		if body != nil {
-			bodyReader = bytes.NewReader(body)
-		}
-		req, err := http.NewRequestWithContext(ctx, method, targetURL, bodyReader)
+		req, err := c.newRequest(ctx, method, targetURL, body, headers)
 		if err != nil {
 			return nil, err
 		}
-		if c.cfg.Username != "" || c.cfg.Password != "" {
-			req.SetBasicAuth(c.cfg.Username, c.cfg.Password)
+		result, retryAfter, retry, err := c.requestAttempt(req, method, targetURL, maxBodyBytes, attempt < c.cfg.MaxRetries)
+		if !retry {
+			return result, err
 		}
-		req.Header.Set("User-Agent", c.cfg.UserAgent)
-		for k, v := range headers {
-			req.Header.Set(k, v)
+		lastErr = err
+		if err := sleepWithContext(ctx, c.computeBackoff(attempt, retryAfter)); err != nil {
+			return nil, err
 		}
-
-		resp, err := c.http.Do(req)
-		if err != nil {
-			// 不安全重定向或上下文取消不重试
-			if errors.Is(err, ErrUnsafeRedirect) || ctx.Err() != nil || attempt == c.cfg.MaxRetries {
-				return nil, err
-			}
-			lastErr = err
-			delay := c.computeBackoff(attempt, 0)
-			if err := sleepWithContext(ctx, delay); err != nil {
-				return nil, err
-			}
-			continue
-		}
-
-		if shouldRetryStatus(resp.StatusCode) && attempt < c.cfg.MaxRetries {
-			retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
-			resp.Body.Close()
-			// 若服务端显式要求的 Retry-After 超过剩余上下文预算或生产级上限（60s），不截短提前撞限流，直接上报限流错误（P1-9）
-			if err := checkRetryAfterBudget(ctx, retryAfter, c.cfg.MaxRetryDelay, method, targetURL); err != nil {
-				return nil, err
-			}
-			lastErr = fmt.Errorf("webdav: status %d on %s %s", resp.StatusCode, method, targetURL)
-
-			delay := c.computeBackoff(attempt, retryAfter)
-			if err := sleepWithContext(ctx, delay); err != nil {
-				return nil, err
-			}
-			continue
-		}
-
-		readBody, readErr := readLimitedBody(resp.Body, maxBodyBytes)
-		resp.Body.Close()
-		if readErr != nil {
-			if errors.Is(readErr, ErrResponseTooLarge) || ctx.Err() != nil || attempt == c.cfg.MaxRetries {
-				return nil, readErr
-			}
-			lastErr = readErr
-			delay := c.computeBackoff(attempt, 0)
-			if err := sleepWithContext(ctx, delay); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		return &responseResult{
-			StatusCode: resp.StatusCode,
-			Header:     resp.Header.Clone(),
-			Body:       readBody,
-		}, nil
 	}
 	return nil, lastErr
+}
+
+func (c *Client) newRequest(ctx context.Context, method, targetURL string, body []byte, headers map[string]string) (*http.Request, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, targetURL, bodyReader)
+	if err != nil {
+		return nil, err
+	}
+	if c.cfg.Username != "" || c.cfg.Password != "" {
+		req.SetBasicAuth(c.cfg.Username, c.cfg.Password)
+	}
+	req.Header.Set("User-Agent", c.cfg.UserAgent)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	return req, nil
+}
+
+func (c *Client) requestAttempt(req *http.Request, method, targetURL string, maxBodyBytes int64, canRetry bool) (*responseResult, time.Duration, bool, error) {
+	ctx := req.Context()
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, 0, canRetry && !errors.Is(err, ErrUnsafeRedirect) && ctx.Err() == nil, err
+	}
+	if canRetry && shouldRetryStatus(resp.StatusCode) {
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+		resp.Body.Close()
+		// 遵守服务端要求的等待时间与本轮剩余预算。
+		if err := checkRetryAfterBudget(ctx, retryAfter, c.cfg.MaxRetryDelay, method, targetURL); err != nil {
+			return nil, 0, false, err
+		}
+		return nil, retryAfter, true, fmt.Errorf("webdav: status %d on %s %s", resp.StatusCode, method, targetURL)
+	}
+
+	readBody, err := readLimitedBody(resp.Body, maxBodyBytes)
+	resp.Body.Close()
+	if err != nil {
+		return nil, 0, canRetry && !errors.Is(err, ErrResponseTooLarge) && ctx.Err() == nil, err
+	}
+	return &responseResult{StatusCode: resp.StatusCode, Header: resp.Header.Clone(), Body: readBody}, 0, false, nil
 }
 
 func checkRetryAfterBudget(ctx context.Context, retryAfter, maxRetryDelay time.Duration, method, targetURL string) error {

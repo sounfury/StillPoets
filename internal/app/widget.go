@@ -32,34 +32,7 @@ func (s *Service) RebuildWidgetTimeline(ctx context.Context) (domain.WidgetTimel
 	if err != nil {
 		return domain.WidgetTimeline{}, err
 	}
-	pal := theme.ByID(theme.PresetID(settings.ThemePreset))
-	wTheme := settings.WidgetTheme
-	if wTheme.Preset == "" || wTheme.Preset == string(pal.ID) {
-		// 内置预设色板升级时（例如刊物风纸白微调），自动同步最新主题色值到小组件快照
-		wTheme.Preset = string(pal.ID)
-		wTheme.BgColor = pal.BgHex
-		wTheme.TextColor = pal.TextHex
-		wTheme.AccentColor = pal.AccentHex
-	} else {
-		if wTheme.BgColor == "" {
-			wTheme.BgColor = pal.BgHex
-		}
-		if wTheme.TextColor == "" {
-			wTheme.TextColor = pal.TextHex
-		}
-		if wTheme.AccentColor == "" {
-			wTheme.AccentColor = pal.AccentHex
-		}
-	}
-	if wTheme.FontFamily == "" {
-		wTheme.FontFamily = settings.FontFamily
-	}
-	wTheme.FontWeight = settings.EffectiveFontWeight()
-	darkPal := theme.DarkMinimal()
-	wTheme.FollowSystemDark = settings.ShouldFollowSystemDark()
-	wTheme.DarkBgColor = darkPal.BgHex
-	wTheme.DarkTextColor = darkPal.TextHex
-	wTheme.DarkAccentColor = darkPal.AccentHex
+	wTheme := resolveWidgetTheme(settings)
 
 	dayKey := time.Now().Format("2006-01-02")
 	poolRevision := widgetPoolRevision(settings)
@@ -103,6 +76,38 @@ func (s *Service) RebuildWidgetTimeline(ctx context.Context) (domain.WidgetTimel
 		}
 	}
 	return timeline, nil
+}
+
+func resolveWidgetTheme(settings domain.Settings) domain.WidgetThemeConfig {
+	pal := theme.ByID(theme.PresetID(settings.ThemePreset))
+	wTheme := settings.WidgetTheme
+	if wTheme.Preset == "" || wTheme.Preset == string(pal.ID) {
+		// 内置预设色板升级时（例如刊物风纸白微调），自动同步最新主题色值到小组件快照
+		wTheme.Preset = string(pal.ID)
+		wTheme.BgColor = pal.BgHex
+		wTheme.TextColor = pal.TextHex
+		wTheme.AccentColor = pal.AccentHex
+	} else {
+		if wTheme.BgColor == "" {
+			wTheme.BgColor = pal.BgHex
+		}
+		if wTheme.TextColor == "" {
+			wTheme.TextColor = pal.TextHex
+		}
+		if wTheme.AccentColor == "" {
+			wTheme.AccentColor = pal.AccentHex
+		}
+	}
+	if wTheme.FontFamily == "" {
+		wTheme.FontFamily = settings.FontFamily
+	}
+	wTheme.FontWeight = settings.EffectiveFontWeight()
+	darkPal := theme.DarkMinimal()
+	wTheme.FollowSystemDark = settings.ShouldFollowSystemDark()
+	wTheme.DarkBgColor = darkPal.BgHex
+	wTheme.DarkTextColor = darkPal.TextHex
+	wTheme.DarkAccentColor = darkPal.AccentHex
+	return wTheme
 }
 
 // ReshuffleWidgetTimeline 递增本地换诗代次并立刻重建小组件快照（仅用于用户显式点击「刷新小组件」）。
@@ -187,41 +192,47 @@ func (s *Service) buildFavoriteWidgetEntries(ctx context.Context, bookID, shuffl
 	}
 	entries := make([]domain.WidgetEntry, 0, len(favs))
 	for _, f := range favs {
-		text := strings.TrimSpace(f.Excerpt)
-		largeText := ""
-		// 仅当用户未手动划选特定金句行（HighlightLines 为空）时，尝试为 4×4 大号小组件展开多诗节正文
-		if text == "" || strings.TrimSpace(f.HighlightLines) == "" {
-			if p, err := s.store.GetPoem(ctx, f.BookID, f.PoemID); err == nil {
-				if text == "" {
-					text = parser.BuildDefaultExcerpt(p)
-				}
-				if strings.TrimSpace(f.HighlightLines) == "" {
-					largeText = parser.BuildLargeExcerpt(p)
-				}
-			}
+		if entry, ok := s.favoriteWidgetEntry(ctx, f, bookTitles[f.BookID]); ok {
+			entries = append(entries, entry)
 		}
-		if text == "" {
-			continue
-		}
-		if largeText == text {
-			largeText = ""
-		}
-		link := fmt.Sprintf("stillpoets://poem/%s/%s", f.BookID, f.PoemID)
-		if f.HighlightLines != "" {
-			link += "?lines=" + f.HighlightLines + "&highlight=1"
-		}
-		entries = append(entries, domain.WidgetEntry{
-			EntryType:   "poem",
-			DisplayText: text,
-			LargeText:   largeText,
-			PoemTitle:   f.PoemTitle,
-			Author:      f.Author,
-			SourceTitle: bookTitles[f.BookID],
-			Deeplink:    link,
-		})
 	}
 	sortEntriesDeterministically(entries, shuffleSeed)
 	return limitEntries(entries), nil
+}
+
+func (s *Service) favoriteWidgetEntry(ctx context.Context, f domain.FavoritePoem, bookTitle string) (domain.WidgetEntry, bool) {
+	text := strings.TrimSpace(f.Excerpt)
+	largeText := ""
+	// 仅当用户未手动划选特定金句行（HighlightLines 为空）时，尝试为 4×4 大号小组件展开多诗节正文
+	if text == "" || strings.TrimSpace(f.HighlightLines) == "" {
+		if p, err := s.store.GetPoem(ctx, f.BookID, f.PoemID); err == nil {
+			if text == "" {
+				text = parser.BuildDefaultExcerpt(p)
+			}
+			if strings.TrimSpace(f.HighlightLines) == "" {
+				largeText = parser.BuildLargeExcerpt(p)
+			}
+		}
+	}
+	if text == "" {
+		return domain.WidgetEntry{}, false
+	}
+	if largeText == text {
+		largeText = ""
+	}
+	link := fmt.Sprintf("stillpoets://poem/%s/%s", f.BookID, f.PoemID)
+	if f.HighlightLines != "" {
+		link += "?lines=" + f.HighlightLines + "&highlight=1"
+	}
+	return domain.WidgetEntry{
+		EntryType:   "poem",
+		DisplayText: text,
+		LargeText:   largeText,
+		PoemTitle:   f.PoemTitle,
+		Author:      f.Author,
+		SourceTitle: bookTitle,
+		Deeplink:    link,
+	}, true
 }
 
 func (s *Service) buildBookWidgetEntries(ctx context.Context, bookID string, shuffle bool, shuffleSeed string) ([]domain.WidgetEntry, error) {

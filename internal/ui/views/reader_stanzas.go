@@ -101,125 +101,127 @@ func (a *AppUI) renderSelectionActionBar(c *ui.Context, pal theme.Palette, book 
 	})
 }
 
-func (a *AppUI) renderPoemStanzas(c *ui.Context, pal theme.Palette, args poemStanzaRenderArgs) {
-	book, poem, isCurrent := args.book, args.poem, args.isCurrent
-	poetryFont, fontSize, fontWeight, lineHeight := args.poetryFont, args.fontSize, args.fontWeight, args.lineHeight
-	lineNum := 0
-	var (
-		ctxAnchor       ui.Element
-		hasCtxAnchor    bool
-		openedThisFrame bool
-	)
+type poemContextFrame struct {
+	anchor    ui.Element
+	hasAnchor bool
+	opened    bool
+}
 
-	openContextTarget := func(stanzaIdx, stanzaStart, stanzaEnd, lineCount, targetLine int, stanzaEl, lineEl ui.Element) {
-		openedThisFrame = true
-		if lineCount <= stanzaLongPressLineLimit {
-			a.poemCtxTarget = &poemContextTarget{
-				poemID:     poem.ID,
-				stanzaIdx:  stanzaIdx,
-				lineStart:  stanzaStart,
-				lineEnd:    stanzaEnd,
-				isWholeRow: false,
-			}
-			ctxAnchor = stanzaEl
-			hasCtxAnchor = true
-		} else {
-			a.poemCtxTarget = &poemContextTarget{
-				poemID:     poem.ID,
-				stanzaIdx:  stanzaIdx,
-				lineStart:  targetLine,
-				lineEnd:    targetLine,
-				isWholeRow: true,
-			}
-			ctxAnchor = lineEl
-			hasCtxAnchor = true
-		}
-		c.AnimationFrame()
+func (f *poemContextFrame) setAnchor(anchor ui.Element) {
+	f.anchor = anchor
+	f.hasAnchor = true
+}
+
+type renderedStanza struct {
+	index, start, end int
+	box               ui.Element
+}
+
+func (a *AppUI) openStanzaContext(c *ui.Context, poemID string, stanza renderedStanza, lineNum int, lineRow ui.Element, frame *poemContextFrame) {
+	target := &poemContextTarget{poemID: poemID, stanzaIdx: stanza.index, lineStart: stanza.start, lineEnd: stanza.end}
+	anchor := stanza.box
+	if stanza.end-stanza.start+1 > stanzaLongPressLineLimit {
+		target.lineStart, target.lineEnd = lineNum, lineNum
+		target.isWholeRow = true
+		anchor = lineRow
 	}
+	a.poemCtxTarget = target
+	frame.setAnchor(anchor)
+	frame.opened = true
+	c.AnimationFrame()
+}
 
+func (a *AppUI) renderPoemStanzas(c *ui.Context, pal theme.Palette, args poemStanzaRenderArgs) {
+	var frame poemContextFrame
 	ui.Column(c).Gap(14).Padding(8, 0, 8, 0).FillWidth().Children(func() {
-		for si, stanza := range poem.Stanzas {
-			stanzaStart := lineNum + 1
-			stanzaEnd := lineNum + len(stanza.Lines)
-			isCtxStanza := a.isContextStanzaActive(isCurrent, poem.ID, si)
+		lineNum := 0
+		for i, stanza := range args.poem.Stanzas {
+			span := renderedStanza{index: i, start: lineNum + 1, end: lineNum + len(stanza.Lines)}
+			a.renderPoemStanza(c, pal, args, span, stanza.Lines, &frame)
+			lineNum = span.end
+		}
+	})
+	if args.isCurrent && !a.selectingLines && a.poemCtxTarget != nil && a.poemCtxTarget.poemID == args.poem.ID && frame.hasAnchor {
+		a.renderPoemContextPopover(c, pal, args.book, args.poem, frame.anchor, frame.opened)
+	}
+}
 
-			stanzaBox := ui.Column(c.Key(fmt.Sprintf("stanza-%d", si))).
-				Gap(4).
-				FillWidth().
-				Padding(4, 4).
-				Radius(6).
-				Border(1, ui.Transparent).
-				Transition(theme.ColorTransition())
-			if isCtxStanza {
-				stanzaBox.Background(pal.HighlightBg).Border(1, pal.Accent)
+func (a *AppUI) renderPoemStanza(c *ui.Context, pal theme.Palette, args poemStanzaRenderArgs, stanza renderedStanza, lines []string, frame *poemContextFrame) {
+	isCtxStanza := a.isContextStanzaActive(args.isCurrent, args.poem.ID, stanza.index)
+	stanzaBox := ui.Column(c.Key(fmt.Sprintf("stanza-%d", stanza.index))).
+		Gap(4).
+		FillWidth().
+		Padding(4, 4).
+		Radius(6).
+		Border(1, ui.Transparent).
+		Transition(theme.ColorTransition())
+	if isCtxStanza {
+		stanzaBox.Background(pal.HighlightBg).Border(1, pal.Accent)
+	}
+	stanza.box = stanzaBox
+
+	var firstLine ui.Element
+	lineTriggered := false
+	stanzaBox.Children(func() {
+		for i, line := range lines {
+			lineNum := stanza.start + i
+			isCtxLine := a.isContextLineActive(args.isCurrent, args.poem.ID, lineNum)
+			row := a.renderPoemLine(c, pal, args, lineNum, line, isCtxLine)
+			if i == 0 {
+				firstLine = row
 			}
-
-			var (
-				lineTriggered bool
-				firstLineElem ui.Element
-				hasFirstLine  bool
-			)
-			stanzaBox.Children(func() {
-				for _, line := range stanza.Lines {
-					lineNum++
-					curLine := lineNum
-					isHighlighted := isCurrent && a.isLineHighlighted(curLine)
-					isSelected := isCurrent && a.selectedLines[curLine]
-					isCtxLine := a.isContextLineActive(isCurrent, poem.ID, curLine)
-
-					lineRow := ui.Box(c.Key(fmt.Sprintf("ln-%d", curLine))).
-						FillWidth().
-						Padding(3, 8).
-						Radius(4).
-						Border(1, ui.Transparent).
-						Transition(theme.ColorTransition())
-					if isSelected || isCtxLine {
-						lineRow.Background(pal.HighlightBg).Border(1, pal.Accent)
-					} else if isHighlighted {
-						lineRow.Background(pal.HighlightBg)
-					}
-					if isCurrent && a.selectingLines {
-						lineRow.Cursor(ui.CursorPointer)
-					}
-					lineRow.Children(func() {
-						ui.Text(c, line).
-							Font(poetryFont).
-							FontSize(fontSize).
-							FontWeight(fontWeight).
-							LineHeight(lineHeight).
-							TextColor(pal.TextPrimary)
-					})
-					if !hasFirstLine {
-						firstLineElem = lineRow
-						hasFirstLine = true
-					}
-
-					if isCurrent && a.selectingLines && lineRow.Clicked() {
-						a.toggleSelectedLine(curLine)
-					}
-					if isCurrent && !a.selectingLines && (lineRow.LongPressed() || lineRow.RightClicked()) {
-						lineTriggered = true
-						openContextTarget(si, stanzaStart, stanzaEnd, len(stanza.Lines), curLine, stanzaBox, lineRow)
-					} else if isCtxLine && !openedThisFrame {
-						ctxAnchor = lineRow
-						hasCtxAnchor = true
-					}
-				}
-			})
-
-			if isCurrent && !a.selectingLines && !lineTriggered && hasFirstLine &&
-				(stanzaBox.LongPressed() || stanzaBox.RightClicked()) {
-				openContextTarget(si, stanzaStart, stanzaEnd, len(stanza.Lines), stanzaStart, stanzaBox, firstLineElem)
-			} else if isCtxStanza && !openedThisFrame {
-				ctxAnchor = stanzaBox
-				hasCtxAnchor = true
+			if a.canOpenPoemContext(args.isCurrent) && poemContextTriggered(row) {
+				lineTriggered = true
+				a.openStanzaContext(c, args.poem.ID, stanza, lineNum, row, frame)
+			} else if isCtxLine && !frame.opened {
+				frame.setAnchor(row)
 			}
 		}
 	})
-
-	if isCurrent && !a.selectingLines && a.poemCtxTarget != nil && a.poemCtxTarget.poemID == poem.ID && hasCtxAnchor {
-		a.renderPoemContextPopover(c, pal, book, poem, ctxAnchor, openedThisFrame)
+	if a.canOpenPoemContext(args.isCurrent) && !lineTriggered && len(lines) > 0 && poemContextTriggered(stanzaBox) {
+		a.openStanzaContext(c, args.poem.ID, stanza, stanza.start, firstLine, frame)
+	} else if isCtxStanza && !frame.opened {
+		frame.setAnchor(stanzaBox)
 	}
+}
+
+func (a *AppUI) canOpenPoemContext(isCurrent bool) bool {
+	return isCurrent && !a.selectingLines
+}
+
+func poemContextTriggered(el ui.Element) bool {
+	return el.LongPressed() || el.RightClicked()
+}
+
+func (a *AppUI) renderPoemLine(c *ui.Context, pal theme.Palette, args poemStanzaRenderArgs, lineNum int, line string, isCtxLine bool) ui.Element {
+	isHighlighted := args.isCurrent && a.isLineHighlighted(lineNum)
+	isSelected := args.isCurrent && a.selectedLines[lineNum]
+	row := ui.Box(c.Key(fmt.Sprintf("ln-%d", lineNum))).
+		FillWidth().
+		Padding(3, 8).
+		Radius(4).
+		Border(1, ui.Transparent).
+		Transition(theme.ColorTransition())
+	if isSelected || isCtxLine {
+		row.Background(pal.HighlightBg).Border(1, pal.Accent)
+	} else if isHighlighted {
+		row.Background(pal.HighlightBg)
+	}
+	if args.isCurrent && a.selectingLines {
+		row.Cursor(ui.CursorPointer)
+	}
+	row.Children(func() {
+		ui.Text(c, line).
+			Font(args.poetryFont).
+			FontSize(args.fontSize).
+			FontWeight(args.fontWeight).
+			LineHeight(args.lineHeight).
+			TextColor(pal.TextPrimary)
+	})
+	if args.isCurrent && a.selectingLines && row.Clicked() {
+		a.toggleSelectedLine(lineNum)
+	}
+	return row
 }
 
 func (a *AppUI) isContextStanzaActive(isCurrent bool, poemID string, stanzaIdx int) bool {

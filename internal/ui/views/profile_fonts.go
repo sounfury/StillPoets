@@ -44,90 +44,9 @@ func (a *AppUI) renderFontsSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 		ui.Scroll(c.Key("subpage-fonts-scroll")).Grow(1).FillWidth().Children(func() {
 			ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(16, 20, 48, 20).Children(func() {
 				ui.Column(c).FillWidth().MaxWidth(layout.ReadingMaxWidthDIP + 80).Gap(18).Children(func() {
-					// 1. 实时诗句标本预览卡（默认梭罗 7 行开场誓词；轻点切换中英对照台词试字体）
-					spec := fontsPreviewSpecimen(a.fontsSpecimenIdx)
-					ui.Column(c.Key("fonts-specimen-card")).
-						FillWidth().
-						Padding(16, 18, 14, 18).
-						Gap(10).
-						Radius(12).
-						Background(pal.Surface).
-						Border(1, pal.Border).
-						Children(func() {
-							ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-								ui.Text(c, "实时排版预览").FontSize(11).TextColor(pal.TextMuted).Grow(1)
-								hint := "轻点切换中英对照"
-								if spec.ShowOrigin {
-									hint = dpsWeltonFootprint
-								}
-								ui.Text(c, hint).Font(theme.FontMono).FontSize(10).TextColor(pal.TextMuted)
-							})
-							specBox := ui.Column(c.Key("fonts-specimen-box")).
-								FillWidth().
-								Padding(14, 16).
-								Radius(8).
-								Background(pal.Background).
-								Border(1, pal.Border).
-								Gap(10).
-								Cursor(ui.CursorPointer)
-							theme.ApplyPressScale(specBox, 0.99)
-							specBox.Children(func() {
-								ui.Text(c, spec.ZH).
-									Font(poetryFont).
-									FontSize(float32(a.fontSizeSlider)).
-									FontWeight(curWeight).
-									LineHeight(float32(a.lineHeightSlider)).
-									TextColor(pal.TextPrimary)
-								if spec.EN != "" {
-									ui.Box(c).Width(24).Height(1).Background(pal.Border)
-									ui.Text(c, spec.EN).
-										Font(poetryFont).
-										FontSize(max(12.5, float32(a.fontSizeSlider)-1.5)).
-										FontWeight(curWeight).
-										LineHeight(float32(a.lineHeightSlider)).
-										Italic().
-										TextColor(pal.TextSecondary)
-								}
-							})
-							if specBox.Clicked() {
-								a.fontsSpecimenIdx = (a.fontsSpecimenIdx + 1) % len(dpsFontsSpecimens)
-							}
-							ui.Textf(c, "%s · %s · %.0f pt · %.2f×", curFontName, formatFontWeightLabel(curWeight), a.fontSizeSlider, a.lineHeightSlider).
-								Font(theme.FontMono).FontSize(11).TextColor(pal.TextSecondary).MaxLines(1)
-						})
+					a.renderFontSpecimen(c, pal, poetryFont, curFontName, curWeight)
 
-					// 2. 字号与行距调节
-					ui.Column(c.Key("fonts-metrics-sec")).FillWidth().Gap(8).Children(func() {
-						a.renderSettingsGroupLabel(c, pal, "字号与行距")
-						ui.Column(c).
-							FillWidth().
-							Padding(16, 18).
-							Gap(14).
-							Radius(12).
-							Background(pal.Surface).
-							Border(1, pal.Border).
-							Children(func() {
-								ui.Column(c).FillWidth().Gap(4).Children(func() {
-									ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-										ui.Text(c, "正文字号").FontSize(13).TextColor(pal.TextSecondary).Grow(1)
-										ui.Textf(c, "%.0f pt", a.fontSizeSlider).Font(theme.FontMono).FontSize(12).TextColor(pal.Accent)
-									})
-									if ui.Slider(c.Key("sub-fontsize"), &a.fontSizeSlider, 14, 28).Changed() {
-										a.saveTypography(float32(a.fontSizeSlider), float32(a.lineHeightSlider))
-									}
-								})
-
-								ui.Column(c).FillWidth().Gap(4).Children(func() {
-									ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-										ui.Text(c, "行距倍数").FontSize(13).TextColor(pal.TextSecondary).Grow(1)
-										ui.Textf(c, "%.2f", a.lineHeightSlider).Font(theme.FontMono).FontSize(12).TextColor(pal.Accent)
-									})
-									if ui.Slider(c.Key("sub-lineheight"), &a.lineHeightSlider, 1.4, 2.4).Changed() {
-										a.saveTypography(float32(a.fontSizeSlider), float32(a.lineHeightSlider))
-									}
-								})
-							})
-					})
+					a.renderFontMetrics(c, pal)
 
 					// 3. 正文字重 4 档分段选择器
 					ui.Column(c.Key("fonts-weight-sec")).FillWidth().Gap(8).Children(func() {
@@ -146,151 +65,9 @@ func (a *AppUI) renderFontsSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 							})
 					})
 
-					// 3. 内置字体
-					ui.Column(c.Key("fonts-builtin-sec")).FillWidth().Gap(8).Children(func() {
-						a.renderSettingsGroupLabel(c, pal, "内置字体")
-						ui.Column(c).
-							FillWidth().
-							Padding(6, 16).
-							Radius(12).
-							Background(pal.Surface).
-							Border(1, pal.Border).
-							Children(func() {
-								isDefault := strings.TrimSpace(a.settings.FontFamily) == ""
-								row := ui.Row(c.Key("font-item-default")).
-									FillWidth().
-									Padding(10, 4).
-									Gap(10).
-									AlignItems(ui.Center).
-									Cursor(ui.CursorPointer)
-								row.Children(func() {
-									ui.Column(c).Grow(1).Gap(2).Children(func() {
-										ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-											ui.Text(c, "文学衬线（系统默认）").Font(theme.FontSerif).FontSize(15).TextColor(pal.TextPrimary)
-											if isDefault {
-												ui.Box(c).Padding(2, 7).Radius(999).Background(pal.HighlightBg).Children(func() {
-													ui.Text(c, "当前使用").FontSize(10).Bold().TextColor(pal.Accent)
-												})
-											}
-										})
-										ui.Text(c, "宋体 / PingFang Serif · 随系统语言自适应").FontSize(11).TextColor(pal.TextMuted)
-									})
-									if isDefault {
-										ui.Icon(c, components.IconCheck).Width(16).Height(16).TextColor(pal.Accent)
-									}
-								})
-								if row.Clicked() && !isDefault {
-									a.applyFontFamily("")
-									a.showTransientToastOnUI("已切换为系统默认字体")
-								}
-							})
-					})
+					a.renderBuiltInFonts(c, pal)
 
-					// 4. 用户已上传字体列表（支持切换与删除）
-					ui.Column(c.Key("fonts-custom-sec")).FillWidth().Gap(8).Children(func() {
-						ui.Textf(c, "已上传字体（%d）", len(a.localFonts)).
-							Font(theme.FontSans).FontSize(12).Bold().TextColor(pal.TextMuted).Padding(0, 0, 0, 4)
-
-						ui.Column(c.Key("fonts-custom-card")).
-							FillWidth().
-							Padding(8, 16).
-							Gap(0).
-							Radius(12).
-							Background(pal.Surface).
-							Border(1, pal.Border).
-							Children(func() {
-								if len(a.localFonts) == 0 {
-									ui.Column(c).FillWidth().Padding(18, 4).Gap(8).AlignItems(ui.Center).Children(func() {
-										ui.Text(c, "尚未上传自定义字体").Font(theme.FontSerif).FontSize(14).TextColor(pal.TextSecondary)
-										ui.Text(c, "支持导入 .ttf 或 .otf 字体文件，导入后仅保存在本机并同步给小组件。").
-											FontSize(12).LineHeight(1.5).TextColor(pal.TextMuted)
-										if ui.Button(c, "+ 导入 .ttf / .otf 字体").Clicked() {
-											a.triggerImportFont()
-										}
-									})
-									return
-								}
-
-								for idx, lf := range a.localFonts {
-									lf := lf
-									if idx > 0 {
-										a.renderSettingsDivider(c, pal)
-									}
-									active := a.settings.FontFamily == lf.Family
-									confirming := a.confirmDeleteFont == lf.Filename
-
-									ui.Column(c.Key("font-wrap-"+lf.Filename)).FillWidth().Padding(10, 2).Gap(8).Children(func() {
-										ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
-											selectArea := ui.Column(c.Key("font-sel-" + lf.Filename)).
-												Grow(1).
-												Gap(3).
-												Cursor(ui.CursorPointer)
-											selectArea.Children(func() {
-												ui.Row(c).Gap(8).AlignItems(ui.Center).Wrap().Children(func() {
-													ui.Text(c, lf.Family).Font(lf.Family).FontSize(15).TextColor(pal.TextPrimary)
-													if active {
-														ui.Box(c).Padding(2, 7).Radius(999).Background(pal.HighlightBg).Children(func() {
-															ui.Text(c, "当前使用").FontSize(10).Bold().TextColor(pal.Accent)
-														})
-													}
-												})
-												ui.Textf(c, "%s · %s", lf.Filename, formatBytesSize(lf.Size)).
-													Font(theme.FontMono).FontSize(11).TextColor(pal.TextMuted).MaxLines(1)
-											})
-											if selectArea.Clicked() && !active {
-												a.applyFontFamily(lf.Family)
-												a.showTransientToastOnUI("已启用字体：" + lf.Family)
-											}
-
-											if active {
-												ui.Icon(c, components.IconCheck).Width(16).Height(16).TextColor(pal.Accent)
-											}
-
-											delBtn := ui.Box(c.Key("font-del-" + lf.Filename)).
-												Padding(6).
-												Radius(6).
-												Cursor(ui.CursorPointer)
-											theme.ApplyPressScale(delBtn, 0.90)
-											delBtn.Children(func() {
-												ui.Icon(c, components.IconTrash).Width(15).Height(15).TextColor(pal.TextMuted)
-											})
-											if delBtn.Clicked() {
-												if confirming {
-													a.confirmDeleteFont = ""
-												} else {
-													a.confirmDeleteFont = lf.Filename
-												}
-											}
-										})
-
-										if confirming {
-											ui.Row(c.Key("font-del-confirm-"+lf.Filename)).
-												FillWidth().
-												Padding(8, 10).
-												Gap(8).
-												Radius(8).
-												Background(pal.Background).
-												Border(1, pal.Border).
-												AlignItems(ui.Center).
-												Children(func() {
-													hint := "删除后不可恢复，确认删除该字体文件？"
-													if active {
-														hint = "当前正在使用该字体，删除后将自动回退系统默认字体。"
-													}
-													ui.Text(c, hint).FontSize(11).TextColor(pal.TextSecondary).Grow(1).MaxLines(2)
-													if ui.Button(c, "取消").Clicked() {
-														a.confirmDeleteFont = ""
-													}
-													if ui.PrimaryButton(c, "确认删除").Clicked() {
-														a.confirmDeleteFont = ""
-														a.deleteLocalFont(lf)
-													}
-												})
-										}
-									})
-								}
-							})
-					})
+					a.renderLocalFonts(c, pal)
 				})
 			})
 		})
@@ -528,4 +305,251 @@ func (a *AppUI) deleteLocalFont(lf app.LocalFont) {
 		a.reloadSync(ctx)
 		a.showTransientToast("已删除字体：" + lf.Family)
 	}()
+}
+
+func (a *AppUI) renderFontSpecimen(c *ui.Context, pal theme.Palette, poetryFont, curFontName string, curWeight int) {
+	// 1. 实时诗句标本预览卡（默认梭罗 7 行开场誓词；轻点切换中英对照台词试字体）
+	spec := fontsPreviewSpecimen(a.fontsSpecimenIdx)
+	ui.Column(c.Key("fonts-specimen-card")).
+		FillWidth().
+		Padding(16, 18, 14, 18).
+		Gap(10).
+		Radius(12).
+		Background(pal.Surface).
+		Border(1, pal.Border).
+		Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "实时排版预览").FontSize(11).TextColor(pal.TextMuted).Grow(1)
+				hint := "轻点切换中英对照"
+				if spec.ShowOrigin {
+					hint = dpsWeltonFootprint
+				}
+				ui.Text(c, hint).Font(theme.FontMono).FontSize(10).TextColor(pal.TextMuted)
+			})
+			specBox := ui.Column(c.Key("fonts-specimen-box")).
+				FillWidth().
+				Padding(14, 16).
+				Radius(8).
+				Background(pal.Background).
+				Border(1, pal.Border).
+				Gap(10).
+				Cursor(ui.CursorPointer)
+			theme.ApplyPressScale(specBox, 0.99)
+			specBox.Children(func() {
+				ui.Text(c, spec.ZH).
+					Font(poetryFont).
+					FontSize(float32(a.fontSizeSlider)).
+					FontWeight(curWeight).
+					LineHeight(float32(a.lineHeightSlider)).
+					TextColor(pal.TextPrimary)
+				if spec.EN != "" {
+					ui.Box(c).Width(24).Height(1).Background(pal.Border)
+					ui.Text(c, spec.EN).
+						Font(poetryFont).
+						FontSize(max(12.5, float32(a.fontSizeSlider)-1.5)).
+						FontWeight(curWeight).
+						LineHeight(float32(a.lineHeightSlider)).
+						Italic().
+						TextColor(pal.TextSecondary)
+				}
+			})
+			if specBox.Clicked() {
+				a.fontsSpecimenIdx = (a.fontsSpecimenIdx + 1) % len(dpsFontsSpecimens)
+			}
+			ui.Textf(c, "%s · %s · %.0f pt · %.2f×", curFontName, formatFontWeightLabel(curWeight), a.fontSizeSlider, a.lineHeightSlider).
+				Font(theme.FontMono).FontSize(11).TextColor(pal.TextSecondary).MaxLines(1)
+		})
+}
+
+func (a *AppUI) renderFontMetrics(c *ui.Context, pal theme.Palette) {
+	// 2. 字号与行距调节
+	ui.Column(c.Key("fonts-metrics-sec")).FillWidth().Gap(8).Children(func() {
+		a.renderSettingsGroupLabel(c, pal, "字号与行距")
+		ui.Column(c).
+			FillWidth().
+			Padding(16, 18).
+			Gap(14).
+			Radius(12).
+			Background(pal.Surface).
+			Border(1, pal.Border).
+			Children(func() {
+				ui.Column(c).FillWidth().Gap(4).Children(func() {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+						ui.Text(c, "正文字号").FontSize(13).TextColor(pal.TextSecondary).Grow(1)
+						ui.Textf(c, "%.0f pt", a.fontSizeSlider).Font(theme.FontMono).FontSize(12).TextColor(pal.Accent)
+					})
+					if ui.Slider(c.Key("sub-fontsize"), &a.fontSizeSlider, 14, 28).Changed() {
+						a.saveTypography(float32(a.fontSizeSlider), float32(a.lineHeightSlider))
+					}
+				})
+
+				ui.Column(c).FillWidth().Gap(4).Children(func() {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+						ui.Text(c, "行距倍数").FontSize(13).TextColor(pal.TextSecondary).Grow(1)
+						ui.Textf(c, "%.2f", a.lineHeightSlider).Font(theme.FontMono).FontSize(12).TextColor(pal.Accent)
+					})
+					if ui.Slider(c.Key("sub-lineheight"), &a.lineHeightSlider, 1.4, 2.4).Changed() {
+						a.saveTypography(float32(a.fontSizeSlider), float32(a.lineHeightSlider))
+					}
+				})
+			})
+	})
+}
+
+func (a *AppUI) renderBuiltInFonts(c *ui.Context, pal theme.Palette) {
+	// 3. 内置字体
+	ui.Column(c.Key("fonts-builtin-sec")).FillWidth().Gap(8).Children(func() {
+		a.renderSettingsGroupLabel(c, pal, "内置字体")
+		ui.Column(c).
+			FillWidth().
+			Padding(6, 16).
+			Radius(12).
+			Background(pal.Surface).
+			Border(1, pal.Border).
+			Children(func() {
+				isDefault := strings.TrimSpace(a.settings.FontFamily) == ""
+				row := ui.Row(c.Key("font-item-default")).
+					FillWidth().
+					Padding(10, 4).
+					Gap(10).
+					AlignItems(ui.Center).
+					Cursor(ui.CursorPointer)
+				row.Children(func() {
+					ui.Column(c).Grow(1).Gap(2).Children(func() {
+						ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+							ui.Text(c, "文学衬线（系统默认）").Font(theme.FontSerif).FontSize(15).TextColor(pal.TextPrimary)
+							if isDefault {
+								ui.Box(c).Padding(2, 7).Radius(999).Background(pal.HighlightBg).Children(func() {
+									ui.Text(c, "当前使用").FontSize(10).Bold().TextColor(pal.Accent)
+								})
+							}
+						})
+						ui.Text(c, "宋体 / PingFang Serif · 随系统语言自适应").FontSize(11).TextColor(pal.TextMuted)
+					})
+					if isDefault {
+						ui.Icon(c, components.IconCheck).Width(16).Height(16).TextColor(pal.Accent)
+					}
+				})
+				if row.Clicked() && !isDefault {
+					a.applyFontFamily("")
+					a.showTransientToastOnUI("已切换为系统默认字体")
+				}
+			})
+	})
+}
+
+func (a *AppUI) renderFontDeleteConfirmation(c *ui.Context, pal theme.Palette, lf app.LocalFont, active, confirming bool) {
+	if confirming {
+		ui.Row(c.Key("font-del-confirm-"+lf.Filename)).
+			FillWidth().
+			Padding(8, 10).
+			Gap(8).
+			Radius(8).
+			Background(pal.Background).
+			Border(1, pal.Border).
+			AlignItems(ui.Center).
+			Children(func() {
+				hint := "删除后不可恢复，确认删除该字体文件？"
+				if active {
+					hint = "当前正在使用该字体，删除后将自动回退系统默认字体。"
+				}
+				ui.Text(c, hint).FontSize(11).TextColor(pal.TextSecondary).Grow(1).MaxLines(2)
+				if ui.Button(c, "取消").Clicked() {
+					a.confirmDeleteFont = ""
+				}
+				if ui.PrimaryButton(c, "确认删除").Clicked() {
+					a.confirmDeleteFont = ""
+					a.deleteLocalFont(lf)
+				}
+			})
+	}
+}
+
+func (a *AppUI) renderLocalFont(c *ui.Context, pal theme.Palette, lf app.LocalFont) {
+	active := a.settings.FontFamily == lf.Family
+	confirming := a.confirmDeleteFont == lf.Filename
+
+	ui.Column(c.Key("font-wrap-"+lf.Filename)).FillWidth().Padding(10, 2).Gap(8).Children(func() {
+		ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
+			selectArea := ui.Column(c.Key("font-sel-" + lf.Filename)).
+				Grow(1).
+				Gap(3).
+				Cursor(ui.CursorPointer)
+			selectArea.Children(func() {
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Wrap().Children(func() {
+					ui.Text(c, lf.Family).Font(lf.Family).FontSize(15).TextColor(pal.TextPrimary)
+					if active {
+						ui.Box(c).Padding(2, 7).Radius(999).Background(pal.HighlightBg).Children(func() {
+							ui.Text(c, "当前使用").FontSize(10).Bold().TextColor(pal.Accent)
+						})
+					}
+				})
+				ui.Textf(c, "%s · %s", lf.Filename, formatBytesSize(lf.Size)).
+					Font(theme.FontMono).FontSize(11).TextColor(pal.TextMuted).MaxLines(1)
+			})
+			if selectArea.Clicked() && !active {
+				a.applyFontFamily(lf.Family)
+				a.showTransientToastOnUI("已启用字体：" + lf.Family)
+			}
+
+			if active {
+				ui.Icon(c, components.IconCheck).Width(16).Height(16).TextColor(pal.Accent)
+			}
+
+			delBtn := ui.Box(c.Key("font-del-" + lf.Filename)).
+				Padding(6).
+				Radius(6).
+				Cursor(ui.CursorPointer)
+			theme.ApplyPressScale(delBtn, 0.90)
+			delBtn.Children(func() {
+				ui.Icon(c, components.IconTrash).Width(15).Height(15).TextColor(pal.TextMuted)
+			})
+			if delBtn.Clicked() {
+				if confirming {
+					a.confirmDeleteFont = ""
+				} else {
+					a.confirmDeleteFont = lf.Filename
+				}
+			}
+		})
+
+		a.renderFontDeleteConfirmation(c, pal, lf, active, confirming)
+	})
+}
+
+func (a *AppUI) renderLocalFonts(c *ui.Context, pal theme.Palette) {
+	// 4. 用户已上传字体列表（支持切换与删除）
+	ui.Column(c.Key("fonts-custom-sec")).FillWidth().Gap(8).Children(func() {
+		ui.Textf(c, "已上传字体（%d）", len(a.localFonts)).
+			Font(theme.FontSans).FontSize(12).Bold().TextColor(pal.TextMuted).Padding(0, 0, 0, 4)
+
+		ui.Column(c.Key("fonts-custom-card")).
+			FillWidth().
+			Padding(8, 16).
+			Gap(0).
+			Radius(12).
+			Background(pal.Surface).
+			Border(1, pal.Border).
+			Children(func() {
+				if len(a.localFonts) == 0 {
+					ui.Column(c).FillWidth().Padding(18, 4).Gap(8).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, "尚未上传自定义字体").Font(theme.FontSerif).FontSize(14).TextColor(pal.TextSecondary)
+						ui.Text(c, "支持导入 .ttf 或 .otf 字体文件，导入后仅保存在本机并同步给小组件。").
+							FontSize(12).LineHeight(1.5).TextColor(pal.TextMuted)
+						if ui.Button(c, "+ 导入 .ttf / .otf 字体").Clicked() {
+							a.triggerImportFont()
+						}
+					})
+					return
+				}
+
+				for idx, lf := range a.localFonts {
+					lf := lf
+					if idx > 0 {
+						a.renderSettingsDivider(c, pal)
+					}
+					a.renderLocalFont(c, pal, lf)
+				}
+			})
+	})
 }

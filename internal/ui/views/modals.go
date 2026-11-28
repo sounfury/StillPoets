@@ -237,34 +237,7 @@ func (a *AppUI) renderGroupManagerModal(c *ui.Context, pal theme.Palette) {
 			}
 		})
 
-		// 新建空组
-		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.TextInput(c.Key("gm-new-name"), &a.newGroupName).Placeholder("输入新分组名称（如：外国诗）").Grow(1)
-			if ui.PrimaryButton(c, "新建").Clicked() {
-				name := strings.TrimSpace(a.newGroupName)
-				if name == "" {
-					a.groupFormError = "分组名称不能为空"
-				} else {
-					a.newGroupName = ""
-					a.groupFormError = ""
-					go func() {
-						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-						defer cancel()
-						if _, err := a.svc.CreateGroup(ctx, name); err != nil {
-							errMsg := err.Error()
-							a.dispatchUI(func() {
-								a.groupFormError = errMsg
-							})
-						}
-						a.reloadSync(nil)
-					}()
-				}
-			}
-		})
-
-		if a.groupFormError != "" {
-			ui.Text(c, a.groupFormError).FontSize(12).TextColor(pal.Accent)
-		}
+		a.renderGroupCreation(c, pal)
 
 		ui.Scroll(c.Key("gm-list")).Grow(1).FillWidth().Children(func() {
 			ui.Column(c).Gap(8).FillWidth().Children(func() {
@@ -274,59 +247,7 @@ func (a *AppUI) renderGroupManagerModal(c *ui.Context, pal theme.Palette) {
 				}
 				for i, g := range a.groups {
 					i, g := i, g
-					ui.Column(c.Key("gitem-"+g.ID)).
-						FillWidth().
-						Padding(10, 12).
-						Gap(8).
-						Radius(8).
-						Background(pal.Background).
-						Border(1, pal.Border).
-						Children(func() {
-							if a.renamingGroupID == g.ID {
-								ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-									ui.TextInput(c.Key("gm-ren-"+g.ID), &a.renamingGroupTx).Grow(1)
-									if ui.PrimaryButton(c, "确定").Clicked() {
-										newName := strings.TrimSpace(a.renamingGroupTx)
-										a.renamingGroupID = ""
-										if newName != "" {
-											go func() {
-												ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-												defer cancel()
-												_ = a.svc.RenameGroup(ctx, g.ID, newName)
-												a.reloadSync(ctx)
-												a.requestRepaint()
-											}()
-										}
-									}
-								})
-							} else {
-								ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-									ui.Text(c, g.Name).FontSize(14).Bold().TextColor(pal.TextPrimary).Grow(1)
-									if i > 0 && ui.Button(c, "↑").Clicked() {
-										a.moveGroupByID(g.ID, -1)
-									}
-									if i+1 < len(a.groups) && ui.Button(c, "↓").Clicked() {
-										a.moveGroupByID(g.ID, +1)
-									}
-									if ui.Button(c, "重命名").Clicked() {
-										a.renamingGroupID = g.ID
-										a.renamingGroupTx = g.Name
-									}
-									if ui.Button(c, "解散").Clicked() {
-										if a.selectedGrp == g.ID {
-											a.selectedGrp = ""
-										}
-										go func() {
-											ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-											defer cancel()
-											_ = a.svc.DissolveGroup(ctx, g.ID)
-											a.reloadSync(ctx)
-											a.requestRepaint()
-										}()
-									}
-								})
-							}
-						})
+					a.renderManagedGroup(c, pal, g, i)
 				}
 			})
 		})
@@ -367,29 +288,7 @@ func (a *AppUI) renderSearchModal(c *ui.Context, pal theme.Palette) {
 			}
 		})
 
-		if ui.SearchField(c.Key("global-search-input"), &a.searchQuery).Placeholder("搜已缓存诗句、诗题或散页…").Changed() {
-			q := a.searchQuery
-			a.mu.Lock()
-			a.searchSeq++
-			reqSeq := a.searchSeq
-			a.mu.Unlock()
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				res, err := a.svc.Search(ctx, q, 20)
-				if err != nil {
-					return
-				}
-				a.dispatchUI(func() {
-					a.mu.Lock()
-					match := a.searchSeq == reqSeq
-					a.mu.Unlock()
-					if match {
-						a.searchResults = res
-					}
-				})
-			}()
-		}
+		a.renderGlobalSearchField(c)
 
 		ui.Scroll(c.Key("search-results-scroll")).Grow(1).FillWidth().MinHeight(120).MaxHeight(420).Children(func() {
 			ui.Column(c).Gap(10).FillWidth().Padding(0, 0, 12, 0).Children(func() {
@@ -402,72 +301,8 @@ func (a *AppUI) renderSearchModal(c *ui.Context, pal theme.Palette) {
 					ui.Text(c, "未找到匹配内容").FontSize(13).TextColor(pal.TextMuted).Padding(8, 0)
 					return
 				}
-				if len(a.searchResults.Poems) > 0 {
-					ui.Textf(c, "命中诗篇（%d）", len(a.searchResults.Poems)).FontSize(12).Bold().TextColor(pal.TextSecondary)
-					searchTerms := splitSearchTerms(a.searchQuery)
-					for _, p := range a.searchResults.Poems {
-						p := p
-						match := matchPoemQuery(p, searchTerms)
-						row := ui.Column(c.Key("srch-p-"+p.ID)).
-							FillWidth().
-							Padding(10, 12).
-							Gap(3).
-							Radius(6).
-							Background(pal.Background).
-							Cursor(ui.CursorPointer)
-						theme.ApplyPressScale(row, 0.985)
-						row.Children(func() {
-							ui.Text(c, p.Title).FontSize(14).Bold().TextColor(pal.TextPrimary).MaxLines(1)
-							if match.snippet != "" {
-								ui.Text(c, match.snippet).FontSize(12).TextColor(pal.TextSecondary).MaxLines(1)
-							}
-							metaParts := make([]string, 0, 2)
-							if bkTitle := a.bookTitleByID(p.BookID); bkTitle != "" {
-								metaParts = append(metaParts, "《"+bkTitle+"》")
-							}
-							if p.Author != "" {
-								metaParts = append(metaParts, p.Author)
-							}
-							if len(metaParts) > 0 {
-								ui.Text(c, strings.Join(metaParts, " · ")).FontSize(11).TextColor(pal.TextMuted).MaxLines(1)
-							}
-						})
-						if row.Clicked() {
-							a.showSearchModal = false
-							a.activeTab = components.TabShelf
-							a.selectShelfSubTab(components.SubTabBooks)
-							var ranges []app.LineRange
-							if match.matchLine > 0 {
-								ranges = []app.LineRange{{Start: match.matchLine, End: match.matchLine}}
-							}
-							a.openBookWithSource(p.BookID, p.ID, ranges, true, entrySearch)
-						}
-					}
-				}
-				if len(a.searchResults.Quotes) > 0 {
-					ui.Textf(c, "命中散页（%d）", len(a.searchResults.Quotes)).FontSize(12).Bold().TextColor(pal.TextSecondary).Padding(6, 0, 0, 0)
-					for _, qv := range a.searchResults.Quotes {
-						qv := qv
-						row := ui.Column(c.Key("srch-q-"+qv.Quote.ID)).
-							FillWidth().
-							Padding(10, 12).
-							Gap(3).
-							Radius(6).
-							Background(pal.Background).
-							Cursor(ui.CursorPointer)
-						theme.ApplyPressScale(row, 0.985)
-						row.Children(func() {
-							ui.Text(c, qv.Quote.Content).FontSize(13).TextColor(pal.TextPrimary).MaxLines(2)
-							ui.Textf(c, "%s · %s", qv.Quote.Author, qv.Quote.SourceBook).FontSize(11).TextColor(pal.TextMuted)
-						})
-						if row.Clicked() {
-							a.showSearchModal = false
-							cp := qv
-							a.detailQuote = &cp
-							a.showQuoteDetail = true
-						}
-					}
-				}
+				a.renderGlobalPoemResults(c, pal)
+				a.renderGlobalQuoteResults(c, pal)
 			})
 		})
 	})
@@ -591,4 +426,198 @@ func (a *AppUI) renderTypographyModal(c *ui.Context, pal theme.Palette) {
 			})
 		})
 	})
+}
+
+func (a *AppUI) renderGroupCreation(c *ui.Context, pal theme.Palette) {
+	// 新建空组
+	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.TextInput(c.Key("gm-new-name"), &a.newGroupName).Placeholder("输入新分组名称（如：外国诗）").Grow(1)
+		if ui.PrimaryButton(c, "新建").Clicked() {
+			name := strings.TrimSpace(a.newGroupName)
+			if name == "" {
+				a.groupFormError = "分组名称不能为空"
+			} else {
+				a.newGroupName = ""
+				a.groupFormError = ""
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					if _, err := a.svc.CreateGroup(ctx, name); err != nil {
+						errMsg := err.Error()
+						a.dispatchUI(func() {
+							a.groupFormError = errMsg
+						})
+					}
+					a.reloadSync(nil)
+				}()
+			}
+		}
+	})
+
+	if a.groupFormError != "" {
+		ui.Text(c, a.groupFormError).FontSize(12).TextColor(pal.Accent)
+	}
+}
+
+func (a *AppUI) renderGroupRename(c *ui.Context, groupID string) {
+	g := domain.BookGroup{ID: groupID}
+	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.TextInput(c.Key("gm-ren-"+g.ID), &a.renamingGroupTx).Grow(1)
+		if ui.PrimaryButton(c, "确定").Clicked() {
+			newName := strings.TrimSpace(a.renamingGroupTx)
+			a.renamingGroupID = ""
+			if newName != "" {
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = a.svc.RenameGroup(ctx, g.ID, newName)
+					a.reloadSync(ctx)
+					a.requestRepaint()
+				}()
+			}
+		}
+	})
+}
+
+func (a *AppUI) renderManagedGroup(c *ui.Context, pal theme.Palette, g domain.BookGroup, i int) {
+	ui.Column(c.Key("gitem-"+g.ID)).
+		FillWidth().
+		Padding(10, 12).
+		Gap(8).
+		Radius(8).
+		Background(pal.Background).
+		Border(1, pal.Border).
+		Children(func() {
+			if a.renamingGroupID == g.ID {
+				a.renderGroupRename(c, g.ID)
+			} else {
+				ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, g.Name).FontSize(14).Bold().TextColor(pal.TextPrimary).Grow(1)
+					if i > 0 && ui.Button(c, "↑").Clicked() {
+						a.moveGroupByID(g.ID, -1)
+					}
+					if i+1 < len(a.groups) && ui.Button(c, "↓").Clicked() {
+						a.moveGroupByID(g.ID, +1)
+					}
+					if ui.Button(c, "重命名").Clicked() {
+						a.renamingGroupID = g.ID
+						a.renamingGroupTx = g.Name
+					}
+					if ui.Button(c, "解散").Clicked() {
+						if a.selectedGrp == g.ID {
+							a.selectedGrp = ""
+						}
+						go func() {
+							ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+							defer cancel()
+							_ = a.svc.DissolveGroup(ctx, g.ID)
+							a.reloadSync(ctx)
+							a.requestRepaint()
+						}()
+					}
+				})
+			}
+		})
+}
+
+func (a *AppUI) renderGlobalSearchField(c *ui.Context) {
+	if ui.SearchField(c.Key("global-search-input"), &a.searchQuery).Placeholder("搜已缓存诗句、诗题或散页…").Changed() {
+		q := a.searchQuery
+		a.mu.Lock()
+		a.searchSeq++
+		reqSeq := a.searchSeq
+		a.mu.Unlock()
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			res, err := a.svc.Search(ctx, q, 20)
+			if err != nil {
+				return
+			}
+			a.dispatchUI(func() {
+				a.mu.Lock()
+				match := a.searchSeq == reqSeq
+				a.mu.Unlock()
+				if match {
+					a.searchResults = res
+				}
+			})
+		}()
+	}
+}
+
+func (a *AppUI) renderGlobalPoemResult(c *ui.Context, pal theme.Palette, p domain.Poem, searchTerms []string) {
+	match := matchPoemQuery(p, searchTerms)
+	row := ui.Column(c.Key("srch-p-"+p.ID)).
+		FillWidth().
+		Padding(10, 12).
+		Gap(3).
+		Radius(6).
+		Background(pal.Background).
+		Cursor(ui.CursorPointer)
+	theme.ApplyPressScale(row, 0.985)
+	row.Children(func() {
+		ui.Text(c, p.Title).FontSize(14).Bold().TextColor(pal.TextPrimary).MaxLines(1)
+		if match.snippet != "" {
+			ui.Text(c, match.snippet).FontSize(12).TextColor(pal.TextSecondary).MaxLines(1)
+		}
+		metaParts := make([]string, 0, 2)
+		if bkTitle := a.bookTitleByID(p.BookID); bkTitle != "" {
+			metaParts = append(metaParts, "《"+bkTitle+"》")
+		}
+		if p.Author != "" {
+			metaParts = append(metaParts, p.Author)
+		}
+		if len(metaParts) > 0 {
+			ui.Text(c, strings.Join(metaParts, " · ")).FontSize(11).TextColor(pal.TextMuted).MaxLines(1)
+		}
+	})
+	if row.Clicked() {
+		a.showSearchModal = false
+		a.activeTab = components.TabShelf
+		a.selectShelfSubTab(components.SubTabBooks)
+		var ranges []app.LineRange
+		if match.matchLine > 0 {
+			ranges = []app.LineRange{{Start: match.matchLine, End: match.matchLine}}
+		}
+		a.openBookWithSource(p.BookID, p.ID, ranges, true, entrySearch)
+	}
+}
+
+func (a *AppUI) renderGlobalPoemResults(c *ui.Context, pal theme.Palette) {
+	if len(a.searchResults.Poems) > 0 {
+		ui.Textf(c, "命中诗篇（%d）", len(a.searchResults.Poems)).FontSize(12).Bold().TextColor(pal.TextSecondary)
+		searchTerms := splitSearchTerms(a.searchQuery)
+		for _, p := range a.searchResults.Poems {
+			p := p
+			a.renderGlobalPoemResult(c, pal, p, searchTerms)
+		}
+	}
+}
+
+func (a *AppUI) renderGlobalQuoteResults(c *ui.Context, pal theme.Palette) {
+	if len(a.searchResults.Quotes) > 0 {
+		ui.Textf(c, "命中散页（%d）", len(a.searchResults.Quotes)).FontSize(12).Bold().TextColor(pal.TextSecondary).Padding(6, 0, 0, 0)
+		for _, qv := range a.searchResults.Quotes {
+			qv := qv
+			row := ui.Column(c.Key("srch-q-"+qv.Quote.ID)).
+				FillWidth().
+				Padding(10, 12).
+				Gap(3).
+				Radius(6).
+				Background(pal.Background).
+				Cursor(ui.CursorPointer)
+			theme.ApplyPressScale(row, 0.985)
+			row.Children(func() {
+				ui.Text(c, qv.Quote.Content).FontSize(13).TextColor(pal.TextPrimary).MaxLines(2)
+				ui.Textf(c, "%s · %s", qv.Quote.Author, qv.Quote.SourceBook).FontSize(11).TextColor(pal.TextMuted)
+			})
+			if row.Clicked() {
+				a.showSearchModal = false
+				cp := qv
+				a.detailQuote = &cp
+				a.showQuoteDetail = true
+			}
+		}
+	}
 }

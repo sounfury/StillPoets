@@ -242,34 +242,44 @@ func (s *Service) PickTodayReread(ctx context.Context) (*TodayReread, error) {
 		bookMap[b.ID] = b
 	}
 
-	// 1. 优先从诗篇精选池抽取
+	if reread := s.pickFavoriteReread(ctx, bookMap, daySeed); reread != nil {
+		return reread, nil
+	}
+	return s.pickCachedReread(ctx, books, daySeed), nil
+}
+
+func (s *Service) pickFavoriteReread(ctx context.Context, books map[string]domain.Book, daySeed uint64) *TodayReread {
 	favs, err := s.store.ListFavorites(ctx, "")
-	if err == nil && len(favs) > 0 {
-		chosen := favs[int(daySeed%uint64(len(favs)))]
-		excerpt := strings.TrimSpace(chosen.Excerpt)
-		if excerpt == "" {
-			if p, err := s.store.GetPoem(ctx, chosen.BookID, chosen.PoemID); err == nil {
-				excerpt = parser.BuildDefaultExcerpt(p)
-			}
-		}
-		if excerpt != "" {
-			b := bookMap[chosen.BookID]
-			author := chosen.Author
-			if author == "" {
-				author = b.Author
-			}
-			return &TodayReread{
-				BookID:         chosen.BookID,
-				PoemID:         chosen.PoemID,
-				BookTitle:      b.Title,
-				PoemTitle:      chosen.PoemTitle,
-				Author:         author,
-				Excerpt:        excerpt,
-				HighlightLines: chosen.HighlightLines,
-			}, nil
+	if err != nil || len(favs) == 0 {
+		return nil
+	}
+	chosen := favs[int(daySeed%uint64(len(favs)))]
+	excerpt := strings.TrimSpace(chosen.Excerpt)
+	if excerpt == "" {
+		if p, err := s.store.GetPoem(ctx, chosen.BookID, chosen.PoemID); err == nil {
+			excerpt = parser.BuildDefaultExcerpt(p)
 		}
 	}
+	if excerpt == "" {
+		return nil
+	}
+	b := books[chosen.BookID]
+	author := chosen.Author
+	if author == "" {
+		author = b.Author
+	}
+	return &TodayReread{
+		BookID:         chosen.BookID,
+		PoemID:         chosen.PoemID,
+		BookTitle:      b.Title,
+		PoemTitle:      chosen.PoemTitle,
+		Author:         author,
+		Excerpt:        excerpt,
+		HighlightLines: chosen.HighlightLines,
+	}
+}
 
+func (s *Service) pickCachedReread(ctx context.Context, books []domain.Book, daySeed uint64) *TodayReread {
 	// 2. 其次从已离线缓存诗集的正式诗篇中抽取
 	type candidate struct {
 		book domain.Book
@@ -306,7 +316,7 @@ func (s *Service) PickTodayReread(ctx context.Context) (*TodayReread, error) {
 			PoemTitle: c.poem.Title,
 			Author:    author,
 			Excerpt:   parser.BuildDefaultExcerpt(c.poem),
-		}, nil
+		}
 	}
-	return nil, nil
+	return nil
 }

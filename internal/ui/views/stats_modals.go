@@ -199,152 +199,172 @@ func (a *AppUI) renderAuthorProfileModal(c *ui.Context, pal theme.Palette) {
 
 		ui.Scroll(c.Key("au-profile-scroll")).FillWidth().MaxHeight(460).Children(func() {
 			ui.Column(c).FillWidth().Gap(16).Padding(4, 0, 12, 0).Children(func() {
-				// 1. 分布诗集
-				if len(prof.Books) > 0 {
-					ui.Column(c.Key("au-books")).FillWidth().Gap(8).Children(func() {
-						ui.Text(c, "分布诗集").Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextSecondary)
-						for _, bk := range prof.Books {
-							bk := bk
-							row := ui.Row(c.Key("au-bk-"+bk.Book.ID)).
-								FillWidth().
-								Padding(9, 11).
-								Gap(10).
-								Radius(8).
-								Background(pal.Background).
-								Border(0.75, pal.Border).
-								AlignItems(ui.Center).
-								Cursor(ui.CursorPointer)
-							theme.ApplyPressScale(row, 0.985)
-							row.Children(func() {
-								components.BookCoverThumbnail(c, "au-th-"+bk.Book.ID, bk.Book.ID, a.coverImageFor(bk.Book), pal)
-								ui.Column(c).Grow(1).Gap(2).Children(func() {
-									ui.Text(c, bk.Book.Title).Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextPrimary).MaxLines(1)
-									ui.Textf(c, "读过 %d 首 · 精选 %d 首", bk.ReadCount, bk.FavoriteCount).
-										Font(theme.FontMono).FontFeatures("tnum").FontSize(11).TextColor(pal.TextMuted)
-								})
-								ui.Icon(c, components.IconChevronRight).Width(13).Height(13).TextColor(pal.TextMuted)
-							})
-							if row.Clicked() {
-								a.showAuthorModal = false
-								a.activeTab = components.TabShelf
-								a.shelfSubTab = components.SubTabBooks
-								a.shelfPager.scopeKey = ""
-								a.openBook(bk.Book.ID, "", nil, !a.lastIsTablet)
-							}
-						}
-					})
-				}
+				a.renderAuthorBooks(c, pal, prof)
 
-				// 2. 精选诗篇 ❤️
-				if len(prof.Favorites) > 0 {
-					ui.Column(c.Key("au-favs")).FillWidth().Gap(8).Children(func() {
-						ui.Text(c, "精选诗篇").Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextSecondary)
-						for i, fav := range prof.Favorites {
-							fav := fav
-							card := ui.Column(c.Key(fmt.Sprintf("au-fav-%d-%s", i, fav.PoemID))).
-								FillWidth().
-								Padding(10, 12).
-								Gap(4).
-								Radius(8).
-								Background(pal.Background).
-								Border(0.75, pal.Border).
-								Cursor(ui.CursorPointer)
-							theme.ApplyPressScale(card, 0.985)
-							card.Children(func() {
-								ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
-									ui.Icon(c, components.IconHeartFilled).Width(12).Height(12).TextColor(pal.Accent)
-									title := fav.PoemTitle
-									if title == "" {
-										title = "无题"
-									}
-									ui.Text(c, title).Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextPrimary).Grow(1).MaxLines(1)
-									if fav.BookLocalState != domain.LocalStateDownloaded {
-										ui.Icon(c, components.IconCloud).Width(12).Height(12).TextColor(pal.TextMuted)
-									}
-									ui.Text(c, fmt.Sprintf("《%s》", fav.BookTitle)).Font(theme.FontNote).FontSize(11).TextColor(pal.TextMuted).MaxLines(1)
-								})
-								if ex := strings.TrimSpace(fav.Excerpt); ex != "" {
-									ui.Text(c, ex).Font(theme.FontNote).FontSize(12).LineHeight(1.55).MaxLines(2).TextColor(pal.TextSecondary)
-								}
-							})
-							if card.Clicked() {
-								a.jumpToPoemFromStats(fav.BookID, fav.PoemID, app.ParseLineRanges(fav.HighlightLines), !a.lastIsTablet)
-							}
-						}
-					})
-				}
+				a.renderAuthorFavorites(c, pal, prof)
 
-				// 3. 留存散页（诗歌节选与独立散句）
-				if len(prof.Quotes) > 0 {
-					ui.Column(c.Key("au-quotes")).FillWidth().Gap(8).Children(func() {
-						ui.Text(c, "留存散页").Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextSecondary)
-						for i, qv := range prof.Quotes {
-							qv := qv
-							card := ui.Column(c.Key(fmt.Sprintf("au-qt-%d-%s", i, qv.Quote.ID))).
-								FillWidth().
-								Padding(10, 12).
-								Gap(5).
-								Radius(8).
-								Background(pal.Background).
-								Border(0.75, pal.Border).
-								Cursor(ui.CursorPointer)
-							theme.ApplyPressScale(card, 0.985)
-							card.Children(func() {
-								ui.Text(c, qv.Quote.Content).Font(theme.FontSerif).FontSize(13).LineHeight(1.55).MaxLines(3).TextColor(pal.TextPrimary)
-								src := strings.TrimSpace(qv.Quote.SourceBook)
-								if qv.Quote.PoemTitle != "" {
-									if src != "" {
-										src = fmt.Sprintf("《%s》· %s", src, qv.Quote.PoemTitle)
-									} else {
-										src = qv.Quote.PoemTitle
-									}
-								} else if src != "" {
-									src = fmt.Sprintf("《%s》", src)
-								} else {
-									src = "独立散句"
-								}
-								ui.Text(c, src).Font(theme.FontNote).FontSize(11).TextColor(pal.TextMuted)
-							})
-							if card.Clicked() {
-								if qv.EffectiveKind == domain.QuoteKindExcerpt {
-									a.jumpToPoemFromStats(qv.Quote.BookID, qv.Quote.PoemID, app.ParseLineRanges(qv.Quote.HighlightLines), !a.lastIsTablet)
-								} else {
-									cp := qv
-									a.showAuthorModal = false
-									a.detailQuote = &cp
-									a.showQuoteDetail = true
-								}
-							}
-						}
-					})
-				}
+				a.renderAuthorQuotes(c, pal, prof)
 
-				// 4. 近期读过
-				if len(prof.RecentReads) > 0 {
-					ui.Column(c.Key("au-recent")).FillWidth().Gap(6).Children(func() {
-						ui.Text(c, "近期读过").Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextSecondary)
-						for i, it := range prof.RecentReads {
-							it := it
-							row := renderStatsEventRowBox(c, fmt.Sprintf("au-rd-%d-%s", i, it.Event.ID), pal, 8, 8)
-							row.Children(func() {
-								ui.Column(c).Grow(1).Gap(2).Children(func() {
-									title := it.Event.PoemTitle
-									if title == "" {
-										title = "无题"
-									}
-									ui.Text(c, title).Font(theme.FontSerif).FontSize(13).Bold().TextColor(pal.TextPrimary).MaxLines(1)
-									ui.Text(c, fmt.Sprintf("《%s》", it.BookTitle)).Font(theme.FontNote).FontSize(11).TextColor(pal.TextMuted).MaxLines(1)
-								})
-								ui.Text(c, formatCNDate(it.Event.ReadDate)).Font(theme.FontMono).FontFeatures("tnum").FontSize(10.5).TextColor(pal.TextMuted)
-								ui.Icon(c, components.IconChevronRight).Width(12).Height(12).TextColor(pal.TextMuted)
-							})
-							if row.Clicked() {
-								a.jumpToPoemFromStats(it.Event.BookID, it.Event.PoemID, nil, !a.lastIsTablet)
-							}
-						}
-					})
-				}
+				a.renderAuthorRecentReads(c, pal, prof)
 			})
 		})
 	})
+}
+
+func (a *AppUI) renderAuthorBooks(c *ui.Context, pal theme.Palette, prof *storage.AuthorProfile) {
+	// 1. 分布诗集
+	if len(prof.Books) > 0 {
+		ui.Column(c.Key("au-books")).FillWidth().Gap(8).Children(func() {
+			ui.Text(c, "分布诗集").Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextSecondary)
+			for _, bk := range prof.Books {
+				bk := bk
+				row := ui.Row(c.Key("au-bk-"+bk.Book.ID)).
+					FillWidth().
+					Padding(9, 11).
+					Gap(10).
+					Radius(8).
+					Background(pal.Background).
+					Border(0.75, pal.Border).
+					AlignItems(ui.Center).
+					Cursor(ui.CursorPointer)
+				theme.ApplyPressScale(row, 0.985)
+				row.Children(func() {
+					components.BookCoverThumbnail(c, "au-th-"+bk.Book.ID, bk.Book.ID, a.coverImageFor(bk.Book), pal)
+					ui.Column(c).Grow(1).Gap(2).Children(func() {
+						ui.Text(c, bk.Book.Title).Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextPrimary).MaxLines(1)
+						ui.Textf(c, "读过 %d 首 · 精选 %d 首", bk.ReadCount, bk.FavoriteCount).
+							Font(theme.FontMono).FontFeatures("tnum").FontSize(11).TextColor(pal.TextMuted)
+					})
+					ui.Icon(c, components.IconChevronRight).Width(13).Height(13).TextColor(pal.TextMuted)
+				})
+				if row.Clicked() {
+					a.showAuthorModal = false
+					a.activeTab = components.TabShelf
+					a.shelfSubTab = components.SubTabBooks
+					a.shelfPager.scopeKey = ""
+					a.openBook(bk.Book.ID, "", nil, !a.lastIsTablet)
+				}
+			}
+		})
+	}
+}
+
+func (a *AppUI) renderAuthorFavorites(c *ui.Context, pal theme.Palette, prof *storage.AuthorProfile) {
+	// 2. 精选诗篇 ❤️
+	if len(prof.Favorites) > 0 {
+		ui.Column(c.Key("au-favs")).FillWidth().Gap(8).Children(func() {
+			ui.Text(c, "精选诗篇").Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextSecondary)
+			for i, fav := range prof.Favorites {
+				fav := fav
+				card := ui.Column(c.Key(fmt.Sprintf("au-fav-%d-%s", i, fav.PoemID))).
+					FillWidth().
+					Padding(10, 12).
+					Gap(4).
+					Radius(8).
+					Background(pal.Background).
+					Border(0.75, pal.Border).
+					Cursor(ui.CursorPointer)
+				theme.ApplyPressScale(card, 0.985)
+				card.Children(func() {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
+						ui.Icon(c, components.IconHeartFilled).Width(12).Height(12).TextColor(pal.Accent)
+						title := fav.PoemTitle
+						if title == "" {
+							title = "无题"
+						}
+						ui.Text(c, title).Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextPrimary).Grow(1).MaxLines(1)
+						if fav.BookLocalState != domain.LocalStateDownloaded {
+							ui.Icon(c, components.IconCloud).Width(12).Height(12).TextColor(pal.TextMuted)
+						}
+						ui.Text(c, fmt.Sprintf("《%s》", fav.BookTitle)).Font(theme.FontNote).FontSize(11).TextColor(pal.TextMuted).MaxLines(1)
+					})
+					if ex := strings.TrimSpace(fav.Excerpt); ex != "" {
+						ui.Text(c, ex).Font(theme.FontNote).FontSize(12).LineHeight(1.55).MaxLines(2).TextColor(pal.TextSecondary)
+					}
+				})
+				if card.Clicked() {
+					a.jumpToPoemFromStats(fav.BookID, fav.PoemID, app.ParseLineRanges(fav.HighlightLines), !a.lastIsTablet)
+				}
+			}
+		})
+	}
+}
+
+func (a *AppUI) renderAuthorQuote(c *ui.Context, pal theme.Palette, qv storage.QuoteView, i int) {
+	card := ui.Column(c.Key(fmt.Sprintf("au-qt-%d-%s", i, qv.Quote.ID))).
+		FillWidth().
+		Padding(10, 12).
+		Gap(5).
+		Radius(8).
+		Background(pal.Background).
+		Border(0.75, pal.Border).
+		Cursor(ui.CursorPointer)
+	theme.ApplyPressScale(card, 0.985)
+	card.Children(func() {
+		ui.Text(c, qv.Quote.Content).Font(theme.FontSerif).FontSize(13).LineHeight(1.55).MaxLines(3).TextColor(pal.TextPrimary)
+		src := strings.TrimSpace(qv.Quote.SourceBook)
+		if qv.Quote.PoemTitle != "" {
+			if src != "" {
+				src = fmt.Sprintf("《%s》· %s", src, qv.Quote.PoemTitle)
+			} else {
+				src = qv.Quote.PoemTitle
+			}
+		} else if src != "" {
+			src = fmt.Sprintf("《%s》", src)
+		} else {
+			src = "独立散句"
+		}
+		ui.Text(c, src).Font(theme.FontNote).FontSize(11).TextColor(pal.TextMuted)
+	})
+	if card.Clicked() {
+		if qv.EffectiveKind == domain.QuoteKindExcerpt {
+			a.jumpToPoemFromStats(qv.Quote.BookID, qv.Quote.PoemID, app.ParseLineRanges(qv.Quote.HighlightLines), !a.lastIsTablet)
+		} else {
+			cp := qv
+			a.showAuthorModal = false
+			a.detailQuote = &cp
+			a.showQuoteDetail = true
+		}
+	}
+}
+
+func (a *AppUI) renderAuthorQuotes(c *ui.Context, pal theme.Palette, prof *storage.AuthorProfile) {
+	// 3. 留存散页（诗歌节选与独立散句）
+	if len(prof.Quotes) > 0 {
+		ui.Column(c.Key("au-quotes")).FillWidth().Gap(8).Children(func() {
+			ui.Text(c, "留存散页").Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextSecondary)
+			for i, qv := range prof.Quotes {
+				qv := qv
+				a.renderAuthorQuote(c, pal, qv, i)
+			}
+		})
+	}
+}
+
+func (a *AppUI) renderAuthorRecentReads(c *ui.Context, pal theme.Palette, prof *storage.AuthorProfile) {
+	// 4. 近期读过
+	if len(prof.RecentReads) > 0 {
+		ui.Column(c.Key("au-recent")).FillWidth().Gap(6).Children(func() {
+			ui.Text(c, "近期读过").Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextSecondary)
+			for i, it := range prof.RecentReads {
+				it := it
+				row := renderStatsEventRowBox(c, fmt.Sprintf("au-rd-%d-%s", i, it.Event.ID), pal, 8, 8)
+				row.Children(func() {
+					ui.Column(c).Grow(1).Gap(2).Children(func() {
+						title := it.Event.PoemTitle
+						if title == "" {
+							title = "无题"
+						}
+						ui.Text(c, title).Font(theme.FontSerif).FontSize(13).Bold().TextColor(pal.TextPrimary).MaxLines(1)
+						ui.Text(c, fmt.Sprintf("《%s》", it.BookTitle)).Font(theme.FontNote).FontSize(11).TextColor(pal.TextMuted).MaxLines(1)
+					})
+					ui.Text(c, formatCNDate(it.Event.ReadDate)).Font(theme.FontMono).FontFeatures("tnum").FontSize(10.5).TextColor(pal.TextMuted)
+					ui.Icon(c, components.IconChevronRight).Width(12).Height(12).TextColor(pal.TextMuted)
+				})
+				if row.Clicked() {
+					a.jumpToPoemFromStats(it.Event.BookID, it.Event.PoemID, nil, !a.lastIsTablet)
+				}
+			}
+		})
+	}
 }

@@ -41,43 +41,7 @@ func (a *AppUI) HandleDeeplink(rawURL string) {
 			reqSeq = a.openSeq
 			a.mu.Unlock()
 		})
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			all, err := a.svc.ListQuotes(ctx, storage.QuoteFilter{})
-			if err != nil {
-				return
-			}
-			var found *storage.QuoteView
-			for i := range all {
-				if all[i].Quote.ID == target.QuoteID {
-					q := all[i]
-					found = &q
-					break
-				}
-			}
-			a.dispatchUI(func() {
-				a.mu.Lock()
-				stale := a.openSeq != reqSeq
-				a.mu.Unlock()
-				if stale {
-					return
-				}
-				if found != nil {
-					a.activeTab = components.TabShelf
-					a.shelfSubTab = components.SubTabQuotes
-					a.shelfPager.scopeKey = ""
-					a.readerMobile = false
-					a.detailQuote = found
-					a.showQuoteDetail = true
-				} else {
-					a.mu.Lock()
-					a.pendingDeeplink = rawURL
-					a.mu.Unlock()
-					a.showTransientToastOnUI("未在本地找到该散页，同步完成后将自动重试")
-				}
-			})
-		}()
+		a.loadQuoteDeeplink(rawURL, target.QuoteID, reqSeq)
 	}
 }
 
@@ -337,4 +301,48 @@ func (a *AppUI) renderSyncToastOverlay(c *ui.Context, pal theme.Palette, isTable
 				})
 			})
 	})
+}
+
+func (a *AppUI) applyQuoteDeeplink(rawURL string, reqSeq uint64, found *storage.QuoteView) {
+	a.mu.Lock()
+	stale := a.openSeq != reqSeq
+	a.mu.Unlock()
+	if stale {
+		return
+	}
+	if found != nil {
+		a.activeTab = components.TabShelf
+		a.shelfSubTab = components.SubTabQuotes
+		a.shelfPager.scopeKey = ""
+		a.readerMobile = false
+		a.detailQuote = found
+		a.showQuoteDetail = true
+		return
+	}
+	a.mu.Lock()
+	a.pendingDeeplink = rawURL
+	a.mu.Unlock()
+	a.showTransientToastOnUI("未在本地找到该散页，同步完成后将自动重试")
+}
+
+func (a *AppUI) loadQuoteDeeplink(rawURL, quoteID string, reqSeq uint64) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		all, err := a.svc.ListQuotes(ctx, storage.QuoteFilter{})
+		if err != nil {
+			return
+		}
+		var found *storage.QuoteView
+		for i := range all {
+			if all[i].Quote.ID == quoteID {
+				q := all[i]
+				found = &q
+				break
+			}
+		}
+		a.dispatchUI(func() {
+			a.applyQuoteDeeplink(rawURL, reqSeq, found)
+		})
+	}()
 }

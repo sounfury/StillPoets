@@ -366,132 +366,145 @@ func (a *AppUI) renderBookActionModal(c *ui.Context, pal theme.Palette) {
 	isDownloaded := book.LocalState == domain.LocalStateDownloaded
 
 	components.AnimatedDialog(c, &a.showBookActionModal, pal, components.DialogOptions{Key: "book-quick-actions", MaxWidth: 420, MaxHeight: 560}, func() {
-		// 顶部书封缩略图 + 书名/作者 + 离线状态
-		ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Start).Children(func() {
-			components.BookCoverThumbnail(c, "ba-thumb-"+book.ID, book.ID, a.coverImageFor(book), pal)
-			ui.Column(c).Grow(1).Gap(3).Children(func() {
-				ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-					ui.Text(c, book.Title).Font(theme.FontSerif).FontSize(16.5).Bold().TextColor(pal.TextPrimary).Grow(1).MaxLines(2)
-					closeBtn := ui.Box(c.Key("ba-close")).Padding(4).Cursor(ui.CursorPointer)
-					theme.ApplyPressScale(closeBtn, 0.90)
-					closeBtn.Children(func() {
-						ui.Icon(c, components.IconClose).Width(16).Height(16).TextColor(pal.TextMuted)
-					})
-					if closeBtn.Clicked() {
-						a.showBookActionModal = false
-					}
+		a.renderBookActionHeader(c, pal, book, isDownloaded)
+
+		ui.Divider(c)
+
+		a.renderBookActionGroups(c, pal, book)
+
+		ui.Divider(c)
+
+		a.renderBookManagementActions(c, book, isFinished, isDownloaded)
+	})
+}
+
+func (a *AppUI) renderBookActionHeader(c *ui.Context, pal theme.Palette, book domain.Book, isDownloaded bool) {
+	// 顶部书封缩略图 + 书名/作者 + 离线状态
+	ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Start).Children(func() {
+		components.BookCoverThumbnail(c, "ba-thumb-"+book.ID, book.ID, a.coverImageFor(book), pal)
+		ui.Column(c).Grow(1).Gap(3).Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+				ui.Text(c, book.Title).Font(theme.FontSerif).FontSize(16.5).Bold().TextColor(pal.TextPrimary).Grow(1).MaxLines(2)
+				closeBtn := ui.Box(c.Key("ba-close")).Padding(4).Cursor(ui.CursorPointer)
+				theme.ApplyPressScale(closeBtn, 0.90)
+				closeBtn.Children(func() {
+					ui.Icon(c, components.IconClose).Width(16).Height(16).TextColor(pal.TextMuted)
 				})
-				meta := strings.TrimSpace(book.Author)
-				if book.PoemCount > 0 {
-					if meta != "" {
-						meta += " · "
-					}
-					meta += fmt.Sprintf("%d 首", book.PoemCount)
+				if closeBtn.Clicked() {
+					a.showBookActionModal = false
 				}
-				if !isDownloaded {
-					if meta != "" {
-						meta += " · "
-					}
-					meta += "云端按需下载"
-				}
+			})
+			meta := strings.TrimSpace(book.Author)
+			if book.PoemCount > 0 {
 				if meta != "" {
-					ui.Text(c, meta).Font(theme.FontNote).FontSize(12).TextColor(pal.TextMuted).MaxLines(1)
+					meta += " · "
 				}
-			})
-		})
-
-		ui.Divider(c)
-
-		// 所属分组（单层胶囊直达，点一下立即归类）
-		ui.Column(c.Key("ba-groups")).FillWidth().Gap(8).Children(func() {
-			ui.Text(c, "所属分组").Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextSecondary)
-			ui.Row(c.Key("ba-group-chips")).FillWidth().Gap(7).Wrap().Children(func() {
-				renderChip := func(gid, label string) {
-					active := book.GroupID == gid
-					bg, fg, bd := pal.Background, pal.TextSecondary, pal.Border
-					if active {
-						bg, fg, bd = pal.Accent, pal.AccentText, pal.Accent
-					}
-					chip := ui.Box(c.Key("ba-grp-"+gid)).
-						Padding(5, 11).
-						Radius(999).
-						Background(bg).
-						Border(1, bd).
-						Cursor(ui.CursorPointer).
-						Transition(theme.ColorTransition())
-					theme.ApplyPressScale(chip, 0.95)
-					chip.Children(func() {
-						txt := ui.Text(c, label).Font(theme.FontSans).FontSize(12).TextColor(fg)
-						if active {
-							txt.Bold()
-						}
-					})
-					if chip.Clicked() && !active {
-						targetID, targetLabel := gid, label
-						go func() {
-							ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-							defer cancel()
-							if err := a.svc.SetBookGroup(ctx, book.ID, targetID); err != nil {
-								a.showTransientToast("更新分组失败：" + err.Error())
-								return
-							}
-							a.reloadSync(nil)
-							if targetID == "" {
-								a.showTransientToast(fmt.Sprintf("已将《%s》移回未分组", book.Title))
-							} else {
-								a.showTransientToast(fmt.Sprintf("已将《%s》收入「%s」", book.Title, targetLabel))
-							}
-						}()
-					}
+				meta += fmt.Sprintf("%d 首", book.PoemCount)
+			}
+			if !isDownloaded {
+				if meta != "" {
+					meta += " · "
 				}
-				renderChip("", "未分组")
-				for _, g := range a.groups {
-					renderChip(g.ID, g.Name)
-				}
-			})
-
-			// 快捷新建分组并直接归入本书
-			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Padding(2, 0, 0, 0).Children(func() {
-				ui.TextInput(c.Key("ba-new-grp"), &a.actionNewGroupName).Placeholder("+ 新建分组并移入本书").Grow(1)
-				if ui.Button(c, "新建").Clicked() {
-					name := strings.TrimSpace(a.actionNewGroupName)
-					if name == "" {
-						a.actionGroupError = "分组名称不能为空"
-					} else {
-						a.actionGroupError = ""
-						a.actionNewGroupName = ""
-						a.createGroupAndAssignBooksAsync(name, []string{book.ID}, fmt.Sprintf("《%s》", book.Title))
-					}
-				}
-			})
-			if a.actionGroupError != "" {
-				ui.Text(c, a.actionGroupError).FontSize(11.5).TextColor(pal.Accent)
+				meta += "云端按需下载"
 			}
-		})
-
-		ui.Divider(c)
-
-		// 常用管理操作（标为完读 / 清理缓存 / 删除 / 批量整理）
-		ui.Row(c.Key("ba-actions")).FillWidth().Gap(8).Wrap().Children(func() {
-			finLabel := "标为已完读"
-			if isFinished {
-				finLabel = "已完读 ✓"
-			}
-			if ui.Button(c, finLabel).Clicked() {
-				a.toggleBookFinishedAsync(book.ID, book.Title, !isFinished)
-			}
-			if isDownloaded && ui.Button(c, "清理离线正文").Clicked() {
-				a.showBookActionModal = false
-				a.clearBookCacheAsync(book.ID)
-			}
-			if ui.Button(c, "批量整理书架").Clicked() {
-				a.showBookActionModal = false
-				a.enterShelfOrganize(book.ID)
-			}
-			if ui.Button(c, "删除诗集").Clicked() {
-				a.showBookActionModal = false
-				a.deleteBookAsync(book.ID)
+			if meta != "" {
+				ui.Text(c, meta).Font(theme.FontNote).FontSize(12).TextColor(pal.TextMuted).MaxLines(1)
 			}
 		})
 	})
+}
+
+func (a *AppUI) renderBookActionGroups(c *ui.Context, pal theme.Palette, book domain.Book) {
+	// 所属分组（单层胶囊直达，点一下立即归类）
+	ui.Column(c.Key("ba-groups")).FillWidth().Gap(8).Children(func() {
+		ui.Text(c, "所属分组").Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextSecondary)
+		ui.Row(c.Key("ba-group-chips")).FillWidth().Gap(7).Wrap().Children(func() {
+			a.renderBookActionGroupChip(c, pal, book, "", "未分组")
+			for _, g := range a.groups {
+				a.renderBookActionGroupChip(c, pal, book, g.ID, g.Name)
+			}
+		})
+
+		// 快捷新建分组并直接归入本书
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Padding(2, 0, 0, 0).Children(func() {
+			ui.TextInput(c.Key("ba-new-grp"), &a.actionNewGroupName).Placeholder("+ 新建分组并移入本书").Grow(1)
+			if ui.Button(c, "新建").Clicked() {
+				name := strings.TrimSpace(a.actionNewGroupName)
+				if name == "" {
+					a.actionGroupError = "分组名称不能为空"
+				} else {
+					a.actionGroupError = ""
+					a.actionNewGroupName = ""
+					a.createGroupAndAssignBooksAsync(name, []string{book.ID}, fmt.Sprintf("《%s》", book.Title))
+				}
+			}
+		})
+		if a.actionGroupError != "" {
+			ui.Text(c, a.actionGroupError).FontSize(11.5).TextColor(pal.Accent)
+		}
+	})
+}
+
+func (a *AppUI) renderBookManagementActions(c *ui.Context, book domain.Book, isFinished, isDownloaded bool) {
+	// 常用管理操作（标为完读 / 清理缓存 / 删除 / 批量整理）
+	ui.Row(c.Key("ba-actions")).FillWidth().Gap(8).Wrap().Children(func() {
+		finLabel := "标为已完读"
+		if isFinished {
+			finLabel = "已完读 ✓"
+		}
+		if ui.Button(c, finLabel).Clicked() {
+			a.toggleBookFinishedAsync(book.ID, book.Title, !isFinished)
+		}
+		if isDownloaded && ui.Button(c, "清理离线正文").Clicked() {
+			a.showBookActionModal = false
+			a.clearBookCacheAsync(book.ID)
+		}
+		if ui.Button(c, "批量整理书架").Clicked() {
+			a.showBookActionModal = false
+			a.enterShelfOrganize(book.ID)
+		}
+		if ui.Button(c, "删除诗集").Clicked() {
+			a.showBookActionModal = false
+			a.deleteBookAsync(book.ID)
+		}
+	})
+}
+
+func (a *AppUI) renderBookActionGroupChip(c *ui.Context, pal theme.Palette, book domain.Book, gid, label string) {
+	active := book.GroupID == gid
+	bg, fg, bd := pal.Background, pal.TextSecondary, pal.Border
+	if active {
+		bg, fg, bd = pal.Accent, pal.AccentText, pal.Accent
+	}
+	chip := ui.Box(c.Key("ba-grp-"+gid)).
+		Padding(5, 11).
+		Radius(999).
+		Background(bg).
+		Border(1, bd).
+		Cursor(ui.CursorPointer).
+		Transition(theme.ColorTransition())
+	theme.ApplyPressScale(chip, 0.95)
+	chip.Children(func() {
+		txt := ui.Text(c, label).Font(theme.FontSans).FontSize(12).TextColor(fg)
+		if active {
+			txt.Bold()
+		}
+	})
+	if chip.Clicked() && !active {
+		targetID, targetLabel := gid, label
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := a.svc.SetBookGroup(ctx, book.ID, targetID); err != nil {
+				a.showTransientToast("更新分组失败：" + err.Error())
+				return
+			}
+			a.reloadSync(nil)
+			if targetID == "" {
+				a.showTransientToast(fmt.Sprintf("已将《%s》移回未分组", book.Title))
+			} else {
+				a.showTransientToast(fmt.Sprintf("已将《%s》收入「%s」", book.Title, targetLabel))
+			}
+		}()
+	}
 }

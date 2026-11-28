@@ -82,17 +82,7 @@ func NewAPKDownloader(appVersion string) *APKDownloader {
 
 // SelectAndroidAPKAsset 从 Release 资产列表中按设备 ABI 优先级挑选最匹配的 Android APK。
 func SelectAndroidAPKAsset(assets []ReleaseAsset, supportedABIs []string) (*ReleaseAsset, bool) {
-	apks := make([]ReleaseAsset, 0, len(assets))
-	for _, a := range assets {
-		name := strings.TrimSpace(a.Name)
-		dl := strings.TrimSpace(a.DownloadURL)
-		if name == "" || dl == "" {
-			continue
-		}
-		if strings.HasSuffix(strings.ToLower(name), ".apk") {
-			apks = append(apks, a)
-		}
-	}
+	apks := androidAPKAssets(assets)
 	if len(apks) == 0 {
 		return nil, false
 	}
@@ -120,13 +110,7 @@ func SelectAndroidAPKAsset(assets []ReleaseAsset, supportedABIs []string) (*Rele
 		}
 	}
 
-	// 3. 若只有一个 APK 且未标明冲突架构，直接回退使用
-	if len(apks) == 1 && !hasConflictingABI(apks[0].Name, abis) {
-		cp := apks[0]
-		return &cp, true
-	}
-
-	// 4. 兜底返回未标明冲突架构的第一个 APK
+	// 3. 兜底返回未标明冲突架构的第一个 APK
 	for i := range apks {
 		if !hasConflictingABI(apks[i].Name, abis) {
 			cp := apks[i]
@@ -134,6 +118,21 @@ func SelectAndroidAPKAsset(assets []ReleaseAsset, supportedABIs []string) (*Rele
 		}
 	}
 	return nil, false
+}
+
+func androidAPKAssets(assets []ReleaseAsset) []ReleaseAsset {
+	apks := make([]ReleaseAsset, 0, len(assets))
+	for _, a := range assets {
+		name := strings.TrimSpace(a.Name)
+		dl := strings.TrimSpace(a.DownloadURL)
+		if name == "" || dl == "" {
+			continue
+		}
+		if strings.HasSuffix(strings.ToLower(name), ".apk") {
+			apks = append(apks, a)
+		}
+	}
+	return apks
 }
 
 func normalizeABIs(abis []string) []string {
@@ -338,23 +337,15 @@ func (d *APKDownloader) DownloadAPK(
 		return cached, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.DownloadURL, nil)
+	resp, err := d.requestAPK(ctx, asset.DownloadURL)
 	if err != nil {
 		return res, err
-	}
-	req.Header.Set("User-Agent", d.userAgent())
-	req.Header.Set("Accept", "application/octet-stream")
-
-	resp, err := d.client().Do(req)
-	if err != nil {
-		return res, fmt.Errorf("下载请求失败：%w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return res, fmt.Errorf("下载失败：服务器返回 HTTP %d", resp.StatusCode)
 	}
-
 	total := asset.Size
 	if total <= 0 && resp.ContentLength > 0 {
 		total = resp.ContentLength
@@ -362,8 +353,40 @@ func (d *APKDownloader) DownloadAPK(
 	if total > maxAPKDownloadBytes {
 		return res, fmt.Errorf("安装包体积超出安全限制（%d 字节）", total)
 	}
+	return saveDownloadedAPK(ctx, resp.Body, apkSaveOptions{
+		destPath:     destPath,
+		destDir:      destDir,
+		safeName:     safeName,
+		expectedSize: asset.Size,
+		expectedSHA:  expectedSHA,
+		total:        total,
+	}, onProgress)
+}
 
-	tmpPath := fmt.Sprintf("%s.part.%d", destPath, time.Now().UnixNano())
+func (d *APKDownloader) requestAPK(ctx context.Context, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", d.userAgent())
+	req.Header.Set("Accept", "application/octet-stream")
+
+	resp, err := d.client().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("下载请求失败：%w", err)
+	}
+	return resp, nil
+}
+
+type apkSaveOptions struct {
+	destPath, destDir, safeName string
+	expectedSize, total         int64
+	expectedSHA                 string
+}
+
+func saveDownloadedAPK(ctx context.Context, body io.Reader, opts apkSaveOptions, onProgress func(APKDownloadProgress)) (APKDownloadResult, error) {
+	var res APKDownloadResult
+	tmpPath := fmt.Sprintf("%s.part.%d", opts.destPath, time.Now().UnixNano())
 	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return res, fmt.Errorf("创建临时文件失败：%w", err)
@@ -375,61 +398,12 @@ func (d *APKDownloader) DownloadAPK(
 
 	hasher := sha256.New()
 	writer := io.MultiWriter(f, hasher)
-	buf := make([]byte, 32*1024)
-	var downloaded int64
-	started := time.Now()
-	lastReport := started
-	var lastBytes int64
-
-	if onProgress != nil {
-		onProgress(APKDownloadProgress{Downloaded: 0, Total: total})
+	progress := apkProgressReporter{report: onProgress, total: opts.total}
+	downloaded, err := streamAPK(ctx, body, writer, &progress)
+	if err != nil {
+		cleanupTmp()
+		return res, err
 	}
-
-	limited := io.LimitReader(resp.Body, maxAPKDownloadBytes+1)
-	for {
-		if err := ctx.Err(); err != nil {
-			cleanupTmp()
-			return res, err
-		}
-		n, readErr := limited.Read(buf)
-		if n > 0 {
-			downloaded += int64(n)
-			if downloaded > maxAPKDownloadBytes {
-				cleanupTmp()
-				return res, errors.New("安装包体积超出安全限制")
-			}
-			if _, werr := writer.Write(buf[:n]); werr != nil {
-				cleanupTmp()
-				return res, fmt.Errorf("写入安装包失败：%w", werr)
-			}
-			now := time.Now()
-			if onProgress != nil && (now.Sub(lastReport) >= 120*time.Millisecond || downloaded-lastBytes >= 256*1024) {
-				elapsed := now.Sub(started).Seconds()
-				speed := 0.0
-				if elapsed > 0.05 {
-					speed = float64(downloaded) / elapsed
-				}
-				onProgress(APKDownloadProgress{
-					Downloaded:       downloaded,
-					Total:            total,
-					SpeedBytesPerSec: speed,
-				})
-				lastReport = now
-				lastBytes = downloaded
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			cleanupTmp()
-			if errors.Is(ctx.Err(), context.Canceled) {
-				return res, context.Canceled
-			}
-			return res, fmt.Errorf("下载中断：%w", readErr)
-		}
-	}
-
 	if err := f.Sync(); err != nil {
 		cleanupTmp()
 		return res, fmt.Errorf("落盘失败：%w", err)
@@ -439,50 +413,109 @@ func (d *APKDownloader) DownloadAPK(
 		return res, fmt.Errorf("关闭文件失败：%w", err)
 	}
 
-	if downloaded == 0 {
+	if err := verifyAPKSize(downloaded, opts.expectedSize); err != nil {
 		_ = os.Remove(tmpPath)
-		return res, errors.New("下载的安装包为空文件")
+		return res, err
 	}
-	if asset.Size > 0 && downloaded != asset.Size {
-		_ = os.Remove(tmpPath)
-		return res, fmt.Errorf("安装包大小校验失败：期望 %d 字节，实际 %d 字节", asset.Size, downloaded)
-	}
-
 	actualSHA := hex.EncodeToString(hasher.Sum(nil))
-	if expectedSHA != "" && !strings.EqualFold(actualSHA, expectedSHA) {
+	if err := installVerifiedAPK(tmpPath, opts.destPath, actualSHA, opts.expectedSHA); err != nil {
 		_ = os.Remove(tmpPath)
-		return res, errors.New("安装包 SHA-256 完整性校验失败，请重试或前往 GitHub Releases 手动下载")
+		return res, err
 	}
-
-	if err := os.Rename(tmpPath, destPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return res, fmt.Errorf("保存安装包失败：%w", err)
-	}
-
 	// 清理同目录下的旧版缓存包
-	CleanupStaleUpdateAPKs(destDir, safeName)
-
-	elapsed := time.Since(started).Seconds()
-	speed := 0.0
-	if elapsed > 0.05 {
-		speed = float64(downloaded) / elapsed
-	}
-	if onProgress != nil {
-		onProgress(APKDownloadProgress{
-			Downloaded:       downloaded,
-			Total:            downloaded,
-			SpeedBytesPerSec: speed,
-		})
-	}
-
+	CleanupStaleUpdateAPKs(opts.destDir, opts.safeName)
+	progress.emit(downloaded, downloaded, apkDownloadSpeed(downloaded, time.Since(progress.started)))
 	return APKDownloadResult{
-		FilePath:    destPath,
-		AssetName:   safeName,
+		FilePath:    opts.destPath,
+		AssetName:   opts.safeName,
 		Size:        downloaded,
 		SHA256:      actualSHA,
-		VerifiedSHA: expectedSHA != "",
+		VerifiedSHA: opts.expectedSHA != "",
 		ReusedCache: false,
 	}, nil
+}
+
+func verifyAPKSize(downloaded, expected int64) error {
+	if downloaded == 0 {
+		return errors.New("下载的安装包为空文件")
+	}
+	if expected > 0 && downloaded != expected {
+		return fmt.Errorf("安装包大小校验失败：期望 %d 字节，实际 %d 字节", expected, downloaded)
+	}
+	return nil
+}
+
+func installVerifiedAPK(tmpPath, destPath, actualSHA, expectedSHA string) error {
+	if expectedSHA != "" && !strings.EqualFold(actualSHA, expectedSHA) {
+		return errors.New("安装包 SHA-256 完整性校验失败，请重试或前往 GitHub Releases 手动下载")
+	}
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		return fmt.Errorf("保存安装包失败：%w", err)
+	}
+	return nil
+}
+
+func streamAPK(ctx context.Context, body io.Reader, writer io.Writer, progress *apkProgressReporter) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var downloaded int64
+	progress.started = time.Now()
+	progress.lastReport = progress.started
+	progress.emit(0, progress.total, 0)
+
+	limited := io.LimitReader(body, maxAPKDownloadBytes+1)
+	for {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		n, readErr := limited.Read(buf)
+		if n > 0 {
+			downloaded += int64(n)
+			if downloaded > maxAPKDownloadBytes {
+				return 0, errors.New("安装包体积超出安全限制")
+			}
+			if _, err := writer.Write(buf[:n]); err != nil {
+				return 0, fmt.Errorf("写入安装包失败：%w", err)
+			}
+			progress.update(downloaded)
+		}
+		if readErr == io.EOF {
+			return downloaded, nil
+		}
+		if readErr != nil {
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return 0, context.Canceled
+			}
+			return 0, fmt.Errorf("下载中断：%w", readErr)
+		}
+	}
+}
+
+type apkProgressReporter struct {
+	report              func(APKDownloadProgress)
+	total, lastBytes    int64
+	started, lastReport time.Time
+}
+
+func (p *apkProgressReporter) emit(downloaded, total int64, speed float64) {
+	if p.report != nil {
+		p.report(APKDownloadProgress{Downloaded: downloaded, Total: total, SpeedBytesPerSec: speed})
+	}
+}
+
+func (p *apkProgressReporter) update(downloaded int64) {
+	now := time.Now()
+	if p.report != nil && (now.Sub(p.lastReport) >= 120*time.Millisecond || downloaded-p.lastBytes >= 256*1024) {
+		p.emit(downloaded, p.total, apkDownloadSpeed(downloaded, now.Sub(p.started)))
+		p.lastReport = now
+		p.lastBytes = downloaded
+	}
+}
+
+func apkDownloadSpeed(downloaded int64, elapsed time.Duration) float64 {
+	if seconds := elapsed.Seconds(); seconds > 0.05 {
+		return float64(downloaded) / seconds
+	}
+	return 0
 }
 
 // CleanupStaleUpdateAPKs 清理更新缓存目录中的历史安装包与未完成临时文件。

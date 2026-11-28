@@ -99,60 +99,10 @@ func (p *publication) indexNotes() {
 		docs = append(docs, p.docs[name])
 	}
 	for _, d := range docs {
-		walk(d.root, func(n *html.Node) {
-			if !noteElement(n) || p.withinNote(n) {
-				return
-			}
-			// A footnote container (e.g. <ol id="fn-list"> or <div class="footnotes">)
-			// with child list items or multiple paragraphs holds separate notes.
-			var children []*html.Node
-			for c := n.FirstChild; c != nil; c = c.NextSibling {
-				if c.Data == "p" || c.Data == "li" {
-					children = append(children, c)
-				}
-			}
-			splitList := (n.Data == "ol" || n.Data == "ul") && len(children) > 0
-			splitMulti := len(children) > 1 && (attr(n, "id") == "" || hasChildID(children))
-			if splitList || splitMulti || len(children) == 1 && attr(n, "id") == "" {
-				for _, c := range children {
-					p.addNote(d, c, firstID(c))
-				}
-			} else {
-				p.addNote(d, n, firstID(n))
-			}
-		})
+		walk(d.root, func(n *html.Node) { p.indexNoteElement(d, n) })
 	}
 	for _, d := range docs {
-		walk(d.root, func(n *html.Node) {
-			if n.Data != "a" || p.withinNote(n) {
-				return
-			}
-			label := strings.TrimSpace(nodeText(n))
-			if !semantic(n, "noteref") && !noteMarker.MatchString(label) {
-				return
-			}
-			src, id := resolve(d.src, attr(n, "href"))
-			targetDoc := p.docs[src]
-			if targetDoc == nil || id == "" {
-				return
-			}
-			target := targetDoc.ids[id]
-			if target == nil {
-				return
-			}
-			container := p.noteContainer(target)
-			if container == nil || heading(container) > 0 {
-				return
-			}
-			// A numeric link is a note only when its destination contains explanatory text.
-			if len([]rune(strings.TrimSpace(noteText(container)))) <= len([]rune(label)) {
-				return
-			}
-			p.addNote(targetDoc, container, id)
-			if _, ok := p.notes[container]; ok {
-				p.refs[n] = noteReference{container, noteLabel(label)}
-			}
-		})
+		walk(d.root, func(n *html.Node) { p.indexNoteReference(d, n) })
 	}
 	// A backlink may have looked like a reference before its enclosing note was found.
 	for n := range p.refs {
@@ -165,6 +115,60 @@ func (p *publication) indexNotes() {
 		}
 	}
 }
+func (p *publication) indexNoteElement(d *document, n *html.Node) {
+	if !noteElement(n) || p.withinNote(n) {
+		return
+	}
+	// A footnote container (e.g. <ol id="fn-list"> or <div class="footnotes">)
+	// with child list items or multiple paragraphs holds separate notes.
+	var children []*html.Node
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if c.Data == "p" || c.Data == "li" {
+			children = append(children, c)
+		}
+	}
+	splitList := (n.Data == "ol" || n.Data == "ul") && len(children) > 0
+	splitMulti := len(children) > 1 && (attr(n, "id") == "" || hasChildID(children))
+	if splitList || splitMulti || len(children) == 1 && attr(n, "id") == "" {
+		for _, c := range children {
+			p.addNote(d, c, firstID(c))
+		}
+	} else {
+		p.addNote(d, n, firstID(n))
+	}
+}
+
+func (p *publication) indexNoteReference(d *document, n *html.Node) {
+	if n.Data != "a" || p.withinNote(n) {
+		return
+	}
+	label := strings.TrimSpace(nodeText(n))
+	if !semantic(n, "noteref") && !noteMarker.MatchString(label) {
+		return
+	}
+	src, id := resolve(d.src, attr(n, "href"))
+	targetDoc := p.docs[src]
+	if targetDoc == nil || id == "" {
+		return
+	}
+	target := targetDoc.ids[id]
+	if target == nil {
+		return
+	}
+	container := p.noteContainer(target)
+	if container == nil || heading(container) > 0 {
+		return
+	}
+	// A numeric link is a note only when its destination contains explanatory text.
+	if len([]rune(strings.TrimSpace(noteText(container)))) <= len([]rune(label)) {
+		return
+	}
+	p.addNote(targetDoc, container, id)
+	if _, ok := p.notes[container]; ok {
+		p.refs[n] = noteReference{container, noteLabel(label)}
+	}
+}
+
 func hasChildID(nodes []*html.Node) bool {
 	for _, n := range nodes {
 		if firstID(n) != "" {

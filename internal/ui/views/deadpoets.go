@@ -13,8 +13,8 @@ const (
 	dpsEmptyHeroQuote = "及时行乐，孩子们，\n让你的生命超越凡俗。"
 
 	// 核心长空间句：梭罗《瓦尔登湖》死亡诗社开场誓词（关于页扉页 / 字体标本卡 / 4×4 大号空小组件 / 平板空阅读器）
-	dpsThoreauOpening = "我步入丛林，\n因为我希望生活得有意义，\n我希望活得深刻，\n吸取生命中所有的精华，\n把非生命的一切都击溃，\n以免当我生命终结，\n发现自己从没有活过。"
-	dpsThoreauOpeningEN = "I went to the woods because I wanted to live deliberately.\nI wanted to live deep and suck out all the marrow of life,\nto put to rout all that was not life,\nand not, when I had come to die,\ndiscover that I had not lived."
+	dpsThoreauOpening     = "我步入丛林，\n因为我希望生活得有意义，\n我希望活得深刻，\n吸取生命中所有的精华，\n把非生命的一切都击溃，\n以免当我生命终结，\n发现自己从没有活过。"
+	dpsThoreauOpeningEN   = "I went to the woods because I wanted to live deliberately.\nI wanted to live deep and suck out all the marrow of life,\nto put to rout all that was not life,\nand not, when I had come to die,\ndiscover that I had not lived."
 	dpsThoreauAttribution = "梭罗《瓦尔登湖》 · 《死亡诗社》开场白"
 
 	// 午夜洞穴彩蛋（00:00–04:00）

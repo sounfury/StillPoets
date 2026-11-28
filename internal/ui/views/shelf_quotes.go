@@ -59,144 +59,17 @@ func (a *AppUI) renderQuotesSubTab(c *ui.Context, pal theme.Palette, isTablet bo
 				}
 			})
 
-		// V1.0 类型筛选条：全部 / 诗歌节选 / 独立散句（紧凑克制）
-		ui.Row(c.Key("quote-kind-tabs")).Gap(18).AlignItems(ui.Center).Children(func() {
-			kinds := []struct {
-				kind  domain.QuoteKind
-				label string
-			}{
-				{"", "全部"},
-				{domain.QuoteKindExcerpt, "诗歌节选"},
-				{domain.QuoteKindStandalone, "独立散句"},
-			}
-			for _, k := range kinds {
-				active := a.quoteKind == k.kind
-				btn := ui.Column(c.Key("qk-"+k.label)).AlignItems(ui.Center).Gap(3).Padding(2, 0).Cursor(ui.CursorPointer)
-				btn.Children(func() {
-					t := ui.Text(c, k.label).Font(theme.FontSans).FontSize(13)
-					if active {
-						t.FontWeight(600).TextColor(pal.TextPrimary)
-					} else {
-						t.TextColor(pal.TextMuted)
-					}
-					dot := ui.Box(c).Width(14).Height(1.5).Radius(1).Transition(theme.ColorTransition())
-					if active {
-						dot.Background(pal.Accent)
-					} else {
-						dot.Background(ui.Transparent)
-					}
-				})
-				if btn.Clicked() {
-					a.quoteKind = k.kind
-					go a.reloadQuotesOnly()
-				}
-			}
-		})
+		a.renderQuoteKindTabs(c, pal)
 
-		// 按「原书出处 / 作者」筛选（V1.0 不按收藏筛选）
-		if len(a.quoteFacets.SourceBooks) > 0 || len(a.quoteFacets.Authors) > 0 {
-			ui.ScrollHorizontal(c.Key("quote-facets-scroll")).FillWidth().Height(28).Scrollbars(false).Children(func() {
-				ui.Row(c).Gap(7).Padding(1, 0).Children(func() {
-					renderChip := func(key, label string, active bool, onClick func()) {
-						bg := pal.Surface
-						fg := pal.TextSecondary
-						bd := pal.Border
-						if active {
-							bg = pal.Accent.Alpha(0.11)
-							fg = pal.Accent
-							bd = pal.Accent.Alpha(0.45)
-						}
-						chip := ui.Box(c.Key(key)).
-							Padding(4, 10).
-							Radius(999).
-							Background(bg).
-							Border(1, bd).
-							Cursor(ui.CursorPointer)
-						chip.Children(func() {
-							t := ui.Text(c, label).Font(theme.FontSans).FontSize(11.5).TextColor(fg)
-							if active {
-								t.FontWeight(600)
-							}
-						})
-						if chip.Clicked() {
-							onClick()
-						}
-					}
-
-					renderChip("facet-all", "全部出处", a.quoteBook == "" && a.quoteAuthor == "", func() {
-						a.quoteBook = ""
-						a.quoteAuthor = ""
-						go a.reloadQuotesOnly()
-					})
-					for _, sb := range a.quoteFacets.SourceBooks {
-						sb := sb
-						renderChip("sb-"+sb, "《"+sb+"》", a.quoteBook == sb, func() {
-							if a.quoteBook == sb {
-								a.quoteBook = ""
-							} else {
-								a.quoteBook = sb
-								a.quoteAuthor = ""
-							}
-							go a.reloadQuotesOnly()
-						})
-					}
-					for _, au := range a.quoteFacets.Authors {
-						au := au
-						renderChip("au-"+au, au, a.quoteAuthor == au, func() {
-							if a.quoteAuthor == au {
-								a.quoteAuthor = ""
-							} else {
-								a.quoteAuthor = au
-								a.quoteBook = ""
-							}
-							go a.reloadQuotesOnly()
-						})
-					}
-				})
-			})
-		}
+		a.renderQuoteFacetTabs(c, pal)
 
 		// 散页瀑布流纸卡（手机 2 列，平板 3~4 列）
 		if len(a.quotes) == 0 {
-			ui.Column(c.Key("quotes-empty")).
-				FillWidth().
-				Padding(32, 18).
-				Gap(10).
-				AlignItems(ui.Center).
-				Radius(8).
-				Background(pal.Surface).
-				Border(1, pal.Border).
-				Children(func() {
-					ui.Text(c, "还没有留住的散页").Font(theme.FontSerif).FontSize(15).Bold().TextColor(pal.TextPrimary)
-					ui.Text(c, "在读诗时划选诗行点「留作散页」，或直接手动记下一句打动你的话。").
-						Font(theme.FontSans).FontSize(13).TextColor(pal.TextMuted)
-					if ui.PrimaryButton(c, "+ 记一张散页").Clicked() {
-						a.openNewQuoteModal()
-					}
-					if a.isMidnightCave() {
-						ui.Text(c, dpsMidnightQuietLine).
-							Font(theme.FontNote).FontSize(12).Italic().TextColor(pal.TextMuted).Padding(6, 0, 0, 0)
-					}
-				})
+			a.renderEmptyQuotes(c, pal)
 			return
 		}
 
-		cols := layout.MasonryColumns(c)
-		buckets := make([][]storage.QuoteView, cols)
-		for i, qv := range a.quotes {
-			buckets[i%cols] = append(buckets[i%cols], qv)
-		}
-
-		ui.Row(c.Key("quotes-masonry")).FillWidth().Gap(12).Padding(2, 0, 0, 0).AlignItems(ui.Start).Children(func() {
-			for colIdx := 0; colIdx < cols; colIdx++ {
-				ui.Column(c.Key(fmt.Sprintf("qcol-%d", colIdx))).Grow(1).Gap(12).Children(func() {
-					for rowIdx, qv := range buckets[colIdx] {
-						globalIdx := rowIdx*cols + colIdx
-						a.renderQuoteCard(c, pal, qv, globalIdx)
-					}
-				})
-			}
-		})
+		a.renderQuoteMasonry(c, pal)
 	})
 }
 
@@ -330,4 +203,148 @@ func (a *AppUI) openNewQuoteModal() {
 	a.quoteFormError = ""
 	a.showAddModal = false
 	a.showQuoteModal = true
+}
+
+func (a *AppUI) renderQuoteKindTabs(c *ui.Context, pal theme.Palette) {
+	// V1.0 类型筛选条：全部 / 诗歌节选 / 独立散句（紧凑克制）
+	ui.Row(c.Key("quote-kind-tabs")).Gap(18).AlignItems(ui.Center).Children(func() {
+		kinds := []struct {
+			kind  domain.QuoteKind
+			label string
+		}{
+			{"", "全部"},
+			{domain.QuoteKindExcerpt, "诗歌节选"},
+			{domain.QuoteKindStandalone, "独立散句"},
+		}
+		for _, k := range kinds {
+			active := a.quoteKind == k.kind
+			btn := ui.Column(c.Key("qk-"+k.label)).AlignItems(ui.Center).Gap(3).Padding(2, 0).Cursor(ui.CursorPointer)
+			btn.Children(func() {
+				t := ui.Text(c, k.label).Font(theme.FontSans).FontSize(13)
+				if active {
+					t.FontWeight(600).TextColor(pal.TextPrimary)
+				} else {
+					t.TextColor(pal.TextMuted)
+				}
+				dot := ui.Box(c).Width(14).Height(1.5).Radius(1).Transition(theme.ColorTransition())
+				if active {
+					dot.Background(pal.Accent)
+				} else {
+					dot.Background(ui.Transparent)
+				}
+			})
+			if btn.Clicked() {
+				a.quoteKind = k.kind
+				go a.reloadQuotesOnly()
+			}
+		}
+	})
+}
+
+func (a *AppUI) renderQuoteFacetTabs(c *ui.Context, pal theme.Palette) {
+	// 按「原书出处 / 作者」筛选（V1.0 不按收藏筛选）
+	if len(a.quoteFacets.SourceBooks) > 0 || len(a.quoteFacets.Authors) > 0 {
+		ui.ScrollHorizontal(c.Key("quote-facets-scroll")).FillWidth().Height(28).Scrollbars(false).Children(func() {
+			ui.Row(c).Gap(7).Padding(1, 0).Children(func() {
+
+				renderQuoteFacetChip(c, pal, "facet-all", "全部出处", a.quoteBook == "" && a.quoteAuthor == "", func() {
+					a.quoteBook = ""
+					a.quoteAuthor = ""
+					go a.reloadQuotesOnly()
+				})
+				for _, sb := range a.quoteFacets.SourceBooks {
+					sb := sb
+					renderQuoteFacetChip(c, pal, "sb-"+sb, "《"+sb+"》", a.quoteBook == sb, func() {
+						if a.quoteBook == sb {
+							a.quoteBook = ""
+						} else {
+							a.quoteBook = sb
+							a.quoteAuthor = ""
+						}
+						go a.reloadQuotesOnly()
+					})
+				}
+				for _, au := range a.quoteFacets.Authors {
+					au := au
+					renderQuoteFacetChip(c, pal, "au-"+au, au, a.quoteAuthor == au, func() {
+						if a.quoteAuthor == au {
+							a.quoteAuthor = ""
+						} else {
+							a.quoteAuthor = au
+							a.quoteBook = ""
+						}
+						go a.reloadQuotesOnly()
+					})
+				}
+			})
+		})
+	}
+}
+
+func (a *AppUI) renderQuoteMasonry(c *ui.Context, pal theme.Palette) {
+	cols := layout.MasonryColumns(c)
+	buckets := make([][]storage.QuoteView, cols)
+	for i, qv := range a.quotes {
+		buckets[i%cols] = append(buckets[i%cols], qv)
+	}
+
+	ui.Row(c.Key("quotes-masonry")).FillWidth().Gap(12).Padding(2, 0, 0, 0).AlignItems(ui.Start).Children(func() {
+		for colIdx := 0; colIdx < cols; colIdx++ {
+			ui.Column(c.Key(fmt.Sprintf("qcol-%d", colIdx))).Grow(1).Gap(12).Children(func() {
+				for rowIdx, qv := range buckets[colIdx] {
+					globalIdx := rowIdx*cols + colIdx
+					a.renderQuoteCard(c, pal, qv, globalIdx)
+				}
+			})
+		}
+	})
+}
+
+func renderQuoteFacetChip(c *ui.Context, pal theme.Palette, key, label string, active bool, onClick func()) {
+	bg := pal.Surface
+	fg := pal.TextSecondary
+	bd := pal.Border
+	if active {
+		bg = pal.Accent.Alpha(0.11)
+		fg = pal.Accent
+		bd = pal.Accent.Alpha(0.45)
+	}
+	chip := ui.Box(c.Key(key)).
+		Padding(4, 10).
+		Radius(999).
+		Background(bg).
+		Border(1, bd).
+		Cursor(ui.CursorPointer)
+	chip.Children(func() {
+		t := ui.Text(c, label).Font(theme.FontSans).FontSize(11.5).TextColor(fg)
+		if active {
+			t.FontWeight(600)
+		}
+	})
+	if chip.Clicked() {
+		onClick()
+	}
+}
+
+func (a *AppUI) renderEmptyQuotes(c *ui.Context, pal theme.Palette) {
+	ui.Column(c.Key("quotes-empty")).
+		FillWidth().
+		Padding(32, 18).
+		Gap(10).
+		AlignItems(ui.Center).
+		Radius(8).
+		Background(pal.Surface).
+		Border(1, pal.Border).
+		Children(func() {
+			ui.Text(c, "还没有留住的散页").Font(theme.FontSerif).FontSize(15).Bold().TextColor(pal.TextPrimary)
+			ui.Text(c, "在读诗时划选诗行点「留作散页」，或直接手动记下一句打动你的话。").
+				Font(theme.FontSans).FontSize(13).TextColor(pal.TextMuted)
+			if ui.PrimaryButton(c, "+ 记一张散页").Clicked() {
+				a.openNewQuoteModal()
+			}
+			if a.isMidnightCave() {
+				ui.Text(c, dpsMidnightQuietLine).
+					Font(theme.FontNote).FontSize(12).Italic().TextColor(pal.TextMuted).Padding(6, 0, 0, 0)
+			}
+		})
 }

@@ -200,37 +200,8 @@ func (s *Store) UpsertImportedBookWithUpload(ctx context.Context, book domain.Bo
 		return err
 	}
 	return s.mutate(ctx, func(v domain.Version, now int64) ([]sqlite.Statement, error) {
-		r, err := s.firstRow(ctx, `SELECT `+bookColumns+` FROM books WHERE id = ?`, book.ID)
-		switch {
-		case errors.Is(err, ErrNotFound):
-			if book.GroupID != "" {
-				if err := s.requireActiveGroup(ctx, book.GroupID); err != nil {
-					return nil, err
-				}
-			}
-			if book.GroupVer.IsZero() {
-				book.GroupVer = v
-			}
-			if book.StarredVer.IsZero() {
-				book.StarredVer = v
-			}
-			if book.SortVer.IsZero() {
-				book.SortVer = v
-			}
-			if book.CreatedAt == 0 {
-				book.CreatedAt = now
-			}
-		case err != nil:
+		if err := s.prepareImportedBook(ctx, &book, v, now); err != nil {
 			return nil, err
-		default:
-			current, _ := decodeBook(r)
-			if current.Deleted {
-				return nil, fmt.Errorf("storage: book %q was deleted", book.ID)
-			}
-			book.GroupID, book.GroupVer = current.GroupID, current.GroupVer
-			book.IsStarred, book.StarredVer = current.IsStarred, current.StarredVer
-			book.SortOrder, book.SortVer = current.SortOrder, current.SortVer
-			book.CreatedAt = current.CreatedAt
 		}
 		book.ContentVer = v
 		book.Deleted, book.DeletedAt, book.DeletedVer = false, 0, domain.Version{}
@@ -248,6 +219,45 @@ func (s *Store) UpsertImportedBookWithUpload(ctx context.Context, book domain.Bo
 		}
 		return stmts, nil
 	})
+}
+func (s *Store) prepareImportedBook(ctx context.Context, book *domain.Book, v domain.Version, now int64) error {
+	r, err := s.firstRow(ctx, `SELECT `+bookColumns+` FROM books WHERE id = ?`, book.ID)
+	if errors.Is(err, ErrNotFound) {
+		return s.initializeImportedBook(ctx, book, v, now)
+	}
+	if err != nil {
+		return err
+	}
+	current, _ := decodeBook(r)
+	if current.Deleted {
+		return fmt.Errorf("storage: book %q was deleted", book.ID)
+	}
+	book.GroupID, book.GroupVer = current.GroupID, current.GroupVer
+	book.IsStarred, book.StarredVer = current.IsStarred, current.StarredVer
+	book.SortOrder, book.SortVer = current.SortOrder, current.SortVer
+	book.CreatedAt = current.CreatedAt
+	return nil
+}
+
+func (s *Store) initializeImportedBook(ctx context.Context, book *domain.Book, v domain.Version, now int64) error {
+	if book.GroupID != "" {
+		if err := s.requireActiveGroup(ctx, book.GroupID); err != nil {
+			return err
+		}
+	}
+	if book.GroupVer.IsZero() {
+		book.GroupVer = v
+	}
+	if book.StarredVer.IsZero() {
+		book.StarredVer = v
+	}
+	if book.SortVer.IsZero() {
+		book.SortVer = v
+	}
+	if book.CreatedAt == 0 {
+		book.CreatedAt = now
+	}
+	return nil
 }
 
 func (s *Store) SaveBookContent(ctx context.Context, bookID, contentHash string, sp *domain.SPBook) error {

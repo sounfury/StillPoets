@@ -6,7 +6,6 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
-	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,63 +25,13 @@ type textBlock struct {
 	note   *noteTarget
 }
 
+type documentBlocks struct {
+	blocks    []textBlock
+	positions map[*html.Node]int
+}
+
 func (p *publication) blocks(d *document) ([]textBlock, map[*html.Node]int) {
-	var blocks []textBlock
-	positions := map[*html.Node]int{}
-	var visit func(*html.Node)
-	visit = func(n *html.Node) {
-		positions[n] = len(blocks)
-		if n.Data == "head" || n.Data == "script" || n.Data == "style" {
-			return
-		}
-		if t, ok := p.notes[n]; ok {
-			blocks = append(blocks, textBlock{node: n, note: &t})
-			return
-		}
-		style := d.style(n)
-		if attr(n, "hidden") != "" || style["display"] == "none" || style["visibility"] == "hidden" {
-			if heading(n) > 0 && attr(n, "title") != "" {
-				blocks = append(blocks, textBlock{node: n, text: attr(n, "title"), style: style})
-			}
-			return
-		}
-		// Repeated download banners are outside publication content.
-		if n.Data == "div" && len([]rune(nodeText(n))) < 500 && strings.Contains(nodeText(n), "下载") {
-			links := 0
-			walk(n, func(x *html.Node) {
-				if x.Data == "a" && strings.HasPrefix(attr(x, "href"), "http") {
-					links++
-				}
-			})
-			if links >= 2 {
-				return
-			}
-		}
-		hasBlocks := false
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			if isBlock(c) || c.Data == "figure" {
-				hasBlocks = true
-				break
-			}
-		}
-		if !hasBlocks && (isBlock(n) || n.Data == "img" || n.Data == "image" || n.Type == html.TextNode && strings.TrimSpace(n.Data) != "") {
-			b := textBlock{node: n, style: style}
-			p.render(d, n, &b)
-			walk(n, func(x *html.Node) { positions[x] = len(blocks) })
-			blocks = append(blocks, b)
-			return
-		}
-		stanza := semantic(n, "stanza", "verse-group") || (n.Data == "div" || n.Data == "section") && marginTop(style) >= 2
-		if stanza {
-			blocks = append(blocks, textBlock{})
-		}
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			visit(c)
-		}
-		if stanza {
-			blocks = append(blocks, textBlock{})
-		}
-	}
+	out := documentBlocks{positions: map[*html.Node]int{}}
 	var body *html.Node
 	walk(d.root, func(n *html.Node) {
 		if n.Data == "body" {
@@ -90,56 +39,138 @@ func (p *publication) blocks(d *document) ([]textBlock, map[*html.Node]int) {
 		}
 	})
 	if body != nil {
-		visit(body)
+		p.collectBlocks(d, body, &out)
 	}
-	return blocks, positions
+	return out.blocks, out.positions
 }
+
+func (p *publication) collectBlocks(d *document, n *html.Node, out *documentBlocks) {
+	out.positions[n] = len(out.blocks)
+	switch n.Data {
+	case "head", "script", "style":
+		return
+	}
+	if t, ok := p.notes[n]; ok {
+		out.blocks = append(out.blocks, textBlock{node: n, note: &t})
+		return
+	}
+	style := d.style(n)
+	if attr(n, "hidden") != "" || style["display"] == "none" || style["visibility"] == "hidden" {
+		if title := attr(n, "title"); heading(n) > 0 && title != "" {
+			out.blocks = append(out.blocks, textBlock{node: n, text: title, style: style})
+		}
+		return
+	}
+	if isDownloadBanner(n) {
+		return
+	}
+	if isRenderableBlock(n) {
+		b := textBlock{node: n, style: style}
+		p.render(d, n, &b)
+		walk(n, func(x *html.Node) { out.positions[x] = len(out.blocks) })
+		out.blocks = append(out.blocks, b)
+		return
+	}
+	p.collectBlockChildren(d, n, style, out)
+}
+
+func (p *publication) collectBlockChildren(d *document, n *html.Node, style map[string]string, out *documentBlocks) {
+	stanza := semantic(n, "stanza", "verse-group") || (n.Data == "div" || n.Data == "section") && marginTop(style) >= 2
+	if stanza {
+		out.blocks = append(out.blocks, textBlock{})
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		p.collectBlocks(d, c, out)
+	}
+	if stanza {
+		out.blocks = append(out.blocks, textBlock{})
+	}
+}
+
+// Repeated download banners are outside publication content.
+func isDownloadBanner(n *html.Node) bool {
+	if n.Data != "div" {
+		return false
+	}
+	text := nodeText(n)
+	if len([]rune(text)) >= 500 || !strings.Contains(text, "下载") {
+		return false
+	}
+	links := 0
+	walk(n, func(x *html.Node) {
+		if x.Data == "a" && strings.HasPrefix(attr(x, "href"), "http") {
+			links++
+		}
+	})
+	return links >= 2
+}
+
+func isRenderableBlock(n *html.Node) bool {
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if isBlock(c) || c.Data == "figure" {
+			return false
+		}
+	}
+	return isBlock(n) || n.Data == "img" || n.Data == "image" || n.Type == html.TextNode && strings.TrimSpace(n.Data) != ""
+}
+
+type blockRenderer struct {
+	document *document
+	block    *textBlock
+	root     *html.Node
+	preserve bool
+	text     strings.Builder
+}
+
 func (p *publication) render(d *document, n *html.Node, b *textBlock) {
-	var out strings.Builder
-	preserve := n.Data == "pre" || b.style["white-space"] == "pre" || b.style["white-space"] == "pre-wrap"
-	var visit func(*html.Node)
-	visit = func(x *html.Node) {
-		if x != n {
-			if _, ok := p.notes[x]; ok {
-				return
-			}
-			if attr(x, "hidden") != "" || d.style(x)["display"] == "none" {
-				return
-			}
-		}
-		if r, ok := p.refs[x]; ok {
-			b.refs = append(b.refs, r)
-			out.WriteString(r.label)
-			return
-		}
-		if x.Data == "img" || x.Data == "image" {
-			glyph, img := p.parseImage(d, x)
-			out.WriteString(glyph)
-			if img != nil {
-				b.images = append(b.images, *img)
-			}
-			return
-		}
-		if x.Type == html.TextNode {
-			text := x.Data
-			if !preserve {
-				text = htmlWhitespace.ReplaceAllString(text, " ")
-			}
-			out.WriteString(text)
-		}
-		if x.Data == "br" {
-			out.WriteByte('\n')
-		}
-		for c := x.FirstChild; c != nil; c = c.NextSibling {
-			visit(c)
-		}
+	r := blockRenderer{
+		document: d, block: b, root: n,
+		preserve: n.Data == "pre" || b.style["white-space"] == "pre" || b.style["white-space"] == "pre-wrap",
 	}
-	visit(n)
-	if preserve {
-		b.text = strings.Trim(strings.ReplaceAll(out.String(), "\r", ""), "\n")
+	p.renderBlockNode(&r, n)
+	if r.preserve {
+		b.text = strings.Trim(strings.ReplaceAll(r.text.String(), "\r", ""), "\n")
 	} else {
-		b.text = normalizeText(out.String())
+		b.text = normalizeText(r.text.String())
 	}
+}
+
+func (p *publication) renderBlockNode(r *blockRenderer, n *html.Node) {
+	if n != r.root && p.skipInlineNode(r.document, n) {
+		return
+	}
+	if ref, ok := p.refs[n]; ok {
+		r.block.refs = append(r.block.refs, ref)
+		r.text.WriteString(ref.label)
+		return
+	}
+	switch n.Data {
+	case "img", "image":
+		glyph, img := p.parseImage(r.document, n)
+		r.text.WriteString(glyph)
+		if img != nil {
+			r.block.images = append(r.block.images, *img)
+		}
+		return
+	}
+	if n.Type == html.TextNode {
+		text := n.Data
+		if !r.preserve {
+			text = htmlWhitespace.ReplaceAllString(text, " ")
+		}
+		r.text.WriteString(text)
+	}
+	if n.Data == "br" {
+		r.text.WriteByte('\n')
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		p.renderBlockNode(r, c)
+	}
+}
+
+func (p *publication) skipInlineNode(d *document, n *html.Node) bool {
+	_, isNote := p.notes[n]
+	return isNote || attr(n, "hidden") != "" || d.style(n)["display"] == "none"
 }
 
 var htmlWhitespace = regexp.MustCompile(`[ \t\r\n]+`)
@@ -182,47 +213,72 @@ func (p *publication) parseImage(d *document, n *html.Node) (string, *domain.Ima
 		return "", nil
 	}
 	alt := strings.TrimSpace(attr(n, "alt"))
+	if isDecorativeImage(n, alt) {
+		return "", nil
+	}
+	shortAlt := alt != "" && len([]rune(alt)) <= 4
+	width, height := p.imageSize(d, n, src, shortAlt)
+	if shortAlt && (fitsImageBox(width, height, 48) || semantic(n, "gaiji", "glyph")) {
+		return alt, nil
+	}
+	if fitsImageBox(width, height, 32) || width > 0 && height > 0 && float64(height)/float64(width) < 0.08 {
+		return "", nil
+	}
+	return "", &domain.ImageRef{Src: src, Alt: alt, Width: width, Height: height, Caption: imageCaption(n)}
+}
+
+func isDecorativeImage(n *html.Node, alt string) bool {
 	label := strings.ToLower(alt + " " + attr(n, "class") + " " + attr(n, "role"))
 	for _, word := range []string{"logo", "qrcode", "qr code", "separator", "ornament", "decoration", "presentation", "装饰", "分隔"} {
 		if strings.Contains(label, word) {
-			return "", nil
+			return true
 		}
 	}
+	return false
+}
+
+func fitsImageBox(width, height, maxSize int) bool {
+	return width > 0 && width <= maxSize && height > 0 && height <= maxSize
+}
+
+func (p *publication) imageSize(d *document, n *html.Node, src string, shortAlt bool) (int, int) {
 	style := d.style(n)
-	width := imageDimension(attr(n, "width"))
-	height := imageDimension(attr(n, "height"))
-	if width == 0 {
-		width = imageDimension(style["width"])
+	width := imageDimensionWithStyle(n, style, "width")
+	height := imageDimensionWithStyle(n, style, "height")
+	if !shortAlt || width != 0 && height != 0 {
+		return width, height
 	}
-	if height == 0 {
-		height = imageDimension(style["height"])
+	data, err := p.read(src)
+	if err != nil {
+		return width, height
 	}
-	if len([]rune(alt)) > 0 && len([]rune(alt)) <= 4 && (width == 0 || height == 0) {
-		if data, err := p.read(src); err == nil {
-			if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
-				width = cfg.Width
-				height = cfg.Height
-			}
-		}
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
+		return cfg.Width, cfg.Height
 	}
-	if alt != "" && len([]rune(alt)) <= 4 && ((width > 0 && width <= 48 && height > 0 && height <= 48) || semantic(n, "gaiji", "glyph")) {
-		return alt, nil
+	return width, height
+}
+
+func imageDimensionWithStyle(n *html.Node, style map[string]string, axis string) int {
+	if size := imageDimension(attr(n, axis)); size != 0 {
+		return size
 	}
-	if width > 0 && height > 0 && (width <= 32 && height <= 32 || float64(height)/float64(width) < 0.08) {
-		return "", nil
-	}
-	img := &domain.ImageRef{Src: src, Alt: alt, Width: width, Height: height}
+	return imageDimension(style[axis])
+}
+
+func imageCaption(n *html.Node) string {
+	var caption string
 	for parent := n.Parent; parent != nil; parent = parent.Parent {
-		if parent.Data == "figure" {
-			walk(parent, func(x *html.Node) {
-				if x.Data == "figcaption" {
-					img.Caption = strings.TrimSpace(nodeText(x))
-				}
-			})
-			break
+		if parent.Data != "figure" {
+			continue
 		}
+		walk(parent, func(x *html.Node) {
+			if x.Data == "figcaption" {
+				caption = strings.TrimSpace(nodeText(x))
+			}
+		})
+		return caption
 	}
-	return "", img
+	return caption
 }
 func imageDimension(v string) int {
 	v = strings.TrimSuffix(v, "px")
@@ -234,6 +290,24 @@ func imageDimension(v string) int {
 }
 
 func (p *publication) parseDocument(d *document, result *ParseResult, section *string) {
+	if reason := documentFilterReason(d); reason != "" {
+		result.Filtered = append(result.Filtered, FilteredItem{Src: d.src, Reason: reason})
+		return
+	}
+	blocks, positions := p.blocks(d)
+	boundaries, fileEntry := p.tocBoundaries(d, positions)
+	if len(boundaries) == 0 {
+		// Without TOC anchors, only the document's top heading level introduces entries.
+		minHeading := topHeadingLevel(blocks)
+		applyTopHeadingBoundaries(blocks, minHeading, fileEntry, boundaries)
+		if fileEntry.src == "" || fileEntry.parent {
+			applySubHeadingBoundaries(blocks, minHeading, fileEntry, boundaries)
+		}
+	}
+	p.emitDocumentEntries(d, result, section, blocks, boundaries, fileEntry)
+}
+
+func documentFilterReason(d *document) string {
 	semanticReason := ""
 	walk(d.root, func(n *html.Node) {
 		if n.Data == "body" {
@@ -247,14 +321,12 @@ func (p *publication) parseDocument(d *document, result *ParseResult, section *s
 			}
 		}
 	})
-	if semanticReason != "" {
-		result.Filtered = append(result.Filtered, FilteredItem{Src: d.src, Reason: semanticReason})
-		return
-	}
-	blocks, positions := p.blocks(d)
+	return semanticReason
+}
+
+func (p *publication) tocBoundaries(d *document, positions map[*html.Node]int) (map[int]tocEntry, tocEntry) {
 	boundaries := map[int]tocEntry{}
 	fileEntry := tocEntry{}
-	anchored := false
 	for _, t := range p.toc {
 		src, id := resolve("", t.src)
 		if src != d.src {
@@ -269,10 +341,13 @@ func (p *publication) parseDocument(d *document, result *ParseResult, section *s
 		if n := d.ids[id]; n != nil {
 			if i, ok := positions[n]; ok {
 				boundaries[i] = t
-				anchored = true
 			}
 		}
 	}
+	return boundaries, fileEntry
+}
+
+func topHeadingLevel(blocks []textBlock) int {
 	minHeading := 7
 	for _, b := range blocks {
 		if b.node != nil {
@@ -281,13 +356,10 @@ func (p *publication) parseDocument(d *document, result *ParseResult, section *s
 			}
 		}
 	}
-	// Without TOC anchors, only the document's top heading level introduces entries.
-	if !anchored {
-		applyTopHeadingBoundaries(blocks, minHeading, fileEntry, boundaries)
-	}
-	if !anchored && (fileEntry.src == "" || fileEntry.parent) {
-		applySubHeadingBoundaries(blocks, minHeading, fileEntry, boundaries)
-	}
+	return minHeading
+}
+
+func (p *publication) emitDocumentEntries(d *document, result *ParseResult, section *string, blocks []textBlock, boundaries map[int]tocEntry, fileEntry tocEntry) {
 	var current []textBlock
 	currentTOC := fileEntry
 	start := 0
@@ -319,12 +391,12 @@ func applyTopHeadingBoundaries(blocks []textBlock, minHeading int, fileEntry toc
 		if b.node == nil || heading(b.node) != minHeading || numberedPart.MatchString(strings.TrimSpace(b.text)) {
 			continue
 		}
-		headingTitle := StripNoteRefs(strings.TrimSpace(strings.Split(b.text, "\n")[0]))
-		t := tocEntry{title: headingTitle, section: fileEntry.section}
+		title := headingTitle(b)
+		t := tocEntry{title: title, section: fileEntry.section}
 		if i == first {
 			t = fileEntry
 			if t.title == "" {
-				t.title = headingTitle
+				t.title = title
 			}
 		}
 		boundaries[i] = t
@@ -353,7 +425,7 @@ func applySubHeadingBoundaries(blocks []textBlock, minHeading int, fileEntry toc
 				break
 			}
 			if level == childLevel && !numberedPart.MatchString(strings.TrimSpace(next.text)) {
-				boundaries[j] = tocEntry{title: StripNoteRefs(strings.TrimSpace(strings.Split(next.text, "\n")[0])), section: joinText(fileEntry.section, parent.title, " · ")}
+				boundaries[j] = tocEntry{title: headingTitle(next), section: joinText(fileEntry.section, parent.title, " · ")}
 			}
 		}
 	}
@@ -381,229 +453,4 @@ func firstHeading(bs []textBlock) int {
 	return -1
 }
 
-var numberedPart = regexp.MustCompile(`^(?:[0-9一二三四五六七八九十百IVXLCDM]+|[0-9]+[.．、：:].*|[（(][0-9一二三四五六七八九十]+[)）])$`)
-
-func (p *publication) finishEntry(d *document, blocks []textBlock, t tocEntry, src string, result *ParseResult, section *string) {
-	title := t.title
-	header := -1
-	for i, b := range blocks {
-		if b.node != nil && heading(b.node) > 0 {
-			header = i
-			if title == "" {
-				title = StripNoteRefs(strings.TrimSpace(strings.Split(b.text, "\n")[0]))
-			}
-			break
-		}
-	}
-	if title == "" {
-		walk(d.root, func(n *html.Node) {
-			if n.Data == "title" && title == "" {
-				title = strings.TrimSpace(nodeText(n))
-			}
-		})
-	}
-	if title == "" || title == "未知" {
-		title = "无题"
-	}
-	var body strings.Builder
-	for _, b := range blocks {
-		body.WriteString(b.text)
-		body.WriteByte('\n')
-	}
-	if reason := filterReason(title, body.String(), blocks); reason != "" {
-		result.Filtered = append(result.Filtered, FilteredItem{src, title, reason})
-		return
-	}
-	if t.parent {
-		*section = joinText(t.section, title, " · ")
-	}
-	entrySection := t.section
-	if entrySection == "" {
-		entrySection = *section
-	}
-	poem := domain.Poem{Title: StripNoteRefs(title), Section: entrySection, Stanzas: []domain.Stanza{}}
-	if header >= 0 {
-		parts := strings.Split(blocks[header].text, "\n")
-		if len(parts) > 1 {
-			if first := strings.TrimSpace(StripNoteRefs(parts[0])); first != "" && strings.HasPrefix(poem.Title, first) {
-				poem.Title = first
-			}
-			poem.Subtitle = strings.TrimSpace(StripNoteRefs(strings.Join(parts[1:], "\n")))
-		}
-	}
-	var content []textBlock
-	var epigraphCandidates []textBlock
-	for i, b := range blocks {
-		for _, ref := range b.refs {
-			appendNote(&poem, p.notes[ref.target], ref.label)
-		}
-		if b.note != nil {
-			if !b.note.referenced {
-				appendNote(&poem, *b.note, "")
-			}
-			continue
-		}
-		poem.Images = append(poem.Images, b.images...)
-		if i == header {
-			continue
-		}
-		if b.node != nil && b.node.Data == "figcaption" {
-			continue
-		}
-		if semanticNode(b.node, "subtitle") {
-			poem.Subtitle = joinText(poem.Subtitle, b.text, "\n")
-			continue
-		}
-		if semanticNode(b.node, "author", "byline") {
-			poem.Author = strings.TrimSpace(b.text)
-			continue
-		}
-		if ancestorSemantic(b.node, "epigraph", "dedication") {
-			poem.Epigraph = joinText(poem.Epigraph, b.text, "\n")
-			continue
-		}
-		if !hasBody(content) && isEpigraph(b) {
-			epigraphCandidates = append(epigraphCandidates, b)
-			continue
-		}
-		content = append(content, b)
-	}
-	// Heuristic epigraphs (e.g. a leading <blockquote>) only count as epigraphs
-	// when body text follows; otherwise the blockquote IS the poem itself.
-	if hasBody(content) {
-		for _, eb := range epigraphCandidates {
-			poem.Epigraph = joinText(poem.Epigraph, eb.text, "\n")
-		}
-	} else if len(epigraphCandidates) > 0 {
-		content = append(epigraphCandidates, content...)
-	}
-	poem.Kind = classify(title, content)
-	if header < 0 && t.title == "" {
-		poem.Kind = domain.EntryKindProse
-	}
-	// Trailing blank blocks never obscure a date or explicit colophon.
-	for len(content) > 0 {
-		b := content[len(content)-1]
-		s := strings.TrimSpace(b.text)
-		if s == "" {
-			content = content[:len(content)-1]
-			continue
-		}
-		if ancestorSemantic(b.node, "colophon", "dateline") || isColophon(s) {
-			poem.Colophon = joinText(s, poem.Colophon, "\n")
-			content = content[:len(content)-1]
-			continue
-		}
-		break
-	}
-	var lines []string
-	flush := func() {
-		if len(lines) > 0 {
-			poem.Stanzas = append(poem.Stanzas, domain.Stanza{Lines: lines})
-			lines = nil
-		}
-	}
-	for _, b := range content {
-		if strings.TrimSpace(b.text) == "" {
-			flush()
-			continue
-		}
-		if poem.Kind == domain.EntryKindProse {
-			flush()
-			poem.Stanzas = append(poem.Stanzas, domain.Stanza{Lines: []string{strings.TrimSpace(b.text)}})
-			continue
-		}
-		if marginTop(b.style) >= 2 || semanticNode(b.node, "stanza") {
-			flush()
-		}
-		indent := int(math.Round(emLength(b.style["text-indent"])))
-		if indent > 12 {
-			indent = 12
-		}
-		if indent < 0 {
-			indent = 0
-		}
-		for _, s := range strings.Split(b.text, "\n") {
-			if strings.TrimSpace(s) == "" {
-				flush()
-				continue
-			}
-			if indent > 0 && !strings.HasPrefix(s, "　") && !strings.HasPrefix(s, "\u00a0") {
-				s = strings.Repeat("　", indent) + s
-			}
-			lines = append(lines, s)
-		}
-	}
-	flush()
-	// Unreferenced endnotes remain readable; only fully inlined note pages disappear.
-	if len(poem.Stanzas) == 0 && len(poem.Notes) > 0 {
-		poem.Kind = domain.EntryKindProse
-		for _, note := range poem.Notes {
-			poem.Stanzas = append(poem.Stanzas, domain.Stanza{Lines: []string{joinText(note.Label, note.Body, " ")}})
-		}
-		poem.Notes = nil
-	}
-	// Section dividers and image-only pages without readable text must not emit
-	// blank entries into the V1.0 reading TOC.
-	if len(poem.Stanzas) == 0 {
-		reason := "blank"
-		for _, b := range blocks {
-			if b.note != nil {
-				reason = "notes"
-			}
-		}
-		if t.parent {
-			reason = "section"
-		} else if len(poem.Images) > 0 {
-			reason = "image-only"
-		}
-		result.Filtered = append(result.Filtered, FilteredItem{src, title, reason})
-		return
-	}
-	result.Book.Poems = append(result.Book.Poems, poem)
-}
 func semanticNode(n *html.Node, words ...string) bool { return n != nil && semantic(n, words...) }
-func isEpigraph(b textBlock) bool {
-	s := strings.TrimSpace(b.text)
-	if b.node != nil && (strings.HasPrefix(s, "（") || strings.HasPrefix(s, "(")) {
-		emphasized := false
-		walk(b.node, func(n *html.Node) {
-			if n.Data == "i" || n.Data == "em" || semantic(n, "kaiti") {
-				emphasized = true
-			}
-		})
-		if emphasized {
-			return true
-		}
-	}
-	for x := b.node; x != nil; x = x.Parent {
-		if x.Data == "blockquote" {
-			return true
-		}
-	}
-	if b.style["text-align"] == "center" && emLength(b.style["font-size"]) > 0 && emLength(b.style["font-size"]) < 1 && (strings.HasPrefix(s, "赠") || strings.HasPrefix(s, "献给")) {
-		return true
-	}
-	if strings.HasPrefix(s, "题记：") || strings.HasPrefix(s, "题记:") {
-		return true
-	}
-	return b.node != nil && (b.node.Data == "blockquote" || b.style["font-family"] == `"kaiti"` || b.style["font-family"] == "kaiti" || semanticNode(b.node, "kaiti")) && (strings.HasPrefix(s, "“") || strings.HasPrefix(s, "\""))
-}
-
-func ancestorSemantic(n *html.Node, words ...string) bool {
-	for x := n; x != nil && x.Data != "body"; x = x.Parent {
-		if semantic(x, words...) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasBody(blocks []textBlock) bool {
-	for _, b := range blocks {
-		if strings.TrimSpace(b.text) != "" {
-			return true
-		}
-	}
-	return false
-}

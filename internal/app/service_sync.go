@@ -96,30 +96,8 @@ func (s *Service) saveWebDAVProfile(ctx context.Context, profile WebDAVProfile, 
 	if workspaceChanged {
 		sources = migrationSourcesAfterSwitch(sources, prev, profile)
 	}
-	if !s.workspacePasswords && prev.BaseURL != "" && workspaceChanged {
-		previousPassword, err := s.activeWebDAVPasswordLocked()
-		if err != nil {
-			return false, err
-		}
-		if err := s.saveWebDAVPassword(webDAVWorkspacePasswordKey(prev), previousPassword); err != nil {
-			return false, err
-		}
-	}
-	if password != "" || !s.workspacePasswords || workspaceChanged {
-		if password == "" {
-			var err error
-			password, err = s.webDAVPasswordForInputLocked(profile)
-			if err != nil {
-				return false, err
-			}
-		}
-		if err := s.saveWebDAVPassword(webDAVWorkspacePasswordKey(profile), password); err != nil {
-			return false, err
-		}
-		if !workspaceChanged {
-			// A same-workspace password can already have changed even if writing the profile fails.
-			s.releaseWebDAVClientLocked()
-		}
+	if err := s.saveWorkspacePasswordsLocked(prev, profile, password, workspaceChanged); err != nil {
+		return false, err
 	}
 	if workspaceChanged {
 		// 先持久化发布屏障，重启时也不会在未验证资产前向新工作区发布书目。
@@ -138,6 +116,35 @@ func (s *Service) saveWebDAVProfile(ctx context.Context, profile WebDAVProfile, 
 		s.LogEvent("webdav", "legacy credential cleanup failed: %v", err)
 	}
 	return workspaceChanged, nil
+}
+
+func (s *Service) saveWorkspacePasswordsLocked(prev, profile WebDAVProfile, password string, workspaceChanged bool) error {
+	if !s.workspacePasswords && prev.BaseURL != "" && workspaceChanged {
+		previousPassword, err := s.activeWebDAVPasswordLocked()
+		if err != nil {
+			return err
+		}
+		if err := s.saveWebDAVPassword(webDAVWorkspacePasswordKey(prev), previousPassword); err != nil {
+			return err
+		}
+	}
+	if password != "" || !s.workspacePasswords || workspaceChanged {
+		if password == "" {
+			var err error
+			password, err = s.webDAVPasswordForInputLocked(profile)
+			if err != nil {
+				return err
+			}
+		}
+		if err := s.saveWebDAVPassword(webDAVWorkspacePasswordKey(profile), password); err != nil {
+			return err
+		}
+		if !workspaceChanged {
+			// A same-workspace password can already have changed even if writing the profile fails.
+			s.releaseWebDAVClientLocked()
+		}
+	}
+	return nil
 }
 
 func (s *Service) setWebDAVProfileLocked(profile WebDAVProfile, clearDevices bool) {
@@ -299,10 +306,6 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 		s.emitSyncToast(SyncToastState{Phase: SyncToastError, Message: "同步失败"})
 		return nil, err
 	}
-	blockedBooks := make(map[string]struct{}, len(remainingPending))
-	for _, p := range remainingPending {
-		blockedBooks[p.BookID] = struct{}{}
-	}
 	res, err := engine.Sync(runCtx, booksync.SyncRequest{
 		InstallID:       meta.InstallID,
 		LocalRev:        meta.LocalRev,
@@ -311,7 +314,7 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 		HasDirty:        meta.Dirty || uploadedAny,
 		ForcePush:       forcePush || meta.LocalRev == 0,
 		KnownRemoteRevs: meta.KnownRemoteRevs,
-		PendingBooks:    blockedBooks,
+		PendingBooks:    pendingBookIDs(remainingPending),
 	})
 	if err != nil {
 		release()
@@ -320,45 +323,15 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 		return nil, err
 	}
 
-	// 保留仍存在但本轮读取不完整的设备上次已合并的代次；移除未列出的设备。
-	remoteDeviceRevs := maps.Clone(res.SyncedDeviceRevs)
-	for id := range res.IncompleteDevices {
-		if rev := meta.KnownRemoteRevs[id]; rev > 0 {
-			remoteDeviceRevs[id] = rev
-		}
-	}
-
-	// 若存在未上传完成的本地新书，保留 dirty=1 确保下轮不会跳过发布（P1-1）
 	keepDirty := uploadFailed || len(remainingPending) > 0
 	if keepDirty {
 		res.PartialSync = true
 	}
-	// 配置切换和快照落库共用 mu，避免旧工作区在重置后提交数据。
-	s.mu.Lock()
-	if s.workspaceEpoch != startEpoch {
-		s.mu.Unlock()
+	if err := s.applyWorkspaceSnapshot(runCtx, res, meta, startEpoch, keepDirty, true); err != nil {
 		release()
-		return nil, errors.New("同步期间 WebDAV 工作区已变更，已中止旧工作区提交")
-	}
-	err = s.store.ApplyMergedSnapshotEx(runCtx, res.MergedData, storage.ApplySnapshotOptions{
-		ExportedDirtySeq: meta.DirtySeq,
-		MaxCounter:       res.MaxCounter,
-		PublishedRev:     res.PublishedRev,
-		Published:        res.Published,
-		KeepDirty:        keepDirty,
-		RemoteDeviceRevs: remoteDeviceRevs,
-	})
-	if err == nil {
-		s.remoteDevices = slices.Clone(res.RemoteDevices)
-		if !keepDirty {
-			if cleanupErr := s.finishWebDAVMigrationLocked(); cleanupErr != nil {
-				s.LogEvent("webdav", "migration source cleanup failed: %v", cleanupErr)
-			}
+		if err == errSyncWorkspaceChanged {
+			return nil, err
 		}
-	}
-	s.mu.Unlock()
-	if err != nil {
-		release()
 		s.LogEvent("sync", "apply merged snapshot failed: %v", err)
 		s.emitSyncToast(SyncToastState{Phase: SyncToastError, Message: "同步写库失败"})
 		return nil, err
@@ -379,16 +352,57 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 		s.notifyDataChanged()
 	}
 
+	s.reportSyncCompletion(res, len(remainingPending))
+	return res, nil
+}
+
+var errSyncWorkspaceChanged = errors.New("同步期间 WebDAV 工作区已变更，已中止旧工作区提交")
+
+func (s *Service) applyWorkspaceSnapshot(ctx context.Context, res *booksync.SyncResult, meta storage.SyncMeta, epoch uint64, keepDirty, cleanupMigration bool) error {
+	// 保留仍存在但本轮读取不完整的设备上次已合并的代次；移除未列出的设备。
+	remoteDeviceRevs := maps.Clone(res.SyncedDeviceRevs)
+	for id := range res.IncompleteDevices {
+		if rev := meta.KnownRemoteRevs[id]; rev > 0 {
+			remoteDeviceRevs[id] = rev
+		}
+	}
+
+	// 配置切换和快照落库共用 mu，避免旧工作区在重置后提交数据。
+	s.mu.Lock()
+	if s.workspaceEpoch != epoch {
+		s.mu.Unlock()
+		return errSyncWorkspaceChanged
+	}
+	err := s.store.ApplyMergedSnapshotEx(ctx, res.MergedData, storage.ApplySnapshotOptions{
+		ExportedDirtySeq: meta.DirtySeq,
+		MaxCounter:       res.MaxCounter,
+		PublishedRev:     res.PublishedRev,
+		Published:        res.Published,
+		KeepDirty:        keepDirty,
+		RemoteDeviceRevs: remoteDeviceRevs,
+	})
+	if err == nil {
+		s.remoteDevices = slices.Clone(res.RemoteDevices)
+		if cleanupMigration && !keepDirty {
+			if cleanupErr := s.finishWebDAVMigrationLocked(); cleanupErr != nil {
+				s.LogEvent("webdav", "migration source cleanup failed: %v", cleanupErr)
+			}
+		}
+	}
+	s.mu.Unlock()
+	return err
+}
+
+func (s *Service) reportSyncCompletion(res *booksync.SyncResult, remainingPending int) {
 	if res.PartialSync {
 		s.LogEvent("sync", "partial sync finished (published=%v rev=%d remoteDevices=%d warnings=%d remainingPending=%d)",
-			res.Published, res.PublishedRev, len(res.RemoteDevices), len(res.Warnings), len(remainingPending))
+			res.Published, res.PublishedRev, len(res.RemoteDevices), len(res.Warnings), remainingPending)
 		s.emitSyncToast(SyncToastState{Phase: SyncToastPartial, Message: "部分同步"})
 	} else {
 		s.LogEvent("sync", "sync succeeded (published=%v rev=%d remoteDevices=%d)",
 			res.Published, res.PublishedRev, len(res.RemoteDevices))
 		s.emitSyncToast(SyncToastState{Phase: SyncToastSuccess, Message: "云同步成功"})
 	}
-	return res, nil
 }
 
 // RetireRemoteDevice 先确保完整拉取并合并目标设备的最新代次且发布现役快照，再仅删除已覆盖的旧代次（P0-4）。
@@ -475,12 +489,12 @@ func (s *Service) flushPendingUploads(ctx context.Context, engine *booksync.Engi
 		}
 		book, bookErr := s.store.GetBook(ctx, item.BookID)
 		var uploadErr error
-		if bookErr == nil {
-			if isWorkspaceMigration(item) {
-				uploadErr = s.uploadMigratingBook(ctx, engine, sources, sourceErr, book, epoch)
-			} else {
-				uploadErr = uploadPendingBook(ctx, engine, book, item)
-			}
+		switch {
+		case bookErr != nil:
+		case isWorkspaceMigration(item):
+			uploadErr = s.uploadMigratingBook(ctx, engine, sources, sourceErr, book, epoch)
+		default:
+			uploadErr = uploadPendingBook(ctx, engine, book, item)
 		}
 
 		s.mu.Lock()
@@ -488,25 +502,36 @@ func (s *Service) flushPendingUploads(ctx context.Context, engine *booksync.Engi
 			s.mu.Unlock()
 			return uploadedAny, true
 		}
-		switch {
-		case errors.Is(bookErr, storage.ErrNotFound):
-			anyFailed = s.store.DeletePendingUpload(ctx, item.BookID) != nil || anyFailed
-		case bookErr != nil:
-			anyFailed = true
-		case uploadErr != nil:
-			s.LogEvent("sync", "book upload %s failed: %v", item.BookID, uploadErr)
-			_ = s.store.UpdatePendingUploadState(ctx, item.BookID, storage.UploadFailed, uploadErr.Error())
-			anyFailed = true
-		default:
-			if err := s.store.DeletePendingUpload(ctx, item.BookID); err != nil {
-				anyFailed = true
-			} else {
-				uploadedAny = true
-			}
-		}
+		uploaded, failed := s.finishPendingUpload(ctx, item.BookID, bookErr, uploadErr)
 		s.mu.Unlock()
+		uploadedAny = uploadedAny || uploaded
+		anyFailed = anyFailed || failed
 	}
 	return uploadedAny, anyFailed
+}
+
+func (s *Service) finishPendingUpload(ctx context.Context, bookID string, bookErr, uploadErr error) (uploaded, failed bool) {
+	switch {
+	case errors.Is(bookErr, storage.ErrNotFound):
+		return false, s.store.DeletePendingUpload(ctx, bookID) != nil
+	case bookErr != nil:
+		return false, true
+	case uploadErr != nil:
+		s.LogEvent("sync", "book upload %s failed: %v", bookID, uploadErr)
+		_ = s.store.UpdatePendingUploadState(ctx, bookID, storage.UploadFailed, uploadErr.Error())
+		return false, true
+	default:
+		err := s.store.DeletePendingUpload(ctx, bookID)
+		return err == nil, err != nil
+	}
+}
+
+func pendingBookIDs(pending []storage.PendingUpload) map[string]struct{} {
+	ids := make(map[string]struct{}, len(pending))
+	for _, p := range pending {
+		ids[p.BookID] = struct{}{}
+	}
+	return ids
 }
 
 func uploadPendingBook(ctx context.Context, engine *booksync.Engine, book domain.Book, item storage.PendingUpload) error {

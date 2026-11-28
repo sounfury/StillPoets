@@ -106,6 +106,41 @@ func ParseEPUBReaderAtTime(r io.ReaderAt, size int64, bookID string, parsedAt in
 	if strings.TrimSpace(bookID) == "" {
 		return nil, fmt.Errorf("parser: bookID is required")
 	}
+	pub, err := openPublication(r, size)
+	if err != nil {
+		return nil, err
+	}
+	opfPath, opf, err := pub.readPackageDocument()
+	if err != nil {
+		return nil, err
+	}
+	if parsedAt <= 0 {
+		parsedAt = domain.NowMillis()
+	}
+	result := &ParseResult{Book: &domain.SPBook{SchemaVersion: 1, BookID: bookID, SourceFormat: "epub", ParsedAt: parsedAt, Poems: []domain.Poem{}}}
+	book := result.Book
+	coverID := applyPackageMetadata(book, opf)
+	items, ncx, nav := pub.indexManifest(opfPath, opf, coverID, result)
+	if err := pub.loadHTMLDocuments(opfPath, opf.Manifest); err != nil {
+		return nil, err
+	}
+	if err := pub.loadTOC(nav, ncx); err != nil {
+		return nil, err
+	}
+	pub.indexNotes()
+	if err := pub.parseSpine(opfPath, opf, items, nav, result); err != nil {
+		return nil, err
+	}
+	for i := range book.Poems {
+		p := &book.Poems[i]
+		p.BookID = bookID
+		p.OrderIndex = i
+		p.ID = fmt.Sprintf("%s:%04d", bookID, i+1)
+	}
+	return result, nil
+}
+
+func openPublication(r io.ReaderAt, size int64) (*publication, error) {
 	z, err := zip.NewReader(r, size)
 	if err != nil {
 		return nil, fmt.Errorf("parser: read ZIP: %w", err)
@@ -114,9 +149,13 @@ func ParseEPUBReaderAtTime(r io.ReaderAt, size int64, bookID string, parsedAt in
 	for _, f := range z.File {
 		pub.files[path.Clean(strings.ReplaceAll(f.Name, "\\", "/"))] = f
 	}
+	return pub, nil
+}
+
+func (pub *publication) readPackageDocument() (string, packageDocument, error) {
 	data, err := pub.read("META-INF/container.xml")
 	if err != nil {
-		return nil, err
+		return "", packageDocument{}, err
 	}
 	var container struct {
 		Roots []struct {
@@ -124,25 +163,24 @@ func ParseEPUBReaderAtTime(r io.ReaderAt, size int64, bookID string, parsedAt in
 		} `xml:"rootfiles>rootfile"`
 	}
 	if err = xml.Unmarshal(data, &container); err != nil {
-		return nil, fmt.Errorf("parser: container.xml: %w", err)
+		return "", packageDocument{}, fmt.Errorf("parser: container.xml: %w", err)
 	}
 	if len(container.Roots) == 0 {
-		return nil, fmt.Errorf("parser: container has no rootfile")
+		return "", packageDocument{}, fmt.Errorf("parser: container has no rootfile")
 	}
 	opfPath := container.Roots[0].Path
 	data, err = pub.read(opfPath)
 	if err != nil {
-		return nil, err
+		return "", packageDocument{}, err
 	}
 	var opf packageDocument
 	if err = xml.Unmarshal(data, &opf); err != nil {
-		return nil, fmt.Errorf("parser: OPF: %w", err)
+		return "", packageDocument{}, fmt.Errorf("parser: OPF: %w", err)
 	}
-	if parsedAt <= 0 {
-		parsedAt = domain.NowMillis()
-	}
-	result := &ParseResult{Book: &domain.SPBook{SchemaVersion: 1, BookID: bookID, SourceFormat: "epub", ParsedAt: parsedAt, Poems: []domain.Poem{}}}
-	book := result.Book
+	return opfPath, opf, nil
+}
+
+func applyPackageMetadata(book *domain.SPBook, opf packageDocument) string {
 	if len(opf.Metadata.Titles) > 0 {
 		book.Title = strings.TrimSpace(opf.Metadata.Titles[0])
 	}
@@ -168,17 +206,16 @@ func ParseEPUBReaderAtTime(r io.ReaderAt, size int64, bookID string, parsedAt in
 			book.Author = joinText(book.Author, name, " / ")
 		}
 	}
+	return coverID
+}
+
+func (p *publication) indexManifest(opfPath string, opf packageDocument, coverID string, result *ParseResult) (map[string]manifestItem, string, string) {
 	items := map[string]manifestItem{}
 	var ncx, nav string
 	for _, item := range opf.Manifest {
 		item.Href, _ = resolve(opfPath, item.Href)
 		items[item.ID] = item
-		if (item.ID == coverID || hasToken(item.Properties, "cover-image")) && strings.HasPrefix(item.MediaType, "image/") && len(result.Cover) == 0 {
-			if coverBytes, readErr := pub.read(item.Href); readErr == nil {
-				result.Cover = coverBytes
-				result.CoverMediaType = item.MediaType
-			}
-		}
+		p.loadManifestCover(item, coverID, result)
 		if item.ID == opf.Spine.TOC || item.MediaType == "application/x-dtbncx+xml" && ncx == "" {
 			ncx = item.Href
 		}
@@ -186,93 +223,118 @@ func ParseEPUBReaderAtTime(r io.ReaderAt, size int64, bookID string, parsedAt in
 			nav = item.Href
 		}
 	}
+	return items, ncx, nav
+}
+
+func (p *publication) loadManifestCover(item manifestItem, coverID string, result *ParseResult) {
+	if (item.ID == coverID || hasToken(item.Properties, "cover-image")) && strings.HasPrefix(item.MediaType, "image/") && len(result.Cover) == 0 {
+		if coverBytes, readErr := p.read(item.Href); readErr == nil {
+			result.Cover = coverBytes
+			result.CoverMediaType = item.MediaType
+		}
+	}
+}
+
+func (p *publication) loadHTMLDocuments(opfPath string, items []manifestItem) error {
 	// The manifest includes note documents that may be absent from the reading spine.
 	var textBytes int
-	for _, item := range opf.Manifest {
+	for _, item := range items {
 		if item.MediaType != "application/xhtml+xml" && item.MediaType != "text/html" {
 			continue
 		}
 		src, _ := resolve(opfPath, item.Href)
-		data, err = pub.read(src)
+		data, err := p.read(src)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		textBytes += len(data)
 		if textBytes > 128<<20 {
-			return nil, fmt.Errorf("parser: EPUB text exceeds 128 MiB")
+			return fmt.Errorf("parser: EPUB text exceeds 128 MiB")
 		}
-		root, e := html.Parse(bytes.NewReader(data))
-		if e != nil {
-			return nil, fmt.Errorf("parser: %s: %w", src, e)
+		if err := p.loadHTMLDocument(src, data); err != nil {
+			return err
 		}
-		d := &document{src: src, root: root, ids: map[string]*html.Node{}, css: styleSheet{}}
-		walk(root, func(n *html.Node) {
-			if id := attr(n, "id"); id != "" {
-				d.ids[id] = n
-			}
-			if id := attr(n, "name"); n.Data == "a" && id != "" {
-				d.ids[id] = n
-			}
-		})
-		pub.loadStyles(d)
-		pub.docs[src] = d
 	}
+	return nil
+}
+
+func (p *publication) loadHTMLDocument(src string, data []byte) error {
+	root, e := html.Parse(bytes.NewReader(data))
+	if e != nil {
+		return fmt.Errorf("parser: %s: %w", src, e)
+	}
+	d := &document{src: src, root: root, ids: map[string]*html.Node{}, css: styleSheet{}}
+	walk(root, func(n *html.Node) {
+		if id := attr(n, "id"); id != "" {
+			d.ids[id] = n
+		}
+		if id := attr(n, "name"); n.Data == "a" && id != "" {
+			d.ids[id] = n
+		}
+	})
+	p.loadStyles(d)
+	p.docs[src] = d
+	return nil
+}
+
+func (p *publication) loadTOC(nav, ncx string) error {
 	if nav != "" {
-		pub.toc = parseNAV(pub.docs[nav])
+		p.toc = parseNAV(p.docs[nav])
 	}
-	if len(pub.toc) == 0 && ncx != "" {
-		data, err = pub.read(ncx)
+	if len(p.toc) == 0 && ncx != "" {
+		data, err := p.read(ncx)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		pub.toc, err = parseNCX(data, ncx)
+		p.toc, err = parseNCX(data, ncx)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
+	return nil
+}
+
+func (p *publication) parseSpine(opfPath string, opf packageDocument, items map[string]manifestItem, nav string, result *ParseResult) error {
 	guide := map[string]string{}
 	for _, g := range opf.Guide {
 		src, _ := resolve(opfPath, g.Href)
 		guide[src] = g.Type
 	}
-	pub.indexNotes()
 	section := ""
 	for _, ref := range opf.Spine.Items {
 		item, ok := items[ref.IDRef]
 		if !ok {
-			return nil, fmt.Errorf("parser: spine item %q missing from manifest", ref.IDRef)
+			return fmt.Errorf("parser: spine item %q missing from manifest", ref.IDRef)
 		}
-		d := pub.docs[item.Href]
+		d := p.docs[item.Href]
 		if d == nil {
 			// EPUB3 allows non-HTML spine items (such as SVG cover/illustration pages).
 			result.Filtered = append(result.Filtered, FilteredItem{Src: item.Href, Reason: "non-html"})
 			continue
 		}
-		reason := ""
-		switch guide[d.src] {
-		case "cover", "other.titlepage", "title-page":
-			reason = "cover"
-		case "toc":
-			reason = "toc"
-		case "copyright-page":
-			reason = "copyright"
-		}
-		if d.src == nav {
-			reason = "toc"
-		}
+		reason := spineFilterReason(guide[d.src], d.src == nav)
 		if reason != "" {
 			result.Filtered = append(result.Filtered, FilteredItem{Src: d.src, Reason: reason})
 			continue
 		}
-		pub.parseDocument(d, result, &section)
+		p.parseDocument(d, result, &section)
 	}
-	for i := range book.Poems {
-		p := &book.Poems[i]
-		p.BookID = bookID
-		p.OrderIndex = i
-		p.ID = fmt.Sprintf("%s:%04d", bookID, i+1)
+	return nil
+}
+
+func spineFilterReason(guideType string, isNAV bool) string {
+	if isNAV {
+		return "toc"
 	}
-	return result, nil
+	switch guideType {
+	case "cover", "other.titlepage", "title-page":
+		return "cover"
+	case "toc":
+		return "toc"
+	case "copyright-page":
+		return "copyright"
+	}
+	return ""
 }
 
 func containsCreator(vs []metadataValue, v metadataValue) bool {
@@ -375,45 +437,52 @@ func parseNAV(d *document) []tocEntry {
 	}
 	var entries []tocEntry
 	walk(d.root, func(n *html.Node) {
-		if n.Data != "nav" || !hasToken(attr(n, "type"), "toc") && attr(n, "role") != "doc-toc" {
-			return
+		if n.Data == "nav" && (hasToken(attr(n, "type"), "toc") || attr(n, "role") == "doc-toc") {
+			entries = appendNAVChildren(entries, d.src, n, "")
 		}
-		var visit func(*html.Node, string)
-		visit = func(node *html.Node, section string) {
-			for c := node.FirstChild; c != nil; c = c.NextSibling {
-				if c.Data != "li" {
-					visit(c, section)
-					continue
-				}
-				var link, list *html.Node
-				for x := c.FirstChild; x != nil; x = x.NextSibling {
-					if x.Data == "a" || x.Data == "span" {
-						link = x
-					}
-					if x.Data == "ol" {
-						list = x
-					}
-				}
-				next := section
-				if link != nil {
-					src, id := resolve(d.src, attr(link, "href"))
-					title := strings.TrimSpace(nodeText(link))
-					if attr(link, "href") != "" {
-						entries = append(entries, tocEntry{src + fragment(id), title, section, list != nil})
-					}
-					if list != nil {
-						next = joinText(section, title, " · ")
-					}
-				}
-				if list != nil {
-					visit(list, next)
-				}
-			}
-		}
-		visit(n, "")
 	})
 	return entries
 }
+
+func appendNAVChildren(entries []tocEntry, docSrc string, node *html.Node, section string) []tocEntry {
+	for c := node.FirstChild; c != nil; c = c.NextSibling {
+		if c.Data == "li" {
+			entries = appendNAVItem(entries, docSrc, c, section)
+		} else {
+			entries = appendNAVChildren(entries, docSrc, c, section)
+		}
+	}
+	return entries
+}
+
+func appendNAVItem(entries []tocEntry, docSrc string, item *html.Node, section string) []tocEntry {
+	var link, list *html.Node
+	for x := item.FirstChild; x != nil; x = x.NextSibling {
+		switch x.Data {
+		case "a", "span":
+			link = x
+		case "ol":
+			list = x
+		}
+	}
+	next := section
+	if link != nil {
+		href := attr(link, "href")
+		src, id := resolve(docSrc, href)
+		title := strings.TrimSpace(nodeText(link))
+		if href != "" {
+			entries = append(entries, tocEntry{src + fragment(id), title, section, list != nil})
+		}
+		if list != nil {
+			next = joinText(section, title, " · ")
+		}
+	}
+	if list != nil {
+		entries = appendNAVChildren(entries, docSrc, list, next)
+	}
+	return entries
+}
+
 func fragment(id string) string {
 	if id == "" {
 		return ""

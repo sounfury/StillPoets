@@ -132,12 +132,39 @@ func recvTypeName(expr ast.Expr) string {
 	}
 }
 
+// isPureUIEventIf reports whether an if statement is a bare immediate-mode UI
+// event binding (e.g. `if btn.Clicked() { ... }`, `if field.Changed() { ... }`)
+// without Init, Else, or compound boolean conditions, analogous to `onClick = { ... }`
+// in declarative UI toolkits. Control flow inside its body is still scored normally.
+func isPureUIEventIf(s *ast.IfStmt) bool {
+	if s.Init != nil || s.Else != nil {
+		return false
+	}
+	call, ok := s.Cond.(*ast.CallExpr)
+	if !ok || len(call.Args) != 0 {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	switch sel.Sel.Name {
+	case "Clicked", "Changed", "LongPressed", "RightClicked":
+		return true
+	}
+	return false
+}
+
 // calcCyclomatic computes standard McCabe cyclomatic complexity for a function.
 func calcCyclomatic(fn *ast.FuncDecl) int {
 	score := 1
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
-		case *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt:
+		case *ast.IfStmt:
+			if !isPureUIEventIf(node) {
+				score++
+			}
+		case *ast.ForStmt, *ast.RangeStmt:
 			score++
 		case *ast.CaseClause:
 			if node.List != nil {
@@ -232,6 +259,11 @@ func (w *cognitiveWalker) walkStmt(stmt ast.Stmt, depth int) {
 }
 
 func (w *cognitiveWalker) walkIf(s *ast.IfStmt, depth int, isElseIf bool) {
+	if !isElseIf && isPureUIEventIf(s) {
+		w.walkExpr(s.Cond, depth)
+		w.walkStmt(s.Body, depth)
+		return
+	}
 	if isElseIf {
 		w.score++
 	} else {

@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -47,127 +46,141 @@ func (s *Service) consumeRemoteInbox(
 		return firstRes, false
 	}
 
-	type readyEntry struct {
-		importID string
-		name     string
+	readyList := inboxReadyEntries(entries)
+	if len(readyList) == 0 {
+		return firstRes, false
 	}
-	var readyList []readyEntry
+	pending, err := s.store.ListPendingUploads(ctx)
+	if err != nil {
+		pending = nil
+	}
+	scan := inboxScan{
+		client: client, engine: engine, epoch: startEpoch, firstResult: firstRes,
+		pendingBooks: pendingBookIDs(pending), cleanups: make(map[string]inboxReadyCleanup),
+	}
+	s.scanInboxItems(ctx, &scan, readyList)
+	if len(scan.cleanups) == 0 {
+		if scan.partial {
+			firstRes.PartialSync = true
+		}
+		return firstRes, false
+	}
+	return s.publishInboxItems(ctx, &scan), true
+}
+
+type inboxReadyEntry struct {
+	importID string
+	name     string
+}
+
+func inboxReadyEntries(entries []webdav.Entry) []inboxReadyEntry {
+	var readyList []inboxReadyEntry
 	for _, e := range entries {
 		if e.IsDir {
 			continue
 		}
 		if id, ok := booksync.ParseInboxReadyFilename(e.Name); ok {
-			readyList = append(readyList, readyEntry{importID: id, name: e.Name})
+			readyList = append(readyList, inboxReadyEntry{importID: id, name: e.Name})
 		}
 	}
-	if len(readyList) == 0 {
-		return firstRes, false
-	}
-	slices.SortFunc(readyList, func(a, b readyEntry) int {
+	slices.SortFunc(readyList, func(a, b inboxReadyEntry) int {
 		return strings.Compare(a.importID, b.importID)
 	})
 
-	pendingSet := make(map[string]struct{})
-	if pendingList, pErr := s.store.ListPendingUploads(ctx); pErr == nil {
-		for _, p := range pendingList {
-			pendingSet[p.BookID] = struct{}{}
-		}
-	}
+	return readyList
+}
 
-	pendingCleanups := make(map[string]inboxReadyCleanup)
-	consumedAny := false
-	anyIssue := false
+type inboxScan struct {
+	client       *webdav.Client
+	engine       *booksync.Engine
+	epoch        uint64
+	firstResult  *booksync.SyncResult
+	pendingBooks map[string]struct{}
+	cleanups     map[string]inboxReadyCleanup
+	partial      bool
+}
 
+func (s *Service) scanInboxItems(ctx context.Context, scan *inboxScan, readyList []inboxReadyEntry) {
 	for _, entry := range readyList {
 		if ctx.Err() != nil {
-			anyIssue = true
+			scan.partial = true
 			break
 		}
 		s.mu.Lock()
-		epochChanged := s.workspaceEpoch != startEpoch
+		epochChanged := s.workspaceEpoch != scan.epoch
 		s.mu.Unlock()
 		if epochChanged {
-			anyIssue = true
+			scan.partial = true
 			break
 		}
 
-		readyPath := booksync.InboxDir + "/" + entry.name
-		rawManifest, _, err := client.GetWithLimit(ctx, readyPath, booksync.MaxInboxReadyBytes)
-		if errors.Is(err, webdav.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			s.LogEvent("sync", "inbox read %s failed: %v", entry.name, err)
-			anyIssue = true
-			continue
-		}
-		item, err := booksync.DecodeInboxItem(rawManifest, entry.importID)
-		if err != nil {
-			s.LogEvent("sync", "inbox invalid manifest %s: %v", entry.name, err)
-			anyIssue = true
-			continue
-		}
+		s.consumeInboxEntry(ctx, scan, entry)
+	}
+}
 
-		existing, getErr := s.store.GetBookIncludingDeleted(ctx, item.BookID)
-		switch {
-		case getErr == nil && existing.Deleted:
-			// 永久墓碑：不再导入，直接清理遗留清单
-			_ = client.Delete(ctx, readyPath)
-			s.LogEvent("sync", "inbox skipped tombstoned book %s and cleaned ready manifest", item.BookID)
-			continue
-		case getErr == nil:
-			// 书已存在：若不在本机待传队列，说明已被远端或本机成功发布过，可安全清理清单
-			if _, isPending := pendingSet[item.BookID]; !isPending {
-				if isBookPublishedInRemoteOrResult(item.BookID, existing.ContentHash, firstRes) {
-					_ = client.Delete(ctx, readyPath)
-					s.LogEvent("sync", "inbox book %s already published, cleaned ready manifest", item.BookID)
-				} else {
-					pendingCleanups[item.BookID] = inboxReadyCleanup{
-						readyPath:    readyPath,
-						expectedHash: existing.ContentHash,
-					}
-					consumedAny = true
-				}
-				continue
-			}
-			// 仍在 pending_uploads 中，等待常规重试上传
-			anyIssue = true
-			continue
-		case !errors.Is(getErr, storage.ErrNotFound):
-			s.LogEvent("sync", "inbox lookup book %s failed: %v", item.BookID, getErr)
-			anyIssue = true
-			continue
-		}
+func (s *Service) consumeInboxEntry(ctx context.Context, scan *inboxScan, entry inboxReadyEntry) {
+	readyPath := booksync.InboxDir + "/" + entry.name
+	rawManifest, _, err := scan.client.GetWithLimit(ctx, readyPath, booksync.MaxInboxReadyBytes)
+	if errors.Is(err, webdav.ErrNotFound) {
+		return
+	}
+	if err != nil {
+		s.LogEvent("sync", "inbox read %s failed: %v", entry.name, err)
+		scan.partial = true
+		return
+	}
+	item, err := booksync.DecodeInboxItem(rawManifest, entry.importID)
+	if err != nil {
+		s.LogEvent("sync", "inbox invalid manifest %s: %v", entry.name, err)
+		scan.partial = true
+		return
+	}
 
-		cleanup, ok := s.importSingleInboxItem(ctx, client, engine, startEpoch, item, readyPath)
+	existing, err := s.store.GetBookIncludingDeleted(ctx, item.BookID)
+	switch {
+	case err == nil:
+		s.handleExistingInboxBook(ctx, scan, existing, readyPath)
+	case errors.Is(err, storage.ErrNotFound):
+		cleanup, ok := s.importSingleInboxItem(ctx, scan.client, scan.engine, scan.epoch, item, readyPath)
 		if !ok {
-			anyIssue = true
-			continue
+			scan.partial = true
+			return
 		}
-		pendingCleanups[item.BookID] = cleanup
-		consumedAny = true
+		scan.cleanups[item.BookID] = cleanup
+	default:
+		s.LogEvent("sync", "inbox lookup book %s failed: %v", item.BookID, err)
+		scan.partial = true
 	}
+}
 
-	if !consumedAny {
-		if anyIssue {
-			firstRes.PartialSync = true
-		}
-		return firstRes, false
+func (s *Service) handleExistingInboxBook(ctx context.Context, scan *inboxScan, book domain.Book, readyPath string) {
+	if book.Deleted {
+		_ = scan.client.Delete(ctx, readyPath)
+		s.LogEvent("sync", "inbox skipped tombstoned book %s and cleaned ready manifest", book.ID)
+		return
 	}
+	if _, pending := scan.pendingBooks[book.ID]; pending {
+		scan.partial = true
+		return
+	}
+	if isBookPublishedInRemoteOrResult(book.ID, book.ContentHash, scan.firstResult) {
+		_ = scan.client.Delete(ctx, readyPath)
+		s.LogEvent("sync", "inbox book %s already published, cleaned ready manifest", book.ID)
+		return
+	}
+	scan.cleanups[book.ID] = inboxReadyCleanup{readyPath: readyPath, expectedHash: book.ContentHash}
+}
 
+func (s *Service) publishInboxItems(ctx context.Context, scan *inboxScan) *booksync.SyncResult {
 	// 有一本及以上新书资产上传完成：立刻发布新代次快照，并仅在回读验证包含该书后删除对应 ready.json
 	s.emitSyncToast(SyncToastState{Phase: SyncToastSyncing, Message: "正在发布新导入诗集…"})
 	localData, meta, remainingPending, err := s.store.ExportSnapshotWithPending(ctx)
 	if err != nil {
 		s.LogEvent("sync", "inbox export snapshot failed: %v", err)
-		firstRes.PartialSync = true
-		return firstRes, true
+		scan.firstResult.PartialSync = true
+		return scan.firstResult
 	}
-	blockedBooks := make(map[string]struct{}, len(remainingPending))
-	for _, p := range remainingPending {
-		blockedBooks[p.BookID] = struct{}{}
-	}
-	pubRes, err := engine.Sync(ctx, booksync.SyncRequest{
+	pubRes, err := scan.engine.Sync(ctx, booksync.SyncRequest{
 		InstallID:       meta.InstallID,
 		LocalRev:        meta.LocalRev,
 		LocalCounter:    meta.LamportCounter,
@@ -175,53 +188,37 @@ func (s *Service) consumeRemoteInbox(
 		HasDirty:        true,
 		ForcePush:       false,
 		KnownRemoteRevs: meta.KnownRemoteRevs,
-		PendingBooks:    blockedBooks,
+		PendingBooks:    pendingBookIDs(remainingPending),
 	})
 	if err != nil {
 		s.LogEvent("sync", "inbox publish snapshot failed: %v", err)
-		firstRes.PartialSync = true
-		return firstRes, true
+		scan.firstResult.PartialSync = true
+		return scan.firstResult
 	}
 
-	remoteDeviceRevs := maps.Clone(pubRes.SyncedDeviceRevs)
-	for id := range pubRes.IncompleteDevices {
-		if rev := meta.KnownRemoteRevs[id]; rev > 0 {
-			remoteDeviceRevs[id] = rev
-		}
-	}
 	keepDirty := len(remainingPending) > 0
-	if keepDirty || anyIssue {
+	if keepDirty || scan.partial {
 		pubRes.PartialSync = true
 	}
-
-	s.mu.Lock()
-	if s.workspaceEpoch != startEpoch {
-		s.mu.Unlock()
-		firstRes.PartialSync = true
-		return firstRes, true
-	}
-	applyErr := s.store.ApplyMergedSnapshotEx(ctx, pubRes.MergedData, storage.ApplySnapshotOptions{
-		ExportedDirtySeq: meta.DirtySeq,
-		MaxCounter:       pubRes.MaxCounter,
-		PublishedRev:     pubRes.PublishedRev,
-		Published:        pubRes.Published,
-		KeepDirty:        keepDirty,
-		RemoteDeviceRevs: remoteDeviceRevs,
-	})
-	if applyErr == nil {
-		s.remoteDevices = slices.Clone(pubRes.RemoteDevices)
-	}
-	s.mu.Unlock()
-	if applyErr != nil {
-		s.LogEvent("sync", "inbox apply published snapshot failed: %v", applyErr)
+	if err := s.applyWorkspaceSnapshot(ctx, pubRes, meta, scan.epoch, keepDirty, false); err != nil {
+		if err == errSyncWorkspaceChanged {
+			scan.firstResult.PartialSync = true
+			return scan.firstResult
+		}
+		s.LogEvent("sync", "inbox apply published snapshot failed: %v", err)
 		pubRes.PartialSync = true
-		return pubRes, true
+		return pubRes
 	}
 
+	s.cleanPublishedInboxItems(ctx, scan, pubRes)
+	return pubRes
+}
+
+func (s *Service) cleanPublishedInboxItems(ctx context.Context, scan *inboxScan, pubRes *booksync.SyncResult) {
 	// 逐书核对：仅在已回读验证的发布载荷包含该 bookId（且内容哈希匹配或已合并到远端/墓碑）时才删除 ready.json
-	for bookID, cleanup := range pendingCleanups {
+	for bookID, cleanup := range scan.cleanups {
 		if canDeleteInboxReadyAfterPublish(bookID, cleanup.expectedHash, pubRes) {
-			if delErr := client.Delete(ctx, cleanup.readyPath); delErr != nil && !errors.Is(delErr, webdav.ErrNotFound) {
+			if delErr := scan.client.Delete(ctx, cleanup.readyPath); delErr != nil && !errors.Is(delErr, webdav.ErrNotFound) {
 				s.LogEvent("sync", "inbox delete ready %s warning: %v", cleanup.readyPath, delErr)
 			}
 		} else {
@@ -229,7 +226,6 @@ func (s *Service) consumeRemoteInbox(
 			s.LogEvent("sync", "inbox kept ready %s because book %s was not confirmed in verified published snapshot", cleanup.readyPath, bookID)
 		}
 	}
-	return pubRes, true
 }
 
 func (s *Service) importSingleInboxItem(
@@ -249,38 +245,68 @@ func (s *Service) importSingleInboxItem(
 		Message: fmt.Sprintf("正在导入《%s》…", displayName),
 	})
 
+	parsed, rawBytes, spCompressed, contentHash, ok := s.parseInboxEPUB(ctx, client, item)
+	if !ok {
+		return inboxReadyCleanup{}, false
+	}
+	contentPath := booksync.BookBuildParsedRelPath(domain.NewShortRandID())
+	// 原件只在校验和解析成功后进入本地缓存。
+	pendingUpload, coverHash, ok := s.cacheInboxAssets(item, rawBytes, spCompressed, parsed.Cover, contentHash)
+	if !ok {
+		return inboxReadyCleanup{}, false
+	}
+	book := domain.Book{ContentHash: contentHash, ContentSize: int64(len(spCompressed)), ContentPath: contentPath, CoverHash: coverHash}
+	if !s.populateInboxBook(ctx, &book, item, parsed.Book, displayName) {
+		return inboxReadyCleanup{}, false
+	}
+	if !s.storeInboxBook(ctx, startEpoch, book, parsed.Book, &pendingUpload) {
+		return inboxReadyCleanup{}, false
+	}
+	if !s.uploadInboxBook(ctx, engine, startEpoch, item.BookID, spCompressed, parsed.Cover) {
+		return inboxReadyCleanup{}, false
+	}
+
+	s.LogEvent("sync", "inbox imported book %s (%s, %d poems, path=%s)", item.BookID, book.Title, book.PoemCount, contentPath)
+	return inboxReadyCleanup{
+		readyPath:    readyPath,
+		expectedHash: contentHash,
+	}, true
+}
+
+func (s *Service) parseInboxEPUB(ctx context.Context, client *webdav.Client, item *booksync.InboxItem) (*parser.ParseResult, []byte, []byte, string, bool) {
 	rawPath := booksync.BookRawPath(item.BookID, item.RawFilename)
 	rawBytes, _, err := client.GetWithLimit(ctx, rawPath, booksync.MaxInboxEPUBBytes)
 	if err != nil {
 		s.LogEvent("sync", "inbox download raw %s failed: %v", rawPath, err)
-		return inboxReadyCleanup{}, false
+		return nil, nil, nil, "", false
 	}
 	if int64(len(rawBytes)) != item.RawSize {
 		s.LogEvent("sync", "inbox raw size mismatch for %s: got %d want %d", item.BookID, len(rawBytes), item.RawSize)
-		return inboxReadyCleanup{}, false
+		return nil, nil, nil, "", false
 	}
 	sum := sha256.Sum256(rawBytes)
 	gotHash := hex.EncodeToString(sum[:])
 	if gotHash != item.RawSHA256 {
 		s.LogEvent("sync", "inbox raw sha256 mismatch for %s: got %s want %s", item.BookID, gotHash, item.RawSHA256)
-		return inboxReadyCleanup{}, false
+		return nil, nil, nil, "", false
 	}
 
 	parsed, err := parser.ParseEPUBReaderAtTime(bytes.NewReader(rawBytes), int64(len(rawBytes)), item.BookID, item.SubmittedAt)
 	if err != nil {
 		s.LogEvent("sync", "inbox parse EPUB %s failed: %v", item.BookID, err)
-		return inboxReadyCleanup{}, false
+		return nil, nil, nil, "", false
 	}
 
 	spCompressed, contentHash, err := booksync.EncodeSPBook(parsed.Book)
 	if err != nil {
 		s.LogEvent("sync", "inbox encode spbook %s failed: %v", item.BookID, err)
-		return inboxReadyCleanup{}, false
+		return nil, nil, nil, "", false
 	}
 
-	attemptID := domain.NewShortRandID()
-	contentPath := booksync.BookBuildParsedRelPath(attemptID)
+	return parsed, rawBytes, spCompressed, contentHash, true
+}
 
+func (s *Service) cacheInboxAssets(item *booksync.InboxItem, rawBytes, spCompressed, cover []byte, contentHash string) (storage.PendingUpload, string, bool) {
 	localRawPath := filepath.Join(s.dataDir, "cache", "raw", item.BookID+"_"+item.RawFilename)
 	localSPPath := filepath.Join(s.dataDir, "cache", "spbook", item.BookID+".spbook.json.gz")
 	localCoverPath := ""
@@ -288,38 +314,50 @@ func (s *Service) importSingleInboxItem(
 
 	if err := os.WriteFile(localRawPath, rawBytes, 0o600); err != nil {
 		s.LogEvent("sync", "inbox cache raw %s failed: %v", item.BookID, err)
-		return inboxReadyCleanup{}, false
+		return storage.PendingUpload{}, "", false
 	}
 	if err := os.WriteFile(localSPPath, spCompressed, 0o600); err != nil {
 		_ = os.Remove(localRawPath)
 		s.LogEvent("sync", "inbox cache spbook %s failed: %v", item.BookID, err)
-		return inboxReadyCleanup{}, false
+		return storage.PendingUpload{}, "", false
 	}
-	if len(parsed.Cover) > 0 {
-		csum := sha256.Sum256(parsed.Cover)
+	if len(cover) > 0 {
+		csum := sha256.Sum256(cover)
 		coverHash = hex.EncodeToString(csum[:])
 		localCoverPath = filepath.Join(s.dataDir, "cache", "covers", item.BookID+".img")
-		if err := os.WriteFile(localCoverPath, parsed.Cover, 0o600); err != nil {
+		if err := os.WriteFile(localCoverPath, cover, 0o600); err != nil {
 			localCoverPath = ""
 			coverHash = ""
 		}
 	}
 
+	return storage.PendingUpload{
+		BookID:          item.BookID,
+		RawFilename:     item.RawFilename,
+		LocalRawPath:    localRawPath,
+		LocalSPBookPath: localSPPath,
+		LocalCoverPath:  localCoverPath,
+		ContentHash:     contentHash,
+		State:           storage.UploadPending,
+	}, coverHash, true
+}
+
+func (s *Service) populateInboxBook(ctx context.Context, book *domain.Book, item *booksync.InboxItem, parsed *domain.SPBook, displayName string) bool {
 	poemCount := 0
-	for _, p := range parsed.Book.Poems {
+	for _, p := range parsed.Poems {
 		if p.IsPoem() {
 			poemCount++
 		}
 	}
 	if poemCount == 0 {
-		poemCount = len(parsed.Book.Poems)
+		poemCount = len(parsed.Poems)
 	}
 
-	title := strings.TrimSpace(parsed.Book.Title)
+	title := strings.TrimSpace(parsed.Title)
 	if title == "" {
 		title = displayName
 	}
-	author := strings.TrimSpace(parsed.Book.Author)
+	author := strings.TrimSpace(parsed.Author)
 	if author == "" {
 		author = "佚名"
 	}
@@ -329,79 +367,67 @@ func (s *Service) importSingleInboxItem(
 		active, gErr := s.store.IsActiveGroup(ctx, groupID)
 		if gErr != nil {
 			s.LogEvent("sync", "inbox check group %s failed: %v", groupID, gErr)
-			return inboxReadyCleanup{}, false
+			return false
 		}
 		if !active {
 			groupID = ""
 		}
 	}
 
-	book := domain.Book{
-		ID:          item.BookID,
-		Title:       title,
-		Author:      author,
-		CoverHash:   coverHash,
-		ContentHash: contentHash,
-		ContentSize: int64(len(spCompressed)),
-		ContentPath: contentPath,
-		RawFilename: item.RawFilename,
-		RawSize:     item.RawSize,
-		PoemCount:   poemCount,
-		GroupID:     groupID,
-		GroupVer:    item.InitialGroupVer,
-		StarredVer:  item.InitialStarredVer,
-		SortVer:     item.InitialSortVer,
-		CreatedAt:   item.SubmittedAt,
-	}
-	pendingUpload := storage.PendingUpload{
-		BookID:          item.BookID,
-		RawFilename:     item.RawFilename,
-		LocalRawPath:    localRawPath,
-		LocalSPBookPath: localSPPath,
-		LocalCoverPath:  localCoverPath,
-		ContentHash:     contentHash,
-		State:           storage.UploadPending,
-	}
+	book.ID = item.BookID
+	book.Title = title
+	book.Author = author
+	book.RawFilename = item.RawFilename
+	book.RawSize = item.RawSize
+	book.PoemCount = poemCount
+	book.GroupID = groupID
+	book.GroupVer = item.InitialGroupVer
+	book.StarredVer = item.InitialStarredVer
+	book.SortVer = item.InitialSortVer
+	book.CreatedAt = item.SubmittedAt
+	return true
+}
 
+func (s *Service) storeInboxBook(ctx context.Context, startEpoch uint64, book domain.Book, parsed *domain.SPBook, pendingUpload *storage.PendingUpload) bool {
 	s.mu.Lock()
 	if s.workspaceEpoch != startEpoch {
 		s.mu.Unlock()
-		return inboxReadyCleanup{}, false
+		return false
 	}
-	upsertErr := s.store.UpsertImportedBookWithUpload(ctx, book, parsed.Book, &pendingUpload)
+	upsertErr := s.store.UpsertImportedBookWithUpload(ctx, book, parsed, pendingUpload)
 	s.mu.Unlock()
 	if upsertErr != nil {
-		s.LogEvent("sync", "inbox upsert book %s failed: %v", item.BookID, upsertErr)
-		return inboxReadyCleanup{}, false
+		s.LogEvent("sync", "inbox upsert book %s failed: %v", book.ID, upsertErr)
+		return false
 	}
 
-	storedBook, err := s.store.GetBook(ctx, item.BookID)
+	return true
+}
+
+func (s *Service) uploadInboxBook(ctx context.Context, engine *booksync.Engine, startEpoch uint64, bookID string, spCompressed, cover []byte) bool {
+	storedBook, err := s.store.GetBook(ctx, bookID)
 	if err != nil {
-		return inboxReadyCleanup{}, false
+		return false
 	}
-	if _, err := engine.UploadInboxParsedAssets(ctx, storedBook, spCompressed, parsed.Cover); err != nil {
-		s.LogEvent("sync", "inbox upload parsed assets %s failed: %v", item.BookID, err)
-		_ = s.store.UpdatePendingUploadState(ctx, item.BookID, storage.UploadFailed, err.Error())
-		return inboxReadyCleanup{}, false
+	if _, err := engine.UploadInboxParsedAssets(ctx, storedBook, spCompressed, cover); err != nil {
+		s.LogEvent("sync", "inbox upload parsed assets %s failed: %v", bookID, err)
+		_ = s.store.UpdatePendingUploadState(ctx, bookID, storage.UploadFailed, err.Error())
+		return false
 	}
 
 	s.mu.Lock()
 	if s.workspaceEpoch != startEpoch {
 		s.mu.Unlock()
-		return inboxReadyCleanup{}, false
+		return false
 	}
-	if err := s.store.DeletePendingUpload(ctx, item.BookID); err != nil {
+	if err := s.store.DeletePendingUpload(ctx, bookID); err != nil {
 		s.mu.Unlock()
-		s.LogEvent("sync", "inbox clear pending upload %s failed: %v", item.BookID, err)
-		return inboxReadyCleanup{}, false
+		s.LogEvent("sync", "inbox clear pending upload %s failed: %v", bookID, err)
+		return false
 	}
 	s.mu.Unlock()
 
-	s.LogEvent("sync", "inbox imported book %s (%s, %d poems, path=%s)", item.BookID, title, poemCount, contentPath)
-	return inboxReadyCleanup{
-		readyPath:    readyPath,
-		expectedHash: contentHash,
-	}, true
+	return true
 }
 
 func isBookPublishedInRemoteOrResult(bookID, contentHash string, res *booksync.SyncResult) bool {

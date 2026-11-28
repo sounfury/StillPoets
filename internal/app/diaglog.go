@@ -181,63 +181,9 @@ func (s *Service) ExportDiagnosticLog(ctx context.Context, appVersion string) (s
 	fmt.Fprintf(&b, "Platform    : %s/%s (Go %s, CPUs=%d)\n", runtime.GOOS, runtime.GOARCH, runtime.Version(), runtime.NumCPU())
 	fmt.Fprintf(&b, "============================================================\n\n")
 
-	// 1. 本机外观与阅读配置（无敏感信息）
-	b.WriteString("[Local Settings]\n")
-	if st, err := s.store.LoadSettings(ctx); err == nil {
-		fontName := st.FontFamily
-		if fontName == "" {
-			fontName = "(system-default)"
-		}
-		fmt.Fprintf(&b, "themePreset=%s followSystemDark=%v useOriginalCover=%v\n",
-			st.ThemePreset, st.ShouldFollowSystemDark(), st.UseOriginalCover)
-		fmt.Fprintf(&b, "fontFamily=%s fontSize=%.1f fontWeight=%d lineHeight=%.2f\n",
-			fontName, st.FontSize, st.EffectiveFontWeight(), st.LineHeight)
-		fmt.Fprintf(&b, "widgetMode=%s widgetRefreshMinutes=%d\n",
-			st.WidgetMode, st.WidgetRefreshMinutes)
-	} else {
-		fmt.Fprintf(&b, "error=%s\n", SanitizeLogText(err.Error()))
-	}
-
-	fonts := s.ListLocalFonts()
-	fmt.Fprintf(&b, "localFontsCount=%d cacheSizeBytes=%d\n", len(fonts), s.CacheSizeBytes())
-	for _, lf := range fonts {
-		fmt.Fprintf(&b, "  - font=%s file=%s sizeBytes=%d\n", lf.Family, lf.Filename, lf.Size)
-	}
-	b.WriteString("\n")
-
-	// 2. 书架与内容统计（仅数量，不导出私密诗句内容）
-	b.WriteString("[Library Summary]\n")
-	if stats, err := s.GetStatsOverview(ctx); err == nil {
-		fmt.Fprintf(&b, "books=%d offlineCached=%d finished=%d poemsRead=%d favorites=%d quotes=%d\n",
-			stats.BookCount, stats.OfflineBookCount, stats.FinishedBookCount,
-			stats.ReadPoemCount, stats.FavoriteCount, stats.QuoteCount)
-	} else {
-		fmt.Fprintf(&b, "error=%s\n", SanitizeLogText(err.Error()))
-	}
-	b.WriteString("\n")
-
-	// 3. WebDAV 同步状态（严格脱敏：仅保留 host 与目录名，严禁记录账号/密码）
-	b.WriteString("[WebDAV Sync Summary (Redacted)]\n")
-	prof := s.LoadWebDAVProfile()
-	fmt.Fprintf(&b, "enabled=%v host=%s appFolder=%s atomicUpload=%v hasSecretInKeychain=%v\n",
-		prof.Enabled, sanitizeBaseURLForDiag(prof.BaseURL), prof.AppFolder, prof.AtomicUpload, s.HasWebDAVPassword())
-	if ov, err := s.GetSyncOverview(ctx); err == nil {
-		lastSync := "never"
-		if ov.LastSyncAt > 0 {
-			lastSync = time.UnixMilli(ov.LastSyncAt).Format(time.RFC3339)
-		}
-		fmt.Fprintf(&b, "installId=%s localRev=%d dirty=%v lastSyncAt=%s pendingUploads=%d remoteDevices=%v\n",
-			ov.InstallID, ov.LocalRev, ov.Dirty, lastSync, ov.PendingCount, ov.RemoteDevices)
-	} else {
-		fmt.Fprintf(&b, "overviewError=%s\n", SanitizeLogText(err.Error()))
-	}
-	if pending, err := s.store.ListPendingUploads(ctx); err == nil && len(pending) > 0 {
-		for _, p := range pending {
-			fmt.Fprintf(&b, "  - pending bookId=%s state=%s lastError=%s\n",
-				p.BookID, p.State, SanitizeLogText(p.LastError))
-		}
-	}
-	b.WriteString("\n")
+	s.writeDiagnosticSettings(ctx, &b)
+	s.writeDiagnosticLibrary(ctx, &b)
+	s.writeDiagnosticSync(ctx, &b)
 
 	// 4. 运行期事件日志
 	b.WriteString("[Runtime Event Logs]\n")
@@ -264,6 +210,70 @@ func (s *Service) ExportDiagnosticLog(ctx context.Context, appVersion string) (s
 
 	pruneOldDiagnosticExports(exportDir, diagExportMaxKeep)
 	return outPath, int64(len(payload)), nil
+}
+
+func (s *Service) writeDiagnosticSettings(ctx context.Context, b *strings.Builder) {
+	// 1. 本机外观与阅读配置（无敏感信息）
+	b.WriteString("[Local Settings]\n")
+	if st, err := s.store.LoadSettings(ctx); err == nil {
+		fontName := st.FontFamily
+		if fontName == "" {
+			fontName = "(system-default)"
+		}
+		fmt.Fprintf(b, "themePreset=%s followSystemDark=%v useOriginalCover=%v\n",
+			st.ThemePreset, st.ShouldFollowSystemDark(), st.UseOriginalCover)
+		fmt.Fprintf(b, "fontFamily=%s fontSize=%.1f fontWeight=%d lineHeight=%.2f\n",
+			fontName, st.FontSize, st.EffectiveFontWeight(), st.LineHeight)
+		fmt.Fprintf(b, "widgetMode=%s widgetRefreshMinutes=%d\n",
+			st.WidgetMode, st.WidgetRefreshMinutes)
+	} else {
+		fmt.Fprintf(b, "error=%s\n", SanitizeLogText(err.Error()))
+	}
+
+	fonts := s.ListLocalFonts()
+	fmt.Fprintf(b, "localFontsCount=%d cacheSizeBytes=%d\n", len(fonts), s.CacheSizeBytes())
+	for _, lf := range fonts {
+		fmt.Fprintf(b, "  - font=%s file=%s sizeBytes=%d\n", lf.Family, lf.Filename, lf.Size)
+	}
+	b.WriteString("\n")
+}
+
+func (s *Service) writeDiagnosticLibrary(ctx context.Context, b *strings.Builder) {
+	// 2. 书架与内容统计（仅数量，不导出私密诗句内容）
+	b.WriteString("[Library Summary]\n")
+	if stats, err := s.GetStatsOverview(ctx); err == nil {
+		fmt.Fprintf(b, "books=%d offlineCached=%d finished=%d poemsRead=%d favorites=%d quotes=%d\n",
+			stats.BookCount, stats.OfflineBookCount, stats.FinishedBookCount,
+			stats.ReadPoemCount, stats.FavoriteCount, stats.QuoteCount)
+	} else {
+		fmt.Fprintf(b, "error=%s\n", SanitizeLogText(err.Error()))
+	}
+	b.WriteString("\n")
+}
+
+func (s *Service) writeDiagnosticSync(ctx context.Context, b *strings.Builder) {
+	// 3. WebDAV 同步状态（严格脱敏：仅保留 host 与目录名，严禁记录账号/密码）
+	b.WriteString("[WebDAV Sync Summary (Redacted)]\n")
+	prof := s.LoadWebDAVProfile()
+	fmt.Fprintf(b, "enabled=%v host=%s appFolder=%s atomicUpload=%v hasSecretInKeychain=%v\n",
+		prof.Enabled, sanitizeBaseURLForDiag(prof.BaseURL), prof.AppFolder, prof.AtomicUpload, s.HasWebDAVPassword())
+	if ov, err := s.GetSyncOverview(ctx); err == nil {
+		lastSync := "never"
+		if ov.LastSyncAt > 0 {
+			lastSync = time.UnixMilli(ov.LastSyncAt).Format(time.RFC3339)
+		}
+		fmt.Fprintf(b, "installId=%s localRev=%d dirty=%v lastSyncAt=%s pendingUploads=%d remoteDevices=%v\n",
+			ov.InstallID, ov.LocalRev, ov.Dirty, lastSync, ov.PendingCount, ov.RemoteDevices)
+	} else {
+		fmt.Fprintf(b, "overviewError=%s\n", SanitizeLogText(err.Error()))
+	}
+	if pending, err := s.store.ListPendingUploads(ctx); err == nil && len(pending) > 0 {
+		for _, p := range pending {
+			fmt.Fprintf(b, "  - pending bookId=%s state=%s lastError=%s\n",
+				p.BookID, p.State, SanitizeLogText(p.LastError))
+		}
+	}
+	b.WriteString("\n")
 }
 
 func pruneOldDiagnosticExports(exportDir string, keep int) {

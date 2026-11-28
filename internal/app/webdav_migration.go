@@ -197,16 +197,9 @@ func (s *Service) uploadMigratingBook(ctx context.Context, target *booksync.Engi
 		errs = append([]error{fmt.Errorf("新工作区诗集资产未通过校验：%w", verifyErr)}, errs...)
 	}
 	if hasValidRawName {
-		for _, source := range sources {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			sp, raw, cover, err := readRemoteBookAssets(ctx, source, book)
-			if err == nil {
-				_, err = target.UploadBookAssets(ctx, book, sp, raw, cover)
-				return err
-			}
-			errs = append(errs, err)
+		done, err := uploadBookFromMigrationSources(ctx, target, sources, book, &errs)
+		if done {
+			return err
 		}
 	}
 
@@ -226,6 +219,21 @@ func (s *Service) uploadMigratingBook(ctx context.Context, target *booksync.Engi
 	}
 	errs = append(errs, parsedErr)
 	return fmt.Errorf("旧 WebDAV 工作区与本地缺少可迁移的正文或原始文件：%w", errors.Join(errs...))
+}
+
+func uploadBookFromMigrationSources(ctx context.Context, target *booksync.Engine, sources []*webdav.Client, book domain.Book, errs *[]error) (done bool, err error) {
+	for _, source := range sources {
+		if err := ctx.Err(); err != nil {
+			return true, err
+		}
+		sp, raw, cover, err := readRemoteBookAssets(ctx, source, book)
+		if err == nil {
+			_, err = target.UploadBookAssets(ctx, book, sp, raw, cover)
+			return true, err
+		}
+		*errs = append(*errs, err)
+	}
+	return false, nil
 }
 
 func (s *Service) uploadLocalParsedBookFallback(ctx context.Context, target *booksync.Engine, book domain.Book, epoch uint64) error {
@@ -329,31 +337,13 @@ func (s *Service) reconcileRemoteMissingBooks(ctx context.Context, client *webda
 	hasSources := len(s.migrationSources) > 0
 	s.mu.Unlock()
 
-	candidates := make([]domain.Book, 0, len(books))
-	for _, b := range books {
-		if b.Deleted || !validBookAssetName(b.ID) || b.ContentHash == "" {
-			continue
-		}
-		if s.canSupplyBookForMigration(b, hasSources) {
-			candidates = append(candidates, b)
-		}
-	}
+	candidates := s.migrationCandidates(books, hasSources)
 	if len(candidates) == 0 {
 		return
 	}
 
-	entries, err := client.ListDir(ctx, booksync.BooksDir)
-	remoteDirs := make(map[string]struct{})
-	switch {
-	case err == nil:
-		for _, e := range entries {
-			if e.IsDir && e.Name != "" {
-				remoteDirs[e.Name] = struct{}{}
-			}
-		}
-	case errors.Is(err, webdav.ErrNotFound):
-		// 远端尚未创建 books/ 目录，说明所有候选书目在远端均缺失
-	default:
+	remoteDirs, err := listRemoteBookDirs(ctx, client)
+	if err != nil {
 		s.LogEvent("sync", "reconcile remote books skipped: %v", err)
 		return
 	}
@@ -380,6 +370,37 @@ func (s *Service) reconcileRemoteMissingBooks(ctx context.Context, client *webda
 	} else if queued > 0 {
 		s.LogEvent("sync", "auto-queued %d local books missing from remote books/ dir", queued)
 	}
+}
+
+func (s *Service) migrationCandidates(books []domain.Book, hasSources bool) []domain.Book {
+	candidates := make([]domain.Book, 0, len(books))
+	for _, b := range books {
+		if b.Deleted || !validBookAssetName(b.ID) || b.ContentHash == "" {
+			continue
+		}
+		if s.canSupplyBookForMigration(b, hasSources) {
+			candidates = append(candidates, b)
+		}
+	}
+	return candidates
+}
+
+func listRemoteBookDirs(ctx context.Context, client *webdav.Client) (map[string]struct{}, error) {
+	entries, err := client.ListDir(ctx, booksync.BooksDir)
+	if errors.Is(err, webdav.ErrNotFound) {
+		// 远端尚未创建 books/ 目录，说明所有候选书目在远端均缺失。
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	remoteDirs := make(map[string]struct{})
+	for _, e := range entries {
+		if e.IsDir && e.Name != "" {
+			remoteDirs[e.Name] = struct{}{}
+		}
+	}
+	return remoteDirs, nil
 }
 
 func validBookAssetName(name string) bool {

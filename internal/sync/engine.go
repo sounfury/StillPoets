@@ -68,6 +68,46 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	entries, err := e.listStateForSync(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byDevice, deviceIDs := indexSnapshotRevisions(entries)
+	ownRevs := byDevice[req.InstallID]
+	var ownRemoteMaxRev, ownValidRev uint64
+	if len(ownRevs) > 0 {
+		ownRemoteMaxRev = ownRevs[0]
+		if req.LocalRev > 0 && slices.Contains(ownRevs, req.LocalRev) {
+			ownValidRev = req.LocalRev
+		}
+	}
+	res := &SyncResult{
+		MergedData:         MergeSnapshotData(SnapshotData{}, req.LocalData),
+		MaxCounter:         MaxCounterInData(req.LocalCounter, req.LocalData),
+		PartialSync:        len(req.PendingBooks) > 0,
+		PendingBookUploads: len(req.PendingBooks),
+		SyncedDeviceRevs:   make(map[string]uint64),
+		IncompleteDevices:  make(map[string]bool),
+	}
+
+	toLoad := planSnapshotReads(req, res, byDevice, deviceIDs)
+	loadedOwnRev, err := e.mergeSnapshotReads(ctx, req.InstallID, res, byDevice, toLoad)
+	if err != nil {
+		return nil, err
+	}
+	if !req.HasDirty && !req.ForcePush {
+		return res, nil
+	}
+	nextRev := max(req.LocalRev, ownRemoteMaxRev) + 1
+	if err := e.publishSnapshot(ctx, req, res, nextRev); err != nil {
+		return nil, err
+	}
+	// 回读校验通过后才清理本机旧代次。
+	e.cleanupOwnOldRevisions(ctx, req.InstallID, nextRev, ownRevs, max(ownValidRev, loadedOwnRev))
+	return res, nil
+}
+
+func (e *Engine) listStateForSync(ctx context.Context) ([]webdav.Entry, error) {
 	entries, err := e.client.ListDir(ctx, StateDir)
 	if errors.Is(err, webdav.ErrNotFound) {
 		if err := e.client.EnsureDir(ctx, StateDir); err != nil {
@@ -77,6 +117,10 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 		return nil, fmt.Errorf("sync: list state dir: %w", err)
 	}
 
+	return entries, nil
+}
+
+func indexSnapshotRevisions(entries []webdav.Entry) (map[string][]uint64, []string) {
 	// 按 installId 收集各设备的所有代次号并降序排列
 	byDevice := make(map[string][]uint64)
 	for _, entry := range entries {
@@ -108,27 +152,15 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 	}
 	slices.Sort(deviceIDs)
 
-	res := &SyncResult{
-		MergedData:         MergeSnapshotData(SnapshotData{}, req.LocalData),
-		MaxCounter:         MaxCounterInData(req.LocalCounter, req.LocalData),
-		PartialSync:        len(req.PendingBooks) > 0,
-		PendingBookUploads: len(req.PendingBooks),
-		SyncedDeviceRevs:   make(map[string]uint64),
-		IncompleteDevices:  make(map[string]bool),
-	}
+	return byDevice, deviceIDs
+}
 
-	var ownRemoteMaxRev, ownValidRev uint64
-	if revs := byDevice[req.InstallID]; len(revs) > 0 {
-		ownRemoteMaxRev = revs[0]
-		if req.LocalRev > 0 && slices.Contains(revs, req.LocalRev) {
-			ownValidRev = req.LocalRev
-		}
-	}
+func planSnapshotReads(req SyncRequest, res *SyncResult, byDevice map[string][]uint64, deviceIDs []string) []string {
 	var toLoad []string
 	for _, devID := range deviceIDs {
 		if devID == req.InstallID {
 			// 本机仅在首次恢复或发现更高远端代次时拉取。
-			if req.LocalRev > 0 && ownRemoteMaxRev <= req.LocalRev {
+			if req.LocalRev > 0 && byDevice[devID][0] <= req.LocalRev {
 				continue
 			}
 		} else if rev := req.KnownRemoteRevs[devID]; req.LocalRev > 0 && rev > 0 && rev == byDevice[devID][0] {
@@ -139,6 +171,11 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 		toLoad = append(toLoad, devID)
 	}
 
+	return toLoad
+}
+
+func (e *Engine) mergeSnapshotReads(ctx context.Context, installID string, res *SyncResult, byDevice map[string][]uint64, toLoad []string) (uint64, error) {
+	var ownValidRev uint64
 	// 每批最多同时下载两个设备，按字典序合并并及时释放快照内存。
 	for batch := range slices.Chunk(toLoad, 2) {
 		var wg sync.WaitGroup
@@ -150,31 +187,25 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 		}
 		wg.Wait()
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return 0, err
 		}
 		for i, id := range batch {
 			read := reads[i]
-			if id == req.InstallID {
+			if id == installID {
 				ownValidRev = max(ownValidRev, read.rev)
 			}
-			res.mergeRead(id, id == req.InstallID, read)
+			res.mergeRead(id, id == installID, read)
 		}
 	}
 	slices.Sort(res.RemoteDevices)
 
-	shouldPush := req.HasDirty || req.ForcePush
-	if !shouldPush {
-		return res, nil
-	}
-	if err := e.client.EnsureDir(ctx, StateDir); err != nil {
-		return nil, fmt.Errorf("sync: ensure state dir before publishing: %w", err)
-	}
+	return ownValidRev, nil
+}
 
-	nextRev := req.LocalRev
-	if ownRemoteMaxRev > nextRev {
-		nextRev = ownRemoteMaxRev
+func (e *Engine) publishSnapshot(ctx context.Context, req SyncRequest, res *SyncResult, nextRev uint64) error {
+	if err := e.client.EnsureDir(ctx, StateDir); err != nil {
+		return fmt.Errorf("sync: ensure state dir before publishing: %w", err)
 	}
-	nextRev++
 
 	dataToPublish := res.MergedData
 	if len(req.PendingBooks) > 0 {
@@ -191,32 +222,9 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 		GeneratedAt:   domain.NowMillis(),
 		Data:          dataToPublish,
 	}
-	payload, err := EncodeSnapshot(snap)
-	if err != nil {
-		return nil, err
+	if err := e.uploadAndVerifySnapshot(ctx, snap); err != nil {
+		return err
 	}
-	targetPath, err := SnapshotPath(req.InstallID, nextRev)
-	if err != nil {
-		return nil, err
-	}
-
-	// 1. 上传新代次（不覆盖旧代次）
-	if _, err := e.client.Put(ctx, targetPath, payload, ContentTypeGzip); err != nil {
-		return nil, fmt.Errorf("sync: put snapshot %s: %w", targetPath, err)
-	}
-
-	// 2. 回读确认新代次可读且内容完全一致后，才确认本轮提交成功（兼容网盘写后短暂 404）
-	verifyBytes, err := e.readBackWithRetry(ctx, targetPath, MaxSnapshotCompressedBytes)
-	if err != nil {
-		return nil, fmt.Errorf("sync: verify uploaded snapshot %s: %w", targetPath, err)
-	}
-	if !bytes.Equal(verifyBytes, payload) {
-		return nil, fmt.Errorf("sync: verify uploaded snapshot %s: byte mismatch after read-back", targetPath)
-	}
-	if _, err := DecodeSnapshot(verifyBytes, req.InstallID, nextRev); err != nil {
-		return nil, fmt.Errorf("sync: verify decoded snapshot %s: %w", targetPath, err)
-	}
-
 	res.Published = true
 	res.PublishedRev = nextRev
 	res.PublishedBookHashes = make(map[string]string, len(dataToPublish.Books))
@@ -226,10 +234,37 @@ func (e *Engine) Sync(ctx context.Context, req SyncRequest) (*SyncResult, error)
 		}
 	}
 
-	// 3. 提交确认后再清理本设备更早的旧代次，严格保留最近 KeepSnapshotGenerations (2) 份已校验有效的代次
-	e.cleanupOwnOldRevisions(ctx, req.InstallID, nextRev, byDevice[req.InstallID], ownValidRev)
+	return nil
+}
 
-	return res, nil
+func (e *Engine) uploadAndVerifySnapshot(ctx context.Context, snap *DeviceSnapshot) error {
+	payload, err := EncodeSnapshot(snap)
+	if err != nil {
+		return err
+	}
+	targetPath, err := SnapshotPath(snap.InstallID, snap.Rev)
+	if err != nil {
+		return err
+	}
+
+	// 1. 上传新代次（不覆盖旧代次）
+	if _, err := e.client.Put(ctx, targetPath, payload, ContentTypeGzip); err != nil {
+		return fmt.Errorf("sync: put snapshot %s: %w", targetPath, err)
+	}
+
+	// 2. 回读确认新代次可读且内容完全一致后，才确认本轮提交成功（兼容网盘写后短暂 404）
+	verifyBytes, err := e.readBackWithRetry(ctx, targetPath, MaxSnapshotCompressedBytes)
+	if err != nil {
+		return fmt.Errorf("sync: verify uploaded snapshot %s: %w", targetPath, err)
+	}
+	if !bytes.Equal(verifyBytes, payload) {
+		return fmt.Errorf("sync: verify uploaded snapshot %s: byte mismatch after read-back", targetPath)
+	}
+	if _, err := DecodeSnapshot(verifyBytes, snap.InstallID, snap.Rev); err != nil {
+		return fmt.Errorf("sync: verify decoded snapshot %s: %w", targetPath, err)
+	}
+
+	return nil
 }
 
 type snapshotRead struct {
@@ -323,29 +358,8 @@ func (e *Engine) cleanupOwnOldRevisions(ctx context.Context, installID string, n
 		keep[knownValidRev] = struct{}{}
 	}
 
-	// 若尚未确认到足够的有效旧代次，先按降序回读校验，确认至少留住 1 份真实完好的旧快照后再删除更早代次
-	for _, rev := range allRemoteDesc {
-		if len(keep) >= KeepSnapshotGenerations {
-			break
-		}
-		if rev >= nextRev {
-			continue
-		}
-		relPath, err := SnapshotPath(installID, rev)
-		if err != nil {
-			continue
-		}
-		raw, _, err := e.client.GetWithLimit(ctx, relPath, MaxSnapshotCompressedBytes)
-		if err != nil {
-			// 网络或瞬时错误时直接延后清理，避免误删唯一完好旧代次
-			if !errors.Is(err, webdav.ErrNotFound) {
-				return
-			}
-			continue
-		}
-		if _, err := DecodeSnapshot(raw, installID, rev); err == nil {
-			keep[rev] = struct{}{}
-		}
+	if !e.verifyRetainedRevisions(ctx, installID, nextRev, allRemoteDesc, keep) {
+		return
 	}
 
 	if len(keep) < KeepSnapshotGenerations {
@@ -362,6 +376,35 @@ func (e *Engine) cleanupOwnOldRevisions(ctx context.Context, installID string, n
 		}
 		_ = e.client.Delete(ctx, relPath)
 	}
+}
+
+func (e *Engine) verifyRetainedRevisions(ctx context.Context, installID string, nextRev uint64, allRemoteDesc []uint64, keep map[uint64]struct{}) bool {
+	// 若尚未确认到足够的有效旧代次，先按降序回读校验，确认至少留住 1 份真实完好的旧快照后再删除更早代次
+	for _, rev := range allRemoteDesc {
+		if len(keep) >= KeepSnapshotGenerations {
+			break
+		}
+		if rev >= nextRev {
+			continue
+		}
+		relPath, err := SnapshotPath(installID, rev)
+		if err != nil {
+			continue
+		}
+		raw, _, err := e.client.GetWithLimit(ctx, relPath, MaxSnapshotCompressedBytes)
+		if err != nil {
+			// 网络或瞬时错误时直接延后清理，避免误删唯一完好旧代次
+			if !errors.Is(err, webdav.ErrNotFound) {
+				return false
+			}
+			continue
+		}
+		if _, err := DecodeSnapshot(raw, installID, rev); err == nil {
+			keep[rev] = struct{}{}
+		}
+	}
+
+	return true
 }
 
 // BookAssetUploadResult 描述导书正文与原文件上传结果。
@@ -600,6 +643,13 @@ func (e *Engine) RetireDeviceCovered(ctx context.Context, activeInstallID string
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if err := e.verifyActiveSnapshotForRetire(ctx, activeInstallID, activeRev); err != nil {
+		return err
+	}
+	return e.deleteCoveredSnapshots(ctx, retiredInstallID, maxCoveredRev)
+}
+
+func (e *Engine) verifyActiveSnapshotForRetire(ctx context.Context, activeInstallID string, activeRev uint64) error {
 	// 先验证现役设备的合并后快照在远端真实可读，防止未备份就误删旧设备数据
 	activePath, err := SnapshotPath(activeInstallID, activeRev)
 	if err != nil {
@@ -613,6 +663,10 @@ func (e *Engine) RetireDeviceCovered(ctx context.Context, activeInstallID string
 		return fmt.Errorf("sync: active snapshot invalid before retire: %w", err)
 	}
 
+	return nil
+}
+
+func (e *Engine) deleteCoveredSnapshots(ctx context.Context, retiredInstallID string, maxCoveredRev uint64) error {
 	entries, err := e.client.ListDir(ctx, StateDir)
 	if err != nil {
 		return fmt.Errorf("sync: list state dir for retire: %w", err)

@@ -484,25 +484,27 @@ func MergeReadingEvents(a, b []domain.ReadingEvent) []domain.ReadingEvent {
 	for _, ev := range merged {
 		out = append(out, ev)
 	}
-	slices.SortFunc(out, func(x, y domain.ReadingEvent) int {
-		if cmp := strings.Compare(x.ReadDate, y.ReadDate); cmp != 0 {
-			return cmp
-		}
-		if x.ReadAt != y.ReadAt {
-			if x.ReadAt < y.ReadAt {
-				return -1
-			}
-			return 1
-		}
-		if cmp := strings.Compare(x.BookID, y.BookID); cmp != 0 {
-			return cmp
-		}
-		if cmp := strings.Compare(x.PoemID, y.PoemID); cmp != 0 {
-			return cmp
-		}
-		return strings.Compare(x.ID, y.ID)
-	})
+	slices.SortFunc(out, compareReadingEvents)
 	return out
+}
+
+func compareReadingEvents(x, y domain.ReadingEvent) int {
+	if cmp := strings.Compare(x.ReadDate, y.ReadDate); cmp != 0 {
+		return cmp
+	}
+	if x.ReadAt != y.ReadAt {
+		if x.ReadAt < y.ReadAt {
+			return -1
+		}
+		return 1
+	}
+	if cmp := strings.Compare(x.BookID, y.BookID); cmp != 0 {
+		return cmp
+	}
+	if cmp := strings.Compare(x.PoemID, y.PoemID); cmp != 0 {
+		return cmp
+	}
+	return strings.Compare(x.ID, y.ID)
 }
 
 func mergeOneReadingEvent(x, y domain.ReadingEvent) domain.ReadingEvent {

@@ -57,6 +57,35 @@ func logic(a bool) {
 	}
 }
 
+func TestPureUIEventIfExemption(t *testing.T) {
+	uiSrc := `package sample
+func render(a, b bool) {
+	if btn.Clicked() {
+		if a {
+			doA()
+		}
+	}
+	if field.Changed() {
+		save()
+	}
+	if a && btn.Clicked() {
+		doB()
+	}
+	if b {
+		doC()
+	}
+}`
+	fn := parseSingleFunc(t, uiSrc)
+	// cyclomatic: base 1 + if a (+1) + if a && btn.Clicked() (+1 +1) + if b (+1) = 5
+	if got := calcCyclomatic(fn); got != 5 {
+		t.Fatalf("expected cyclomatic=5, got %d", got)
+	}
+	// cognitive: if a (+1) + if a && btn.Clicked() (+1 +1) + if b (+1) = 4
+	if got := calcCognitive(fn); got != 4 {
+		t.Fatalf("expected cognitive=4, got %d", got)
+	}
+}
+
 func TestMetricsBaseline(t *testing.T) {
 	src := `package sample
 func demo(a, b, c, d, e, f int) int {

@@ -23,7 +23,7 @@ func BuildDefaultExcerpt(p domain.Poem) string {
 		var lines []string
 		used := 0
 		for _, line := range stanza.Lines {
-			line = strings.TrimSpace(StripNoteRefs(line))
+			line = excerptLine(line)
 			if line == "" {
 				continue
 			}
@@ -53,66 +53,61 @@ func BuildLargeExcerpt(p domain.Poem) string {
 	if !p.IsPoem() {
 		return ""
 	}
-	const (
-		maxLines = 14
-		maxRunes = 420
-	)
 	var out []string
 	used := 0
-
 	for _, stanza := range p.Stanzas {
-		var stanzaLines []string
-		for _, rawLine := range stanza.Lines {
-			line := strings.TrimSpace(StripNoteRefs(rawLine))
-			if line == "" {
-				continue
-			}
-			stanzaLines = append(stanzaLines, line)
-		}
-		if len(stanzaLines) == 0 {
+		lines := excerptStanzaLines(stanza)
+		if len(lines) == 0 {
 			continue
 		}
-
-		// 跨诗节时插入一行空行作为诗节呼吸分隔
 		if len(out) > 0 {
-			// 若剩余行数仅够空行不够下一节首行，直接结束，避免末尾悬空空行
-			if len(out)+2 > maxLines {
-				break
-			}
-			firstLen := utf8.RuneCountInString(stanzaLines[0])
-			if used+1+firstLen+1 > maxRunes {
+			// Leave room for both the stanza separator and the first line.
+			if len(out)+2 > largeExcerptLines || used+1+utf8.RuneCountInString(lines[0])+1 > largeExcerptRunes {
 				break
 			}
 			out = append(out, "")
 			used++
 		}
-
-		reachedLimit := false
-		for _, line := range stanzaLines {
-			if len(out) >= maxLines {
-				reachedLimit = true
-				break
-			}
-			rCount := utf8.RuneCountInString(line)
-			if len(out) > 0 && used+rCount+1 > maxRunes {
-				reachedLimit = true
-				break
-			}
-			if rCount > maxRunes {
-				line = string([]rune(line)[:maxRunes-1]) + "…"
-				rCount = maxRunes
-			}
-			out = append(out, line)
-			used += rCount + 1
-		}
+		var reachedLimit bool
+		out, used, reachedLimit = appendExcerptStanza(out, used, lines)
 		if reachedLimit {
 			break
 		}
 	}
-
-	// 兜底剔除可能存在的尾空行
-	for len(out) > 0 && out[len(out)-1] == "" {
-		out = out[:len(out)-1]
-	}
 	return strings.Join(out, "\n")
+}
+
+const (
+	largeExcerptLines = 14
+	largeExcerptRunes = 420
+)
+
+func excerptLine(line string) string {
+	return strings.TrimSpace(StripNoteRefs(line))
+}
+
+func excerptStanzaLines(stanza domain.Stanza) []string {
+	var lines []string
+	for _, rawLine := range stanza.Lines {
+		if line := excerptLine(rawLine); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+func appendExcerptStanza(out []string, used int, lines []string) ([]string, int, bool) {
+	for _, line := range lines {
+		count := utf8.RuneCountInString(line)
+		if len(out) >= largeExcerptLines || len(out) > 0 && used+count+1 > largeExcerptRunes {
+			return out, used, true
+		}
+		if count > largeExcerptRunes {
+			line = string([]rune(line)[:largeExcerptRunes-1]) + "…"
+			count = largeExcerptRunes
+		}
+		out = append(out, line)
+		used += count + 1
+	}
+	return out, used, false
 }

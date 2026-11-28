@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         StillPoets 书库管理与 Z-Library 投递助手
 // @namespace    https://github.com/sounfury/StillPoets
-// @version      0.1.2
+// @version      0.1.3
 // @description  StillPoets 零部署 WebDAV 诗集分组管理、EPUB 批量投递与 Z-Library 一键导入助手
 // @author       sounfury
 // @license      MIT
@@ -2002,50 +2002,154 @@
     return raw.replace(/\s+/g, ' ').slice(0, 80) + '.epub';
   }
 
-  const ZLIB_FAB_CSS = `
-  :host { all: initial; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+  function toLightDOMElement(el) {
+    let cur = el;
+    while (cur) {
+      const root = cur.getRootNode ? cur.getRootNode() : null;
+      if (!root || root === document) return cur;
+      cur = root.host || null;
+    }
+    return null;
+  }
+
+  function findZLibraryActionRow() {
+    // 1. 优先匹配 Z-Library 详情页常见按钮容器类名
+    const directSelectors = [
+      '.book-details-button',
+      '.details-buttons-container',
+      '.book-actions-container',
+      '.bookActionButtons',
+      '.details-buttons',
+    ];
+    for (const sel of directSelectors) {
+      const el = document.querySelector(sel);
+      if (el && el.offsetParent !== null) return el;
+    }
+
+    // 2. 通过“下载/EPUB/Read Online/Add to My Library”按钮反推按钮行容器
+    const all = collectNodesDeep(document);
+    let hit = null;
+    for (const el of all) {
+      const url = resolveCandidateHref(el);
+      const cls = typeof el.className === 'string' ? el.className : '';
+      const txt = (el.textContent || '').trim();
+      if (/\/dl\/|addDownloadedBook|dlButton/i.test(url + ' ' + cls) ||
+          (txt.length > 0 && txt.length <= 36 && /\bEPUB\b|Read Online|Add to My Library/i.test(txt))) {
+        const light = toLightDOMElement(el);
+        if (light && light !== document.body && light.offsetParent !== null) {
+          hit = light;
+          break;
+        }
+      }
+    }
+    if (!hit) return null;
+
+    // 向上寻找包含多个动作按钮的水平工具栏（避免退到整页大容器）
+    let best = hit;
+    let cur = hit.parentElement;
+    for (let hop = 0; hop < 5 && cur && cur !== document.body; hop++) {
+      const rect = cur.getBoundingClientRect ? cur.getBoundingClientRect() : null;
+      if (rect && rect.height >= 34 && rect.height <= 120 && rect.width >= 200) {
+        best = cur;
+      }
+      cur = cur.parentElement;
+    }
+    return best;
+  }
+
+  const ZLIB_WIDGET_CSS = `
+  :host { all: initial; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; color: #1C1B19; }
+  * { box-sizing: border-box; }
+  /* 嵌入式原生操作条（位于 Z-Library 下载按钮正下方） */
+  .inline-wrap { display: flex; flex-direction: column; gap: 6px; margin: 12px 0 8px; max-width: 680px; }
+  .inline-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .btn-send {
+    display: inline-flex; align-items: center; gap: 7px; height: 38px; padding: 0 15px; border-radius: 6px;
+    background: #BC5B46; color: #FFF; border: 1px solid #BC5B46; cursor: pointer; font-size: 13.5px; font-weight: 500;
+    transition: background .15s;
+  }
+  .btn-send:hover { background: #A44C39; border-color: #A44C39; }
+  .btn-send:disabled { opacity: .55; cursor: not-allowed; }
+  .badge { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; background: rgba(255,255,255,.22); font-size: 11px; }
+  .grp-sel {
+    height: 38px; padding: 0 10px; border-radius: 6px; border: 1px solid #D8D8D8; background: #FFF;
+    color: #333; font: inherit; font-size: 13px; max-width: 180px;
+  }
+  .btn-sub {
+    height: 38px; padding: 0 12px; border-radius: 6px; border: 1px solid #D8D8D8; background: #FFF;
+    color: #444; cursor: pointer; font: inherit; font-size: 13px;
+  }
+  .btn-sub:hover { background: #F6F6F6; border-color: #C4C4C4; }
+  .btn-sub:disabled { opacity: .5; cursor: not-allowed; }
+  .extra-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border-radius: 8px; background: #FAF9F5; border: 1px solid #E6E3DA; }
+  .url-in { flex: 1; min-width: 220px; height: 32px; padding: 0 10px; border-radius: 6px; border: 1px solid #D8D3C6; font: inherit; font-size: 12.5px; }
+  .st { font-size: 12.5px; color: #5C574E; line-height: 1.45; word-break: break-word; }
+  .st.ok { color: #2F6846; }
+  .st.err { color: #B4382A; }
+
+  /* 兜底右下角浮钮（仅在未匹配到下载按钮栏时启用） */
   .fab { display: flex; align-items: center; gap: 7px; padding: 10px 15px; border-radius: 99px; background: #BC5B46; color: #FFF; border: none; cursor: pointer; font-size: 13.5px; font-weight: 500; box-shadow: 0 8px 24px rgba(188,91,70,.32); }
   .fab:hover { background: #A44C39; }
-  .pop { width: 300px; background: #FFF; border: 1px solid #E6E3DA; border-radius: 12px; padding: 14px; box-shadow: 0 12px 32px rgba(0,0,0,.16); margin-bottom: 10px; color: #1C1B19; font-size: 13px; }
+  .pop { width: 300px; background: #FFF; border: 1px solid #E6E3DA; border-radius: 12px; padding: 14px; box-shadow: 0 12px 32px rgba(0,0,0,.16); margin-bottom: 10px; font-size: 13px; }
   .pop h4 { margin: 0 0 8px; font-size: 14px; }
-  select, input[type="text"] { width: 100%; padding: 6px 8px; border-radius: 7px; border: 1px solid #D8D3C6; margin-bottom: 8px; font: inherit; box-sizing: border-box; }
-  .row { display: flex; justify-content: space-between; gap: 8px; margin-top: 4px; }
-  button.act { flex: 1; padding: 7px 10px; border-radius: 7px; border: 1px solid #DDD8CC; background: #FFF; cursor: pointer; font: inherit; }
-  button.act.pri { background: #BC5B46; color: #FFF; border-color: #BC5B46; }
-  button.act:disabled { opacity: .5; cursor: not-allowed; }
-  .st { margin-top: 8px; font-size: 12px; color: #5C574E; line-height: 1.45; word-break: break-word; }
-  .sub-link { margin-top: 8px; font-size: 12px; color: #7C776C; display: flex; justify-content: space-between; align-items: center; }
+  .pop .grp-sel, .pop .url-in { width: 100%; max-width: none; margin-bottom: 8px; }
+  .row { display: flex; gap: 8px; margin-top: 4px; }
+  .row > button { flex: 1; }
+  .sub-link { margin-top: 8px; font-size: 12px; color: #7C776C; display: flex; justify-content: space-between; }
   .link-btn { background: none; border: none; color: #BC5B46; cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
   `;
 
   function mountZLibraryQuickButton() {
     if (!isZLibraryHost()) return;
     if (!isZLibraryBookPage() && !findZLibraryEpubDownloadURL()) return;
-    if (document.getElementById('stillpoets-zlib-btn')) return;
+
+    const existing = document.getElementById('stillpoets-zlib-btn');
+    const anchor = findZLibraryActionRow();
+    // 若先前先挂在了右下角兜底，等下载栏异步渲染出来后自动搬迁到下载栏正下方
+    if (existing) {
+      if (existing.dataset.spMode === 'floating' && anchor && anchor.parentNode) {
+        existing.dataset.spMode = 'inline';
+        existing.style.cssText = 'display:block;';
+        anchor.insertAdjacentElement('afterend', existing);
+        if (typeof existing._spRedraw === 'function') existing._spRedraw();
+      }
+      return;
+    }
 
     const host = document.createElement('div');
     host.id = 'stillpoets-zlib-btn';
-    host.style.cssText = 'position:fixed;right:22px;bottom:24px;z-index:2147483645;';
-    document.body.appendChild(host);
+    if (anchor && anchor.parentNode) {
+      host.dataset.spMode = 'inline';
+      host.style.cssText = 'display:block;';
+      anchor.insertAdjacentElement('afterend', host);
+    } else {
+      host.dataset.spMode = 'floating';
+      host.style.cssText = 'position:fixed;right:22px;bottom:24px;z-index:2147483645;';
+      document.body.appendChild(host);
+    }
+
     const shadow = host.attachShadow({ mode: 'open' });
     const styleEl = document.createElement('style');
-    styleEl.textContent = ZLIB_FAB_CSS;
+    styleEl.textContent = ZLIB_WIDGET_CSS;
 
     let open = false;
     let busy = false;
     let statusText = '';
+    let statusKind = '';
     let manualUrl = '';
-    let showManualInput = false;
+    let showExtra = false;
 
     async function runDeliverFromURL(targetUrl, grpId) {
       const cfg = loadSavedConfig();
       if (!cfg || !cfg.baseURL) {
+        statusKind = 'err';
         statusText = '尚未配置 WebDAV，请先点击「打开书库」完成连接配置。';
         draw();
         return;
       }
       GM_setValue(STORAGE_KEYS.lastUploadGroupId, grpId);
       busy = true;
+      statusKind = '';
       statusText = '正在复用当前登录态下载 EPUB…';
       draw();
       try {
@@ -2073,7 +2177,7 @@
         const ct = getHeader('content-type').toLowerCase();
         const bytes = new Uint8Array(res.response || new ArrayBuffer(0));
         if (ct.includes('text/html') || !isZipMagic(bytes)) {
-          throw new Error('返回内容不是有效的 EPUB（可能是限额提示、需先登录或跳转页），请点击下方「本地选 EPUB 投递」');
+          throw new Error('返回内容不是有效的 EPUB（可能是限额提示、需先登录或跳转页），可展开「更多」手动选文件投递');
         }
         let filename = extractPageBookTitle();
         const cd = getHeader('content-disposition');
@@ -2085,8 +2189,10 @@
           statusText = msg;
           draw();
         });
+        statusKind = 'ok';
         statusText = '✓ 已投递到 WebDAV 收件箱！打开手机或平板同步即自动解析入库。';
       } catch (err) {
+        statusKind = 'err';
         statusText = `✗ ${err.message}`;
       } finally {
         busy = false;
@@ -2097,12 +2203,14 @@
     async function runDeliverFromFile(file, grpId) {
       const cfg = loadSavedConfig();
       if (!cfg || !cfg.baseURL) {
+        statusKind = 'err';
         statusText = '尚未配置 WebDAV，请先点击「打开书库」完成连接配置。';
         draw();
         return;
       }
       GM_setValue(STORAGE_KEYS.lastUploadGroupId, grpId);
       busy = true;
+      statusKind = '';
       statusText = `正在读取 ${file.name}…`;
       draw();
       try {
@@ -2113,8 +2221,10 @@
           statusText = msg;
           draw();
         });
+        statusKind = 'ok';
         statusText = '✓ 已投递到 WebDAV 收件箱！打开手机或平板同步即自动解析入库。';
       } catch (err) {
+        statusKind = 'err';
         statusText = `✗ ${err.message}`;
       } finally {
         busy = false;
@@ -2123,19 +2233,13 @@
     }
 
     function draw() {
+      const isInline = host.dataset.spMode === 'inline';
       const cachedGroups = GM_getValue(STORAGE_KEYS.cachedGroups, []);
       const lastGroup = GM_getValue(STORAGE_KEYS.lastUploadGroupId, '');
-      const grpSelect = h('select', { disabled: busy },
-        h('option', { value: '', selected: !lastGroup }, '默认（全部诗集）'),
+      const grpSelect = h('select', { className: 'grp-sel', disabled: busy, title: '选择入库分组' },
+        h('option', { value: '', selected: !lastGroup }, '分组：全部诗集'),
         cachedGroups.map((g) => h('option', { value: g.id, selected: g.id === lastGroup }, g.name))
       );
-      const urlInput = showManualInput ? h('input', {
-        type: 'text',
-        placeholder: '粘贴右键复制的 EPUB 下载链接…',
-        value: manualUrl,
-        disabled: busy,
-        onInput: (e) => { manualUrl = e.target.value; },
-      }) : null;
       const localFileInput = h('input', {
         type: 'file',
         accept: '.epub',
@@ -2146,40 +2250,78 @@
           if (f) runDeliverFromFile(f, grpSelect.value);
         },
       });
+      const triggerDeliver = () => {
+        const detected = manualUrl.trim() || findZLibraryEpubDownloadURL();
+        if (!detected) {
+          showExtra = true;
+          statusKind = 'err';
+          statusText = '未自动识别到直链。可右键「EPUB」按钮复制链接贴到下方，或本地选 EPUB 投递。';
+          draw();
+          return;
+        }
+        runDeliverFromURL(detected, grpSelect.value);
+      };
 
+      if (isInline) {
+        const extraBox = showExtra ? h('div', { className: 'extra-row' },
+          h('input', {
+            className: 'url-in',
+            type: 'text',
+            placeholder: '可选：粘贴右键复制的 EPUB 下载链接…',
+            value: manualUrl,
+            disabled: busy,
+            onInput: (e) => { manualUrl = e.target.value; },
+          }),
+          h('button', { className: 'btn-sub', style: 'height:32px', disabled: busy, onClick: () => localFileInput.click() }, '选本地 EPUB')
+        ) : null;
+
+        const bar = h('div', { className: 'inline-wrap' },
+          h('div', { className: 'inline-bar' },
+            h('button', { className: 'btn-send', disabled: busy, onClick: triggerDeliver },
+              h('span', { className: 'badge' }, '诗'),
+              busy ? '投递中…' : '发送到 StillPoets'
+            ),
+            grpSelect,
+            h('button', { className: 'btn-sub', onClick: () => GM_openInTab(MANAGER_ENTRY_URL, { active: true }) }, '打开书库'),
+            h('button', { className: 'btn-sub', onClick: () => { showExtra = !showExtra; draw(); } }, showExtra ? '收起' : '更多')
+          ),
+          localFileInput,
+          extraBox,
+          statusText ? h('div', { className: `st ${statusKind}` }, statusText) : null
+        );
+        shadow.replaceChildren(styleEl, bar);
+        return;
+      }
+
+      // 兜底右下角浮钮模式
+      const urlInput = showExtra ? h('input', {
+        className: 'url-in',
+        type: 'text',
+        placeholder: '粘贴右键复制的 EPUB 下载链接…',
+        value: manualUrl,
+        disabled: busy,
+        onInput: (e) => { manualUrl = e.target.value; },
+      }) : null;
       const pop = open ? h('div', { className: 'pop' },
         h('h4', null, '投递到 StillPoets'),
         grpSelect,
         urlInput,
         h('div', { className: 'row' },
-          h('button', { className: 'act', onClick: () => GM_openInTab(MANAGER_ENTRY_URL, { active: true }) }, '打开书库'),
-          h('button', {
-            className: 'act pri',
-            disabled: busy,
-            onClick: () => {
-              const detected = manualUrl.trim() || findZLibraryEpubDownloadURL();
-              if (!detected) {
-                showManualInput = true;
-                statusText = '未能自动识别到直链（按钮可能由页面脚本动态触发）。可右键「EPUB」按钮复制链接粘到上方，或直接下载后点下方「本地选文件」。';
-                draw();
-                return;
-              }
-              runDeliverFromURL(detected, grpSelect.value);
-            },
-          }, busy ? '投递中…' : '立即投递')
+          h('button', { className: 'btn-sub', onClick: () => GM_openInTab(MANAGER_ENTRY_URL, { active: true }) }, '打开书库'),
+          h('button', { className: 'btn-send', disabled: busy, onClick: triggerDeliver }, busy ? '投递中…' : '立即投递')
         ),
         localFileInput,
         h('div', { className: 'sub-link' },
           h('button', { className: 'link-btn', disabled: busy, onClick: () => localFileInput.click() }, '本地选 EPUB 投递'),
-          h('button', { className: 'link-btn', disabled: busy, onClick: () => { showManualInput = !showManualInput; draw(); } }, showManualInput ? '收起链接框' : '手动贴下载链接')
+          h('button', { className: 'link-btn', disabled: busy, onClick: () => { showExtra = !showExtra; draw(); } }, showExtra ? '收起链接框' : '手动贴下载链接')
         ),
-        statusText ? h('div', { className: 'st' }, statusText) : null
+        statusText ? h('div', { className: `st ${statusKind}` }, statusText) : null
       ) : null;
-
       const fab = h('button', { className: 'fab', onClick: () => { open = !open; draw(); } }, '诗 · 发送到 StillPoets');
       shadow.replaceChildren(styleEl, h('div', null, pop, fab));
     }
 
+    host._spRedraw = draw;
     draw();
   }
 
@@ -2189,7 +2331,8 @@
     mountZLibraryQuickButton();
     let timer = null;
     const obs = new MutationObserver(() => {
-      if (document.getElementById('stillpoets-zlib-btn')) return;
+      const existing = document.getElementById('stillpoets-zlib-btn');
+      if (existing && existing.dataset.spMode === 'inline') return;
       clearTimeout(timer);
       timer = setTimeout(mountZLibraryQuickButton, 300);
     });

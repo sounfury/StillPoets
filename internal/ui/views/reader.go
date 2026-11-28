@@ -378,6 +378,16 @@ func (a *AppUI) renderReaderHeader(c *ui.Context, pal theme.Palette, book domain
 					a.selectingLines = !a.selectingLines
 					a.selectedLines = map[int]bool{}
 				}
+
+				// 导出整诗长图 / 本诗金句卡片
+				cardBtn := ui.Box(c.Key("reader-share-card")).Width(34).Height(34).Center().Radius(6).Cursor(ui.CursorPointer)
+				theme.ApplyPressScale(cardBtn, 0.90)
+				cardBtn.Children(func() {
+					ui.Icon(c, components.IconShareCard).Width(18).Height(18).TextColor(pal.TextPrimary)
+				})
+				if cardBtn.Clicked() {
+					a.openPoemShareCard(book, poem)
+				}
 			}
 
 			// Aa 排版面板
@@ -509,7 +519,8 @@ func (a *AppUI) renderSelectionActionBar(c *ui.Context, pal theme.Palette, book 
 	ui.Row(c.Key("selection-bar")).
 		FillWidth().
 		Padding(10, 24).
-		Gap(10).
+		Gap(8).
+		Wrap().
 		AlignItems(ui.Center).
 		Background(pal.HighlightBg).
 		BorderColor(pal.Border).
@@ -523,6 +534,10 @@ func (a *AppUI) renderSelectionActionBar(c *ui.Context, pal theme.Palette, book 
 				ui.Textf(c, "已选 %d 行", selectedCount).FontSize(13).Bold().TextColor(pal.TextPrimary).Grow(1)
 				if ui.PrimaryButton(c, "🔖 留作散页").Clicked() {
 					a.saveSelectedLinesAsQuote(book, poem)
+				}
+				if ui.Button(c, "出卡").Clicked() {
+					content, _ := a.collectSelectedText(poem)
+					a.openSelectionShareCard(book, poem, content)
 				}
 				if ui.Button(c, "设为本诗金句").Clicked() {
 					a.saveSelectedLinesAsWidgetExcerpt(book, poem)

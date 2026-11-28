@@ -16,6 +16,7 @@ import (
 	"stillpoets/internal/ui/theme"
 	"stillpoets/internal/ui/views"
 	"stillpoets/modules/appupdater"
+	"stillpoets/modules/photosaver"
 	"stillpoets/modules/widgetbridge"
 )
 
@@ -145,6 +146,48 @@ func main() {
 				return saved, nil
 			}
 			return "", err
+		})
+		uiInst.SetSavePhotoFunc(func(filePath string) (string, error) {
+			if err := photosaver.SaveImage(filePath, "StillPoets"); err == nil {
+				return "系统相册", nil
+			} else if !errors.Is(err, errors.ErrUnsupported) {
+				return "", err
+			}
+			// 桌面预览等无相册平台回退至系统另存为文件框
+			saved, saveErr := mygo.Dialog.SaveCopy(filePath, filepath.Base(filePath))
+			if saveErr != nil {
+				return "", saveErr
+			}
+			if saved == "" {
+				return "", context.Canceled
+			}
+			return saved, nil
+		})
+		uiInst.SetShareImageFunc(func(filePath, _ string) error {
+			// 纯图片分享不附带 Text，确保 Android ACTION_SEND 以 image/png 直达微信/小红书等社交应用
+			err := mygo.Share(mygo.ShareOptions{
+				Files: []string{filePath},
+			})
+			if err == nil {
+				return nil
+			}
+			if errors.Is(err, errors.ErrUnsupported) {
+				saved, saveErr := mygo.Dialog.SaveCopy(filePath, filepath.Base(filePath))
+				if saveErr != nil {
+					return saveErr
+				}
+				if saved == "" {
+					return context.Canceled
+				}
+				return nil
+			}
+			if saved, saveErr := mygo.Dialog.SaveCopy(filePath, filepath.Base(filePath)); saveErr == nil {
+				if saved == "" {
+					return context.Canceled
+				}
+				return nil
+			}
+			return err
 		})
 		uiInst.SetCopyTextFunc(func(text string) {
 			mygo.Clipboard.WriteText(text)

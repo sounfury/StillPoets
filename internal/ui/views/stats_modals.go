@@ -1,13 +1,16 @@
 package views
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
 	"stillpoets/internal/app"
 	"stillpoets/internal/domain"
+	"stillpoets/internal/storage"
 	"stillpoets/internal/ui/components"
 	"stillpoets/internal/ui/theme"
 )
@@ -103,8 +106,25 @@ func (a *AppUI) renderFinishedBookModal(c *ui.Context, pal theme.Palette) {
 
 		ui.Divider(c)
 
-		// 底部操作：改为重读中 / 重读诗集
-		ui.Row(c).FillWidth().Gap(10).Justify(ui.End).Children(func() {
+		// 底部操作：完读纪念卡 / 精选合辑 + 改为重读中 / 重读诗集
+		a.renderFinishedBookModalActions(c, item)
+	})
+}
+
+func (a *AppUI) renderFinishedBookModalActions(c *ui.Context, item *storage.FinishedBookItem) {
+	b := item.Book
+	ui.Column(c.Key("fin-dlg-actions")).FillWidth().Gap(8).Children(func() {
+		ui.Row(c.Key("fin-dlg-card-row")).FillWidth().Gap(8).Children(func() {
+			if ui.Button(c, "完读纪念卡").Grow(1).Clicked() {
+				a.openFinishedShareCard(*item)
+			}
+			if item.FavoriteCount > 0 {
+				if ui.Button(c, "精选合辑卡").Grow(1).Clicked() {
+					a.openBookCollectionShareCardAsync(b, item.TopFavorites)
+				}
+			}
+		})
+		ui.Row(c.Key("fin-dlg-nav-row")).FillWidth().Gap(10).Justify(ui.End).Children(func() {
 			if ui.Button(c, "改为重读中").Clicked() {
 				a.showFinishedModal = false
 				a.toggleBookFinishedAsync(b.ID, b.Title, false)
@@ -118,6 +138,21 @@ func (a *AppUI) renderFinishedBookModal(c *ui.Context, pal theme.Palette) {
 			}
 		})
 	})
+}
+
+func (a *AppUI) openBookCollectionShareCardAsync(book domain.Book, fallback []domain.FavoritePoem) {
+	fallbackCopy := append([]domain.FavoritePoem(nil), fallback...)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		favs, err := a.svc.ListFavorites(ctx, book.ID)
+		if err != nil || len(favs) == 0 {
+			favs = fallbackCopy
+		}
+		a.dispatchUI(func() {
+			a.openCollectionShareCard(book, favs)
+		})
+	}()
 }
 
 func (a *AppUI) renderAuthorProfileModal(c *ui.Context, pal theme.Palette) {

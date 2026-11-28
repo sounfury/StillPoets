@@ -49,4 +49,6 @@ var (
 	IconFileText = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4.5h6.5L18 9v10.5a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-14a1 1 0 0 1 1-1z"/><polyline points="13.5 4.5 13.5 9 18 9"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="16.5" x2="13.5" y2="16.5"/></svg>`))
 
 	IconDownload = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5v10.5"/><polyline points="8 11.5 12 15.5 16 11.5"/><path d="M5 18.5h14"/></svg>`))
+
+	IconShareCard = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4.5"/><polyline points="8 8.5 12 4.5 16 8.5"/><path d="M5.5 12.5V18a1.5 1.5 0 0 0 1.5 1.5h10a1.5 1.5 0 0 0 1.5-1.5v-5.5"/></svg>`))
 )

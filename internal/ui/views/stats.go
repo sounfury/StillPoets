@@ -114,6 +114,25 @@ func (a *AppUI) renderStatsPeriodBar(c *ui.Context, pal theme.Palette, isTablet 
 					}
 				}
 			})
+
+		// 导出当前周期的读诗报告纪念长图（PRD 9.5）
+		exportBtn := ui.Row(c.Key("stats-export-report")).
+			Padding(6, 11).
+			Gap(5).
+			Radius(8).
+			Background(pal.Surface).
+			Border(1, pal.Border).
+			AlignItems(ui.Center).
+			Cursor(ui.CursorPointer).
+			Transition(theme.ColorTransition())
+		theme.ApplyPressScale(exportBtn, 0.94)
+		exportBtn.Children(func() {
+			ui.Icon(c, components.IconShareCard).Width(13.5).Height(13.5).TextColor(pal.Accent)
+			ui.Text(c, "导出报告").Font(theme.FontSans).FontSize(12).Bold().TextColor(pal.TextPrimary)
+		})
+		if exportBtn.Clicked() {
+			a.openStatsReportShareCard()
+		}
 	})
 }
 

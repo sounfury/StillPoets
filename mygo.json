@@ -2,14 +2,15 @@
   "name": "StillPoets",
   "slug": "stillpoets",
   "identifier": "app.stillpoets.client",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "icon": "resources/icon.png",
   "urlSchemes": ["stillpoets"],
   "ios": {
     "minimumSystemVersion": "17.0",
     "orientations": ["portrait"],
     "infoPlist": {
-      "CFBundleDisplayName": "StillPoets"
+      "CFBundleDisplayName": "StillPoets",
+      "NSPhotoLibraryAddUsageDescription": "用于将生成的高清诗歌卡片保存至您的系统相册。"
     }
   },
   "android": {

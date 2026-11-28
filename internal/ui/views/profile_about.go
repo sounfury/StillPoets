@@ -235,8 +235,8 @@ func (a *AppUI) renderAboutSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 
 								a.renderSettingsDivider(c, pal)
 
-								// 三级入口：更新日志底部抽屉（Markdown 渲染）
-								changelogSub := "查看 GitHub Releases 历次版本更新说明"
+								// 三级入口：更新日志底部抽屉（Markdown 渲染，仅展示最新前 5 条）
+								changelogSub := "查看 GitHub Releases 最新版本更新说明"
 								changelogValue := "查看"
 								switch {
 								case relLoading:
@@ -247,15 +247,20 @@ func (a *AppUI) renderAboutSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 									changelogValue = "重试"
 								case len(relList) > 0:
 									latestRel := relList[0]
+									shown := min(len(relList), maxChangelogSheetItems)
 									if !latestRel.PublishedAt.IsZero() {
 										changelogSub = fmt.Sprintf("最新 %s · 发布于 %s",
 											formatVersionTag(latestRel.TagName),
 											latestRel.PublishedAt.Local().Format("2006-01-02"))
 									} else {
-										changelogSub = fmt.Sprintf("最新 %s · 共 %d 个版本记录",
-											formatVersionTag(latestRel.TagName), len(relList))
+										changelogSub = fmt.Sprintf("最新 %s · 展示近 %d 条记录",
+											formatVersionTag(latestRel.TagName), shown)
 									}
-									changelogValue = fmt.Sprintf("共 %d 版", len(relList))
+									if len(relList) > maxChangelogSheetItems {
+										changelogValue = fmt.Sprintf("最新 %d 版", shown)
+									} else {
+										changelogValue = fmt.Sprintf("共 %d 版", shown)
+									}
 								}
 								a.renderSettingsNavRow(
 									c, pal,
@@ -377,6 +382,8 @@ func (a *AppUI) renderAboutSubpage(c *ui.Context, pal theme.Palette, isTablet bo
 	})
 }
 
+const maxChangelogSheetItems = 5
+
 func (a *AppUI) openChangelogSheet() {
 	a.showChangelogModal = true
 	a.mu.Lock()
@@ -401,7 +408,7 @@ func (a *AppUI) renderChangelogModal(c *ui.Context, pal theme.Palette) {
 		ui.Row(c.Key("changelog-sheet-header")).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Column(c).Grow(1).Gap(2).Children(func() {
 				ui.Text(c, "更新日志").Font(theme.FontSerif).FontSize(18).Bold().TextColor(pal.TextPrimary)
-				ui.Text(c, "GitHub Releases 历次版本记录").FontSize(11).TextColor(pal.TextMuted)
+				ui.Text(c, "GitHub Releases 最新前 5 条版本记录").FontSize(11).TextColor(pal.TextMuted)
 			})
 			if !relLoading {
 				refBtn := ui.Row(c.Key("changelog-sheet-refresh")).
@@ -463,7 +470,13 @@ func (a *AppUI) renderChangelogModal(c *ui.Context, pal theme.Palette) {
 				default:
 					mdOpts := a.changelogMarkdownOptions(pal)
 					curTag := formatVersionTag(appVer)
-					for _, rel := range relList {
+					visible := relList
+					hasMore := false
+					if len(visible) > maxChangelogSheetItems {
+						visible = visible[:maxChangelogSheetItems]
+						hasMore = true
+					}
+					for _, rel := range visible {
 						rel := rel
 						relTag := formatVersionTag(rel.TagName)
 						isCurrent := appVer != "" && strings.EqualFold(relTag, curTag)
@@ -538,11 +551,24 @@ func (a *AppUI) renderChangelogModal(c *ui.Context, pal theme.Palette) {
 							})
 					}
 
-					ui.Row(c).FillWidth().Justify(ui.Center).Padding(4, 0, 0, 0).Children(func() {
-						if ui.Button(c, "在浏览器查看全部 Release").Clicked() {
-							a.openExternalURL(app.GitHubReleasesURL)
-						}
-					})
+					ui.Column(c.Key("changelog-sheet-more")).
+						FillWidth().
+						Padding(10, 12, 4, 12).
+						Gap(8).
+						AlignItems(ui.Center).
+						Children(func() {
+							if hasMore {
+								ui.Textf(c, "抽屉仅展示最新 %d 条更新记录，更多历史版本请前往 GitHub 查看", maxChangelogSheetItems).
+									FontSize(11).LineHeight(1.5).TextColor(pal.TextMuted)
+							}
+							btnLabel := "前往 GitHub Releases 查看全部 ↗"
+							if hasMore {
+								btnLabel = "前往 GitHub 查看更多历史更新 ↗"
+							}
+							if ui.Button(c.Key("changelog-more-link"), btnLabel).Clicked() {
+								a.openExternalURL(app.GitHubReleasesURL)
+							}
+						})
 				}
 			})
 		})

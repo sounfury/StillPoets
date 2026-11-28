@@ -192,22 +192,57 @@ func TestProfileSubpageTopPaddingTypographyAndChangelogSheet(t *testing.T) {
 	appUI.releasesLoaded = true
 	appUI.releases = []app.ReleaseInfo{
 		{
+			TagName:     "v0.1.7",
+			Name:        "StillPoets v0.1.7",
+			Body:        "## StillPoets v0.1.7\n\n### 本次核心更新\n- **完整统计看板**：完读墙、热力图与诗人云。",
+			HTMLURL:     "https://github.com/sounfury/StillPoets/releases/tag/v0.1.7",
+			PublishedAt: time.Date(2026, 11, 25, 13, 40, 0, 0, time.UTC),
+			Assets: []app.ReleaseAsset{
+				{Name: "StillPoets-0.1.7-ios-arm64-unsigned.ipa", Size: 9271890},
+				{Name: "StillPoets-0.1.7-android-arm64.apk", Size: 15800000},
+			},
+		},
+		{
+			TagName:     "v0.1.6",
+			Name:        "StillPoets v0.1.6",
+			Body:        "- 同步自动巡检远端缺失诗集",
+			HTMLURL:     "https://github.com/sounfury/StillPoets/releases/tag/v0.1.6",
+			PublishedAt: time.Date(2026, 11, 24, 20, 0, 0, 0, time.UTC),
+		},
+		{
+			TagName:     "v0.1.5",
+			Name:        "StillPoets v0.1.5",
+			Body:        "- 死亡诗社默认文案与排版预览",
+			HTMLURL:     "https://github.com/sounfury/StillPoets/releases/tag/v0.1.5",
+			PublishedAt: time.Date(2026, 11, 24, 16, 0, 0, 0, time.UTC),
+		},
+		{
+			TagName:     "v0.1.4",
+			Name:        "StillPoets v0.1.4",
+			Body:        "- Android 应用内自动更新",
+			HTMLURL:     "https://github.com/sounfury/StillPoets/releases/tag/v0.1.4",
+			PublishedAt: time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC),
+		},
+		{
+			TagName:     "v0.1.3",
+			Name:        "StillPoets v0.1.3",
+			Body:        "- WebDAV 同步链路提速与 Markdown 更新日志抽屉",
+			HTMLURL:     "https://github.com/sounfury/StillPoets/releases/tag/v0.1.3",
+			PublishedAt: time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC),
+		},
+		{
 			TagName:     "v0.1.2",
 			Name:        "StillPoets v0.1.2",
-			Body:        "## StillPoets v0.1.2\n\n### 安装包说明\n- **Android (APK)**：内置桌面小组件（`StillPoetsWidgetProvider`），可直接安装在 Android 手机 / 平板。\n- **iOS (IPA)**：内嵌 WidgetKit 小组件（`StillPoetsWidget.appex`），支持全能签 / AltStore 自签。\n\n### 本次核心更新\n- **全新正式版 App 图标**：鼠尾草绿底 + 赤陶精装书壳 + 暖棉纸双页与秋叶。\n- **同步链路提速**：减少重复目录探测与未变更快照拉取。",
+			Body:        "- 应被截断的第六条历史版本",
 			HTMLURL:     "https://github.com/sounfury/StillPoets/releases/tag/v0.1.2",
-			PublishedAt: time.Date(2026, 11, 24, 13, 40, 0, 0, time.UTC),
-			Assets: []app.ReleaseAsset{
-				{Name: "StillPoets-0.1.2-ios-arm64-unsigned.ipa", Size: 9271890},
-				{Name: "StillPoets-0.1.2-android-arm64.apk", Size: 15800000},
-			},
+			PublishedAt: time.Date(2026, 11, 24, 8, 35, 0, 0, time.UTC),
 		},
 		{
 			TagName:     "v0.1.1",
 			Name:        "StillPoets v0.1.1",
-			Body:        "- 新增 WebDAV 同步等待动画与实时阶段提示\n- 设置页重排与二级页面架构",
+			Body:        "- 应被截断的第七条历史版本",
 			HTMLURL:     "https://github.com/sounfury/StillPoets/releases/tag/v0.1.1",
-			PublishedAt: time.Date(2026, 11, 24, 8, 35, 0, 0, time.UTC),
+			PublishedAt: time.Date(2026, 11, 23, 8, 35, 0, 0, time.UTC),
 		},
 	}
 
@@ -259,8 +294,20 @@ func TestProfileSubpageTopPaddingTypographyAndChangelogSheet(t *testing.T) {
 	if !appUI.showChangelogModal {
 		t.Fatalf("expected changelog drawer open after clicking entry")
 	}
-	if _, ok := tt.Find("GitHub Releases 历次版本记录"); !ok {
+	if _, ok := tt.Find("GitHub Releases 最新前 5 条版本记录"); !ok {
 		t.Fatalf("expected changelog drawer subtitle rendered")
+	}
+	if _, ok := tt.Find("StillPoets v0.1.7"); !ok {
+		t.Fatalf("expected newest release v0.1.7 rendered in changelog drawer")
+	}
+	if _, ok := tt.Find("StillPoets v0.1.2"); ok {
+		t.Fatalf("expected 6th release v0.1.2 NOT rendered inside changelog drawer")
+	}
+	if _, ok := tt.Find("StillPoets v0.1.1"); ok {
+		t.Fatalf("expected 7th release v0.1.1 NOT rendered inside changelog drawer")
+	}
+	if _, ok := tt.Find("前往 GitHub 查看更多历史更新 ↗"); !ok {
+		t.Fatalf("expected external link button for viewing more releases")
 	}
 	maybeSavePNG(t, tt.Image(), "settings-phone-sheet-changelog-settled")
 }

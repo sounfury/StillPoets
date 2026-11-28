@@ -27,6 +27,7 @@ func (a *AppUI) renderModals(c *ui.Context, pal theme.Palette) {
 	a.renderUpdateModal(c, pal)
 	a.renderStatsModals(c, pal)
 	a.renderShelfOrganizeModals(c, pal)
+	a.renderShareCardModal(c, pal)
 }
 
 func (a *AppUI) renderAddModal(c *ui.Context, pal theme.Palette) {
@@ -185,13 +186,16 @@ func (a *AppUI) renderQuoteDetailModal(c *ui.Context, pal theme.Palette) {
 
 		ui.Divider(c)
 
-		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Wrap().Children(func() {
 			if qv.EffectiveKind == domain.QuoteKindExcerpt {
 				if ui.PrimaryButton(c, "读完整首 ↗").Clicked() {
 					a.showQuoteDetail = false
 					a.selectShelfSubTab(components.SubTabBooks)
 					a.openBookWithSource(qv.Quote.BookID, qv.Quote.PoemID, app.ParseLineRanges(qv.Quote.HighlightLines), true, entryQuote)
 				}
+			}
+			if ui.Button(c, "出卡").Clicked() {
+				a.openQuoteShareCard(*qv)
 			}
 			ui.Spacer(c)
 			if ui.Button(c, "编辑").Clicked() {
@@ -489,6 +493,15 @@ func (a *AppUI) renderTOCModal(c *ui.Context, pal theme.Palette) {
 					_, _ = a.svc.MarkBookFinished(ctx, book.ID, !isFinished)
 					a.reloadSync(ctx)
 				}()
+			}
+			if len(a.activeFavorites) > 0 {
+				if ui.Button(c, "精选合辑卡").Clicked() {
+					favs := make([]domain.FavoritePoem, 0, len(a.activeFavorites))
+					for _, fv := range a.activeFavorites {
+						favs = append(favs, fv)
+					}
+					a.openCollectionShareCard(book, favs)
+				}
 			}
 			if ui.Button(c, "清理离线正文").Clicked() {
 				a.showTOCModal = false

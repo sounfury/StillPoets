@@ -266,6 +266,9 @@ func (s *Service) SetWidgetUpdatedCallback(fn func(timelinePath, fontsDir string
 // FontsDir 返回本地自定义字体存放目录。
 func (s *Service) FontsDir() string { return filepath.Join(s.dataDir, "fonts") }
 
+// ExportsDir 返回高清分享卡片 PNG 临时导出目录（位于 dataDir 内，受 Android FileProvider 覆盖）。
+func (s *Service) ExportsDir() string { return filepath.Join(s.dataDir, "exports") }
+
 // SetSyncDebounce 允许测试或调用方调整写入后的防抖延迟。
 func (s *Service) SetSyncDebounce(d time.Duration) {
 	s.mu.Lock()

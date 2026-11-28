@@ -194,6 +194,7 @@ jobs:
         run: |
           set -euo pipefail
           mygo native check modules/widgetbridge
+          mygo native check modules/photosaver
           MODE="${{ inputs.build_mode || 'unsigned' }}"
           if [ "${MODE}" = "simulator" ]; then
             mygo build -platform ios/simulator -o build

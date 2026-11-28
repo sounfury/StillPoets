@@ -22,6 +22,7 @@ import (
 	"stillpoets/internal/sync/webdav"
 	"stillpoets/internal/ui/components"
 	"stillpoets/internal/ui/layout"
+	"stillpoets/internal/ui/sharecard"
 	"stillpoets/internal/ui/theme"
 	"stillpoets/modules/widgetbridge"
 )
@@ -95,6 +96,8 @@ type AppUI struct {
 	pickFile         PickFileFunc
 	openURLFn        func(string) error
 	exportFileFn     func(path string) (string, error)
+	savePhotoFn      func(path string) (string, error)
+	shareImageFn     func(path, caption string) error
 	copyTextFn       func(string)
 	appVersion       string
 	repaintFn        func()
@@ -290,6 +293,17 @@ type AppUI struct {
 	actionBookID        string
 	actionNewGroupName  string
 	actionGroupError    string
+
+	// 高清分享卡片预览与导出弹窗状态（统一承载单句 / 整诗 / 合辑 / 完读 / 读诗报告）
+	showShareCardModal bool
+	shareCardData      sharecard.CardData
+	shareCardAltPoem   *sharecard.CardData
+	shareCardAltQuote  *sharecard.CardData
+	shareCardOpts      sharecard.Options
+	shareCardBusy      bool
+	shareCardBusyLabel string
+	shareCardStatus    string
+	shareCardScroll    ui.ScrollState
 }
 
 // NewAppUI 创建绑定到核心 Service 的 V3 界面控制器。
@@ -377,6 +391,20 @@ func (a *AppUI) SetOpenURLFunc(fn func(string) error) {
 func (a *AppUI) SetExportFileFunc(fn func(path string) (string, error)) {
 	a.mu.Lock()
 	a.exportFileFn = fn
+	a.mu.Unlock()
+}
+
+// SetSavePhotoFunc 注入高清图片保存至系统相册能力（移动端对接 photosaver，桌面端回退系统另存为）。
+func (a *AppUI) SetSavePhotoFunc(fn func(path string) (string, error)) {
+	a.mu.Lock()
+	a.savePhotoFn = fn
+	a.mu.Unlock()
+}
+
+// SetShareImageFunc 注入高清图片系统分享能力（移动端拉起 iOS UIActivityViewController / Android ACTION_SEND）。
+func (a *AppUI) SetShareImageFunc(fn func(path, caption string) error) {
+	a.mu.Lock()
+	a.shareImageFn = fn
 	a.mu.Unlock()
 }
 

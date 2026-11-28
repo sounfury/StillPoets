@@ -89,4 +89,8 @@
   - 协议与存储扩展：`domain.Book` 新增可选 `ContentPath` 字段（SQLite 启动幂等自动补列 `content_path`，向下兼容存量旧书）；新增 `StillPoets/inbox/<bookId>.ready.json` 就绪清单协议（含 `RawSize`/`RawSHA256`/`ParserRuleVersion`/初始字段版本）；`parser.ParseEPUBReaderAtTime` 支持固定 `ParsedAt`。
   - 任意设备无感消费与切回前台同步：`SyncNow` 先完成元数据合并并刷新书架，再扫描 `inbox/*.ready.json`——已入库或永久墓碑直接清理、半传/哈希不符留待重试、新书直读原件免重传并写入不可变 `books/<bookId>/builds/<attemptId>/parsed.spbook.json.gz`，仅在新代次快照回读验证包含该 `bookId` 后逐书删除清单；`OnAppActivated` 补齐 15 秒冷却的前台回切自动同步。
   - 零部署油猴脚本（`scripts/stillpoets-manager.user.js` + `scripts/stillpoets-manager.test.js`）：纯零依赖可读单文件（兼容 GitHub Raw 直装自动更新与 Greasy Fork 同步），Shadow DOM 纸书风全屏管理页限定于可信入口（绝不在第三方页暴露 WebDAV 密码输入），支持 2A 累计稀疏快照（仅管 `groups`/`books` 绝不污染其余 4 集合）、批量移组/标星/软删、安全墓碑原件回收、拖拽多本 EPUB 投递及 Z-Library 详情页一键复用登录态投递。
+- [x] 阅读器长按交互、目录全文搜索、抽屉滚动修复与全仓质量治理（v0.1.10）：
+  - 阅读器长按段落悬浮条（`复制` / `分享` / `留散页` / `勾选`）与顶栏精简；修复目录/排版/更新日志底部抽屉长列表划不到底问题；目录内置实时诗题与正文全文搜索，全局搜索补充命中摘要、书名与跳转高亮。
+  - 油猴脚本升至 `v0.1.5`：兼容新版 Z-Library 异步渲染与 Shadow DOM、内联一键直投按钮栏、跨源 CDN 直下与中文文件名乱码还原。
+  - 接入自托管 Woodpecker 8 项中文代码质量门禁（文件行数/圈复杂度/认知复杂度/嵌套深度/参数个数/死代码/重复代码/密钥扫描），完成两轮按架构边界的前后端重构，达成全仓 8/8 门禁全绿。
 - [ ] 推进 Phase 3（V1.1 其余扩展功能）：单诗微批注与长书评、古诗词竖排阅读。

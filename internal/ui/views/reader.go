@@ -13,29 +13,6 @@ import (
 	"stillpoets/internal/ui/theme"
 )
 
-// stanzaLongPressLineLimit 控制长按段落时的默认选中粒度：
-// 诗节行数不超过该阈值时默认选中整节，超过则视为不分节长诗并精准落到当前单行。
-const stanzaLongPressLineLimit = 8
-
-type poemContextTarget struct {
-	poemID     string
-	stanzaIdx  int
-	lineStart  int // 1-based inclusive
-	lineEnd    int // 1-based inclusive
-	isWholeRow bool
-}
-
-func (t *poemContextTarget) lineNumbers() []int {
-	if t == nil || t.lineStart <= 0 || t.lineEnd < t.lineStart {
-		return nil
-	}
-	nums := make([]int, 0, t.lineEnd-t.lineStart+1)
-	for n := t.lineStart; n <= t.lineEnd; n++ {
-		nums = append(nums, n)
-	}
-	return nums
-}
-
 func (a *AppUI) clearPoemSelectionState() {
 	a.selectingLines = false
 	a.selectedLines = map[int]bool{}
@@ -419,8 +396,8 @@ func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.
 		MaxWidth(layout.ReadingMaxWidthDIP).
 		Gap(16).
 		Children(func() {
-			// 诗题 + 副题 + 作者
-			ui.Column(c).Gap(6).Children(func() {
+			// 诗题 + 副题 + 作者（水平留白与诗体区 18px 手柄热区对齐）
+			ui.Column(c).Gap(6).Padding(0, 18).Children(func() {
 				ui.Text(c, poem.Title).Font(poetryFont).FontSize(fontSize + 9).Bold().LetterSpacing(0.4).TextColor(pal.TextPrimary)
 				if poem.Subtitle != "" {
 					ui.Text(c, poem.Subtitle).Font(noteFont).FontSize(fontSize - 3).Italic().TextColor(pal.TextSecondary)
@@ -439,13 +416,13 @@ func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.
 
 			// 题记（Epigraph）
 			if strings.TrimSpace(poem.Epigraph) != "" {
-				ui.Row(c).FillWidth().Gap(10).Padding(4, 0).Children(func() {
+				ui.Row(c).FillWidth().Gap(10).Padding(4, 18).Children(func() {
 					ui.Box(c).Width(2).FillHeight().Background(pal.Border)
 					ui.Text(c, poem.Epigraph).Font(noteFont).FontSize(fontSize - 3).Italic().LineHeight(lineHeight).TextColor(pal.TextSecondary).Grow(1)
 				})
 			}
 
-			// 诗节与逐行渲染（支持长按段落呼出快捷菜单、逐行勾选与 Deeplink 高亮）
+			// 诗节与逐行渲染（支持长按呼出水滴手柄跨行/跨段拖选、悬浮操作栏与 Deeplink 高亮）
 			a.renderPoemStanzas(c, pal, poemStanzaRenderArgs{
 				book:       book,
 				poem:       poem,
@@ -458,7 +435,7 @@ func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.
 
 			// 落款 / 写作时间地点（Colophon）
 			if strings.TrimSpace(poem.Colophon) != "" {
-				ui.Row(c).FillWidth().Justify(ui.End).Padding(8, 0, 0, 0).Children(func() {
+				ui.Row(c).FillWidth().Justify(ui.End).Padding(8, 18, 0, 18).Children(func() {
 					ui.Text(c, poem.Colophon).Font(noteFont).FontSize(fontSize - 4).Italic().TextColor(pal.TextMuted)
 				})
 			}
@@ -467,7 +444,7 @@ func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.
 			if len(poem.Notes) > 0 {
 				ui.Column(c.Key("poem-notes")).
 					FillWidth().
-					Padding(18, 0, 0, 0).
+					Padding(18, 18, 0, 18).
 					Gap(8).
 					BorderColor(pal.Border).
 					BorderWidth(1, 0, 0, 0).

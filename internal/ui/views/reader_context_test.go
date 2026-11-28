@@ -98,8 +98,35 @@ func longPressText(t *testing.T, tester *ui.Tester, text string) ui.Rect {
 	return rect
 }
 
-func TestReaderLongPressStanzaPopoverFlow(t *testing.T) {
-	svc, appUI, _, _ := setupLongPressTestApp(t)
+func dragHandleToText(t *testing.T, tester *ui.Tester, handleLabel, targetText string) {
+	t.Helper()
+	info, ok := tester.Access(handleLabel)
+	if !ok {
+		t.Fatalf("selection handle %q not found in accessibility tree", handleLabel)
+	}
+	targetRect, ok := tester.Find(targetText)
+	if !ok {
+		t.Fatalf("target line %q not found", targetText)
+	}
+	startX := info.Bounds.X + info.Bounds.W*0.5
+	startY := info.Bounds.Y + info.Bounds.H*0.5
+	endX := startX
+	endY := targetRect.Y + targetRect.H*0.5
+
+	tester.FingerDown(startX, startY)
+	tester.Frame()
+	const steps = 8
+	for i := 1; i <= steps; i++ {
+		f := float32(i) / float32(steps)
+		tester.FingerMove(startX+(endX-startX)*f, startY+(endY-startY)*f)
+		tester.Frame()
+	}
+	tester.FingerUp(endX, endY)
+	tester.Frame()
+}
+
+func TestReaderLongPressDragHandlesCrossStanzaFlow(t *testing.T) {
+	svc, appUI, book, _ := setupLongPressTestApp(t)
 
 	var (
 		copyMu     sync.Mutex
@@ -114,61 +141,93 @@ func TestReaderLongPressStanzaPopoverFlow(t *testing.T) {
 	tester := ui.NewTester(appUI.Render, 390, 844)
 	tester.Frame()
 
-	// 1. 触屏长按分节短诗的第一段 -> 命中整节并弹出 4 项悬浮菜单
+	// 1. 触屏长按第 1 行 -> 选中第 1 行并展示起止手柄与全功能悬浮菜单
 	longPressText(t, tester, "第一段第一句秋风起")
 	if appUI.poemCtxTarget == nil {
-		t.Fatalf("expected long press inside swipe pager + scroll to open poem context popover")
+		t.Fatalf("expected long press inside swipe pager + scroll to open poem selection")
 	}
-	if appUI.poemCtxTarget.isWholeRow || appUI.poemCtxTarget.lineStart != 1 || appUI.poemCtxTarget.lineEnd != 2 {
-		t.Fatalf("expected whole stanza 1..2 selected, got %+v", appUI.poemCtxTarget)
+	if appUI.poemCtxTarget.lineStart != 1 || appUI.poemCtxTarget.lineEnd != 1 {
+		t.Fatalf("expected initial selection 1..1, got %+v", appUI.poemCtxTarget)
 	}
-	for _, label := range []string{"复制", "分享", "留散页", "勾选"} {
+	for _, label := range []string{"已选 1 行", "选本节", "全选", "勾选", "复制", "留散页", "设为金句", "分享"} {
 		if !tester.HasText(label) {
-			t.Fatalf("expected popover action %q to be visible, got texts=%v", label, tester.Texts())
+			t.Fatalf("expected popover text %q to be visible, got texts=%v", label, tester.Texts())
 		}
 	}
 
-	// 2. 点击「复制」-> 写入整节文本并关闭气泡
+	// 2. 拖动终点水滴手柄跨越段落至第 3 行 -> 选区无缝扩至 1..3，松手后菜单自动回到 3 行状态
+	dragHandleToText(t, tester, "选区终点手柄", "第二段第一句灯火明")
+	if appUI.poemCtxTarget == nil {
+		t.Fatalf("selection should stay open while and after dragging handle")
+	}
+	if appUI.poemCtxTarget.lineStart != 1 || appUI.poemCtxTarget.lineEnd != 3 {
+		t.Fatalf("expected dragged cross-stanza selection 1..3, got %+v", appUI.poemCtxTarget)
+	}
+	if !tester.HasText("已选 3 行") {
+		t.Fatalf("expected updated count label 已选 3 行, got texts=%v", tester.Texts())
+	}
+
+	// 3. 点击「复制」-> 写入跨段 3 行并关闭气泡
 	if err := tester.Click("复制"); err != nil {
 		t.Fatalf("click 复制: %v", err)
 	}
 	tester.Frame()
-	wantStanza1 := "第一段第一句秋风起\n第一段第二句落叶黄"
+	wantThreeLines := "第一段第一句秋风起\n第一段第二句落叶黄\n第二段第一句灯火明"
 	copyMu.Lock()
 	gotCopied := copiedText
 	copyMu.Unlock()
-	if gotCopied != wantStanza1 {
-		t.Fatalf("copyTextFn got %q, want %q", gotCopied, wantStanza1)
+	if gotCopied != wantThreeLines {
+		t.Fatalf("copyTextFn got %q, want %q", gotCopied, wantThreeLines)
 	}
-	if got := tester.Clipboard(); got != wantStanza1 {
-		t.Fatalf("ui clipboard got %q, want %q", got, wantStanza1)
+	if got := tester.Clipboard(); got != wantThreeLines {
+		t.Fatalf("ui clipboard got %q, want %q", got, wantThreeLines)
 	}
 	if appUI.poemCtxTarget != nil {
 		t.Fatalf("expected popover to dismiss after copy")
 	}
 
-	// 3. 再次长按第二段 -> 点击「分享」-> 直达单句卡片弹窗
+	// 4. 长按第 3 行 -> 点击「选本节」扩至 3..4 -> 点击「设为金句」直接生效
 	longPressText(t, tester, "第二段第一句灯火明")
-	if err := tester.Click("分享"); err != nil {
-		t.Fatalf("click 分享: %v", err)
+	if err := tester.Click("选本节"); err != nil {
+		t.Fatalf("click 选本节: %v", err)
 	}
 	tester.Frame()
-	wantStanza2 := "第二段第一句灯火明\n第二段第二句归舟晚"
-	if !appUI.showShareCardModal || appUI.shareCardData.Kind != sharecard.KindQuote || appUI.shareCardData.QuoteText != wantStanza2 {
-		t.Fatalf("unexpected share card modal state: open=%v kind=%v text=%q", appUI.showShareCardModal, appUI.shareCardData.Kind, appUI.shareCardData.QuoteText)
+	if appUI.poemCtxTarget == nil || appUI.poemCtxTarget.lineStart != 3 || appUI.poemCtxTarget.lineEnd != 4 {
+		t.Fatalf("expected stanza expansion 3..4, got %+v", appUI.poemCtxTarget)
 	}
-	// 关闭分享弹窗
-	appUI.showShareCardModal = false
+	if err := tester.Click("设为金句"); err != nil {
+		t.Fatalf("click 设为金句: %v", err)
+	}
 	tester.Frame()
 
-	// 4. 长按第一段 -> 点击「留散页」-> 写入诗歌节选散页并高亮
+	wantStanza2 := "第二段第一句灯火明\n第二段第二句归舟晚"
+	deadline := time.Now().Add(3 * time.Second)
+	var favMatched bool
+	for time.Now().Before(deadline) {
+		favs, err := svc.ListFavorites(t.Context(), book.ID)
+		if err == nil && len(favs) == 1 && favs[0].Excerpt == wantStanza2 && favs[0].HighlightLines == "3-4" && favs[0].IsCustomQuote {
+			favMatched = true
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !favMatched {
+		t.Fatalf("expected stanza 3..4 saved as widget custom excerpt")
+	}
+
+	// 5. 长按第 1 行 -> 点「选本节」-> 点「留散页」写入诗歌节选散页
 	longPressText(t, tester, "第一段第二句落叶黄")
+	if err := tester.Click("选本节"); err != nil {
+		t.Fatalf("click 选本节: %v", err)
+	}
+	tester.Frame()
 	if err := tester.Click("留散页"); err != nil {
 		t.Fatalf("click 留散页: %v", err)
 	}
 	tester.Frame()
 
-	deadline := time.Now().Add(3 * time.Second)
+	wantStanza1 := "第一段第一句秋风起\n第一段第二句落叶黄"
+	deadline = time.Now().Add(3 * time.Second)
 	var savedQuotes []storage.QuoteView
 	for time.Now().Before(deadline) {
 		qs, err := svc.ListQuotes(t.Context(), storage.QuoteFilter{})
@@ -182,37 +241,27 @@ func TestReaderLongPressStanzaPopoverFlow(t *testing.T) {
 		t.Fatalf("expected stanza saved as excerpt quote, got %+v", savedQuotes)
 	}
 
-	// 5. 长按第一段 -> 点击「勾选」-> 自动预选第 1-2 行，再点第 3 行实现跨段多选
-	longPressText(t, tester, "第一段第一句秋风起")
-	if err := tester.Click("勾选"); err != nil {
-		t.Fatalf("click 勾选: %v", err)
-	}
-	// 推进 BarRevealTransition（200ms 折叠展开动画）完成
-	tester.Advance(300 * time.Millisecond)
-	tester.Frame()
-	if !appUI.selectingLines || !appUI.selectedLines[1] || !appUI.selectedLines[2] || len(appUI.selectedLines) != 2 {
-		t.Fatalf("expected selection mode pre-populated with stanza lines 1..2, got selecting=%v lines=%v", appUI.selectingLines, appUI.selectedLines)
-	}
-	if err := tester.Click("第二段第一句灯火明"); err != nil {
-		t.Fatalf("click line 3 to extend selection: %v", err)
+	// 6. 长按第 2 行 -> 点击「全选」-> 点击「分享」直达卡片弹窗
+	longPressText(t, tester, "第一段第二句落叶黄")
+	if err := tester.Click("全选"); err != nil {
+		t.Fatalf("click 全选: %v", err)
 	}
 	tester.Frame()
-	if !appUI.selectedLines[3] || len(appUI.selectedLines) != 3 {
-		t.Fatalf("expected 3 lines selected across stanzas, got %v", appUI.selectedLines)
+	if appUI.poemCtxTarget == nil || appUI.poemCtxTarget.lineStart != 1 || appUI.poemCtxTarget.lineEnd != 4 {
+		t.Fatalf("expected select all 1..4, got %+v", appUI.poemCtxTarget)
 	}
-	if err := tester.Click("复制"); err != nil {
-		t.Fatalf("click selection bar 复制: %v", err)
+	if err := tester.Click("分享"); err != nil {
+		t.Fatalf("click 分享: %v", err)
 	}
 	tester.Frame()
-	wantThreeLines := "第一段第一句秋风起\n第一段第二句落叶黄\n第二段第一句灯火明"
-	if got := tester.Clipboard(); got != wantThreeLines {
-		t.Fatalf("multi-line selection copy got %q, want %q", got, wantThreeLines)
+	wantAll := wantStanza1 + "\n" + wantStanza2
+	if !appUI.showShareCardModal || appUI.shareCardData.Kind != sharecard.KindQuote || appUI.shareCardData.QuoteText != wantAll {
+		t.Fatalf("unexpected share card modal state: open=%v kind=%v text=%q", appUI.showShareCardModal, appUI.shareCardData.Kind, appUI.shareCardData.QuoteText)
 	}
-	if appUI.selectingLines {
-		t.Fatalf("expected selectingLines to exit after copying multi-line selection")
-	}
+	appUI.showShareCardModal = false
+	tester.Frame()
 
-	// 6. 桌面右键兼容 + 点击气泡外关闭 + Esc 关闭
+	// 7. 桌面右键兼容 + 点击气泡外关闭 + Esc 关闭
 	rect, ok := tester.Find("第一段第一句秋风起")
 	if !ok {
 		t.Fatalf("line 1 not found")
@@ -240,7 +289,7 @@ func TestReaderLongPressStanzaPopoverFlow(t *testing.T) {
 	}
 }
 
-func TestReaderLongPressLongStanzaFallsBackToSingleLine(t *testing.T) {
+func TestReaderLongPoemHandleDragBothDirectionsAndFlip(t *testing.T) {
 	_, appUI, book, _ := setupLongPressTestApp(t)
 	appUI.openBook(book.ID, "poem-long", nil, true)
 	appUI.reloadSync(t.Context())
@@ -248,21 +297,37 @@ func TestReaderLongPressLongStanzaFallsBackToSingleLine(t *testing.T) {
 	tester := ui.NewTester(appUI.Render, 390, 844)
 	tester.Frame()
 
-	// 不分节长诗（10 行 > 8 行阈值）长按第 5 行 -> 仅落到单行第 5 行
+	// 1. 不分节长诗长按第 5 行 -> 选中第 5 行
 	longPressText(t, tester, "长诗第零五行灯塔初亮")
-	if appUI.poemCtxTarget == nil {
-		t.Fatalf("expected long press on long stanza line to open popover")
+	if appUI.poemCtxTarget == nil || appUI.poemCtxTarget.lineStart != 5 || appUI.poemCtxTarget.lineEnd != 5 {
+		t.Fatalf("expected initial selection 5..5, got %+v", appUI.poemCtxTarget)
 	}
-	if !appUI.poemCtxTarget.isWholeRow || appUI.poemCtxTarget.lineStart != 5 || appUI.poemCtxTarget.lineEnd != 5 {
-		t.Fatalf("expected single-line fallback at line 5, got %+v", appUI.poemCtxTarget)
+
+	// 2. 向下拖动终点手柄至第 8 行 -> 选区变为 5..8
+	dragHandleToText(t, tester, "选区终点手柄", "长诗第零八行石阶生凉")
+	if appUI.poemCtxTarget == nil || appUI.poemCtxTarget.lineStart != 5 || appUI.poemCtxTarget.lineEnd != 8 {
+		t.Fatalf("expected expanded selection 5..8, got %+v", appUI.poemCtxTarget)
+	}
+
+	// 3. 向上拖动起点手柄至第 3 行 -> 选区变为 3..8
+	dragHandleToText(t, tester, "选区起点手柄", "长诗第零三行远帆如豆")
+	if appUI.poemCtxTarget == nil || appUI.poemCtxTarget.lineStart != 3 || appUI.poemCtxTarget.lineEnd != 8 {
+		t.Fatalf("expected upward expanded selection 3..8, got %+v", appUI.poemCtxTarget)
+	}
+
+	// 4. 反向越过另一端：把终点手柄向上拖过第 3 行到第 2 行 -> 自动翻转为 2..3
+	dragHandleToText(t, tester, "选区终点手柄", "长诗第零二行鸥鸟低飞")
+	if appUI.poemCtxTarget == nil || appUI.poemCtxTarget.lineStart != 2 || appUI.poemCtxTarget.lineEnd != 3 {
+		t.Fatalf("expected flipped selection 2..3, got %+v", appUI.poemCtxTarget)
 	}
 
 	if err := tester.Click("复制"); err != nil {
-		t.Fatalf("click 复制 on single line: %v", err)
+		t.Fatalf("click 复制 on dragged multi-line selection: %v", err)
 	}
 	tester.Frame()
-	if got := tester.Clipboard(); got != "长诗第零五行灯塔初亮" {
-		t.Fatalf("single-line copy got %q, want %q", got, "长诗第零五行灯塔初亮")
+	want := "长诗第零二行鸥鸟低飞\n长诗第零三行远帆如豆"
+	if got := tester.Clipboard(); got != want {
+		t.Fatalf("dragged multi-line copy got %q, want %q", got, want)
 	}
 }
 
@@ -290,7 +355,7 @@ func TestReaderLongPressTabletAndDarkTheme(t *testing.T) {
 
 	longPressText(t, tester, "第一段第一句秋风起")
 	if appUI.poemCtxTarget == nil {
-		t.Fatalf("expected tablet dark theme long press to open popover")
+		t.Fatalf("expected tablet dark theme long press to open selection")
 	}
 	if err := tester.Click("勾选"); err != nil {
 		t.Fatalf("tablet click 勾选: %v", err)

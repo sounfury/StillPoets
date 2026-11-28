@@ -4,7 +4,7 @@
 // @version      0.1.5
 // @description  StillPoets 零部署 WebDAV 诗集分组管理、EPUB 批量投递与 Z-Library 一键导入助手
 // @author       sounfury
-// @license      MIT
+// @license      GPL-3.0-only
 // @homepageURL  https://github.com/sounfury/StillPoets
 // @supportURL   https://github.com/sounfury/StillPoets/issues
 // @downloadURL  https://raw.githubusercontent.com/sounfury/StillPoets/main/scripts/stillpoets-manager.user.js

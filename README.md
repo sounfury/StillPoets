@@ -9,6 +9,7 @@
 私有化（BYOD）多端现代诗集阅读、独立散页管理、读诗统计、高清诗笺出卡与原生桌面小组件联动应用
 
 [![Release](https://img.shields.io/github/v/release/sounfury/StillPoets?color=BC5B46&label=Release)](https://github.com/sounfury/StillPoets/releases/latest)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-8C6239)](./LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-iOS%2017%2B%20%7C%20Android%208%2B-334C68)](#下载与安装)
 [![Built with MyGo](https://img.shields.io/badge/UI-Go%20%2B%20MyGo-6C8261)](https://github.com/egoist/mygo)
 [![Sync](https://img.shields.io/badge/Sync-WebDAV%20(BYOD)-2345B5)](#webdav-私有云同步)
@@ -37,7 +38,7 @@
 
 ### 2. 沉浸式现代诗阅读器与全文检索
 - **顺滑阅读手势**：长诗单页上下滚动，左右跟手滑动切换上一首 / 下一首诗；诗集与散页视图同样支持跟手横滑切换。
-- **长按段落悬浮菜单**：长按诗节或诗行（≤ 8 行自动选整节，> 8 行选单行，桌面端兼容右键）即唤出 `复制` / `分享` / `留散页` / `勾选` 悬浮操作条；`勾选` 模式支持自由多行划选并设为「本诗金句」，顶栏保持极简专注整诗分享。
+- **读书级长按跨行选区与悬浮菜单**：长按任意诗行（桌面端兼容右键）即高亮该行并显示起止圆点竖杆手柄，拖动手柄即可跨行、跨诗节自由扩选或反向翻转；上方悬浮菜单支持一键 `选本节` / `全选` / `勾选`（非连续多选），并一步直达 `复制` / `留散页` / `设为金句` / `分享`，顶栏保持极简专注整诗分享。
 - **目录与全局全文检索**：目录抽屉内置实时搜索栏，支持按诗题与正文多词过滤；全局检索展示命中正文摘要与所属诗集名，点击直达对应诗篇并高亮定位。
 - **纸书排版与偶遇进度保护**：支持导入本地 `.ttf` / `.otf` 字体、4 档字重与实时标本预览；严格区分「主线顺序阅读」与「偶遇直达」（桌面小组件、今日重读、散页溯源、全局检索），偶遇仅计入已读不覆盖主线续读位置，并支持一键回到进度或从当前续读。
 
@@ -213,10 +214,11 @@ mygo build -platform android/arm64 -o build
 
 ---
 
-## 设计文档与免责声明
+## 设计文档、开源协议与免责声明
 
 - 产品需求文档：[docs/prd.md](./docs/prd.md)
 - 系统架构文档：[docs/architecture.md](./docs/architecture.md)
 - 界面视觉规范：[docs/prototypes/design-direction.md](./docs/prototypes/design-direction.md)
+- **开源协议**：本项目源代码基于 [**GNU General Public License v3.0 (GPL-3.0)**](./LICENSE) 协议开源。
 
 **版权说明**：StillPoets 仅提供本地排版渲染、个人摘录管理与用户自有 WebDAV 同步能力，**不内置、不提供、不分发任何受版权保护的图书或诗歌内容**；所有导入内容均由用户自行准备并保存于个人设备与私有存储中。

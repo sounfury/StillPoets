@@ -81,7 +81,7 @@ func (a *AppUI) syncPoemPager(bookID string, width float32, idx int) {
 
 func (a *AppUI) renderPoemScroll(c *ui.Context, pal theme.Palette, book domain.Book, poem domain.Poem, isCurrent bool) {
 	ui.Scroll(c.Key("poem-scroll-" + poem.ID)).Fill().Children(func() {
-		ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(28, 28, 48, 28).Children(func() {
+		ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(24, 10, 48, 10).Children(func() {
 			a.renderPoemContent(c, pal, book, poem, isCurrent)
 		})
 	})

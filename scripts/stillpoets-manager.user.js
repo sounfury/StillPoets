@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         StillPoets 书库管理与 Z-Library 投递助手
 // @namespace    https://github.com/sounfury/StillPoets
-// @version      0.1.1
+// @version      0.1.2
 // @description  StillPoets 零部署 WebDAV 诗集分组管理、EPUB 批量投递与 Z-Library 一键导入助手
 // @author       sounfury
 // @license      MIT
@@ -2049,15 +2049,34 @@
       statusText = '正在复用当前登录态下载 EPUB…';
       draw();
       try {
-        const resp = await fetch(targetUrl, { credentials: 'include', redirect: 'follow' });
-        if (!resp.ok) throw new Error(`站点返回 HTTP ${resp.status}`);
-        const ct = (resp.headers.get('content-type') || '').toLowerCase();
-        const bytes = new Uint8Array(await resp.arrayBuffer());
+        // 使用 GM_xmlhttpRequest 跟随 Z-Library 302 跨源 CDN 下载，避免普通 fetch 被 CORS 拦截（不附带任何 WebDAV 凭据）
+        const res = await new Promise((resolve, reject) => {
+          GM_xmlhttpRequest({
+            method: 'GET',
+            url: targetUrl,
+            headers: { Referer: location.href },
+            responseType: 'arraybuffer',
+            anonymous: false,
+            timeout: 120000,
+            onload: resolve,
+            onerror: (e) => reject(new Error(e.error || '下载请求失败，请检查网络或油猴跨域权限')),
+            ontimeout: () => reject(new Error('下载 EPUB 超时')),
+          });
+        });
+        if (res.status < 200 || res.status >= 300) {
+          throw new Error(`站点返回 HTTP ${res.status}`);
+        }
+        const getHeader = (name) => {
+          const m = String(res.responseHeaders || '').match(new RegExp(`^${name}\\s*:\\s*(.+)$`, 'im'));
+          return m ? m[1].trim() : '';
+        };
+        const ct = getHeader('content-type').toLowerCase();
+        const bytes = new Uint8Array(res.response || new ArrayBuffer(0));
         if (ct.includes('text/html') || !isZipMagic(bytes)) {
-          throw new Error('返回内容不是有效的 EPUB（可能是限额提示、需先登录或跳转页），请点击下方「本地选文件投递」');
+          throw new Error('返回内容不是有效的 EPUB（可能是限额提示、需先登录或跳转页），请点击下方「本地选 EPUB 投递」');
         }
         let filename = extractPageBookTitle();
-        const cd = resp.headers.get('content-disposition') || '';
+        const cd = getHeader('content-disposition');
         const fnMatch = cd.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
         if (fnMatch) filename = decodePathSafe(fnMatch[1] || fnMatch[2] || filename);
         const client = new WebDAVClient(cfg);

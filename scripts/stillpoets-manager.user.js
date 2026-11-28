@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         StillPoets 书库管理与 Z-Library 投递助手
 // @namespace    https://github.com/sounfury/StillPoets
-// @version      0.1.3
+// @version      0.1.4
 // @description  StillPoets 零部署 WebDAV 诗集分组管理、EPUB 批量投递与 Z-Library 一键导入助手
 // @author       sounfury
 // @license      MIT
@@ -1951,31 +1951,36 @@
   function findZLibraryEpubDownloadURL() {
     const all = collectNodesDeep(document);
 
-    // 1. 优先匹配明确的下载链接（含 /dl/、addDownloadedBook、dlButton 等）
+    // 1. 优先匹配可见区域内明确的 /dl/ 下载链接（排除 /book/ 与 /read/ 链接）
     const dlCandidates = [];
     for (const el of all) {
       const url = resolveCandidateHref(el);
-      if (!url) continue;
+      if (!url || /\/read(\/|$|\?)/i.test(url)) continue;
       const cls = typeof el.className === 'string' ? el.className : '';
       const txt = (el.textContent || '').trim();
       const fmt = (el.getAttribute && (el.getAttribute('data-format') || el.getAttribute('data-extension') || '')) || '';
       const isDlPath = /\/dl\/|\/download\b|addDownloadedBook|dlButton|download-book/i.test(url + ' ' + cls);
-      if (isDlPath) {
-        dlCandidates.push({ url, isEpub: /epub/i.test(txt + ' ' + fmt + ' ' + url) });
-      }
+      if (!isDlPath) continue;
+      const light = toLightDOMElement(el);
+      const visible = !!(light && light.offsetParent !== null);
+      const isEpub = /epub/i.test(txt + ' ' + fmt + ' ' + url);
+      const isPrimaryBtn = /addDownloadedBook|dlButton|btn-primary|book-details-button/i.test(cls) || /MB|KB/i.test(txt);
+      dlCandidates.push({ url, visible, isEpub, isPrimaryBtn });
     }
-    const epubDl = dlCandidates.find((c) => c.isEpub);
-    if (epubDl) return epubDl.url;
+    dlCandidates.sort((a, b) => {
+      const score = (x) => (x.visible ? 4 : 0) + (x.isEpub ? 2 : 0) + (x.isPrimaryBtn ? 1 : 0);
+      return score(b) - score(a);
+    });
     if (dlCandidates.length > 0) return dlCandidates[0].url;
 
-    // 2. 匹配新版按钮文本（例如 "EPUB, 4.17 MB"），向上/向下查找关联链接
+    // 2. 匹配新版按钮文本（例如 "EPUB, 4.17 MB"），向上查找带 /dl/ 或下载语义的链接
     for (const el of all) {
       const txt = (el.textContent || '').trim();
       if (!txt || txt.length > 60 || !/\bEPUB\b/i.test(txt)) continue;
       let cur = el;
       for (let hop = 0; hop < 4 && cur; hop++) {
         const u = resolveCandidateHref(cur);
-        if (u && u !== location.href) return u;
+        if (u && u !== location.href && !/\/book\/|\/read(\/|$|\?)/i.test(u)) return u;
         cur = cur.parentElement || (cur.getRootNode && cur.getRootNode().host) || null;
       }
     }
@@ -2013,20 +2018,25 @@
   }
 
   function findZLibraryActionRow() {
-    // 1. 优先匹配 Z-Library 详情页常见按钮容器类名
+    // 1. 优先匹配 Z-Library 详情页整行按钮组容器
     const directSelectors = [
-      '.book-details-button',
-      '.details-buttons-container',
       '.book-actions-container',
+      '.details-buttons-container',
       '.bookActionButtons',
       '.details-buttons',
+      '.book-details-button',
     ];
     for (const sel of directSelectors) {
       const el = document.querySelector(sel);
-      if (el && el.offsetParent !== null) return el;
+      if (el && el.offsetParent !== null) {
+        const txt = el.textContent || '';
+        if (/EPUB|Download/i.test(txt) && /Add to My Library|Read Online|Send to/i.test(txt)) {
+          return el;
+        }
+      }
     }
 
-    // 2. 通过“下载/EPUB/Read Online/Add to My Library”按钮反推按钮行容器
+    // 2. 先定位下载/EPUB 按钮，再向上找同时包含多个动作按钮的整行父容器（避免停在单个 Read Online 按钮上）
     const all = collectNodesDeep(document);
     let hit = null;
     for (const el of all) {
@@ -2034,7 +2044,7 @@
       const cls = typeof el.className === 'string' ? el.className : '';
       const txt = (el.textContent || '').trim();
       if (/\/dl\/|addDownloadedBook|dlButton/i.test(url + ' ' + cls) ||
-          (txt.length > 0 && txt.length <= 36 && /\bEPUB\b|Read Online|Add to My Library/i.test(txt))) {
+          (txt.length > 0 && txt.length <= 36 && /\bEPUB\b.*\b(MB|KB)\b/i.test(txt))) {
         const light = toLightDOMElement(el);
         if (light && light !== document.body && light.offsetParent !== null) {
           hit = light;
@@ -2044,12 +2054,14 @@
     }
     if (!hit) return null;
 
-    // 向上寻找包含多个动作按钮的水平工具栏（避免退到整页大容器）
     let best = hit;
     let cur = hit.parentElement;
-    for (let hop = 0; hop < 5 && cur && cur !== document.body; hop++) {
+    for (let hop = 0; hop < 6 && cur && cur !== document.body; hop++) {
       const rect = cur.getBoundingClientRect ? cur.getBoundingClientRect() : null;
-      if (rect && rect.height >= 34 && rect.height <= 120 && rect.width >= 200) {
+      const txt = cur.textContent || '';
+      const hasMultiActions = /Add to My Library|Read Online|Send to/i.test(txt) && /EPUB|Download/i.test(txt);
+      const containsTabs = /ABOUT BOOK|COMMENTS/i.test(txt);
+      if (hasMultiActions && !containsTabs && rect && rect.height >= 34 && rect.height <= 180) {
         best = cur;
       }
       cur = cur.parentElement;
@@ -2109,7 +2121,7 @@
     if (existing) {
       if (existing.dataset.spMode === 'floating' && anchor && anchor.parentNode) {
         existing.dataset.spMode = 'inline';
-        existing.style.cssText = 'display:block;';
+        existing.style.cssText = 'display:block;width:100%;flex-basis:100%;';
         anchor.insertAdjacentElement('afterend', existing);
         if (typeof existing._spRedraw === 'function') existing._spRedraw();
       }
@@ -2120,7 +2132,7 @@
     host.id = 'stillpoets-zlib-btn';
     if (anchor && anchor.parentNode) {
       host.dataset.spMode = 'inline';
-      host.style.cssText = 'display:block;';
+      host.style.cssText = 'display:block;width:100%;flex-basis:100%;';
       anchor.insertAdjacentElement('afterend', host);
     } else {
       host.dataset.spMode = 'floating';
@@ -2153,7 +2165,7 @@
       statusText = '正在复用当前登录态下载 EPUB…';
       draw();
       try {
-        // 使用 GM_xmlhttpRequest 跟随 Z-Library 302 跨源 CDN 下载，避免普通 fetch 被 CORS 拦截（不附带任何 WebDAV 凭据）
+        // 使用 GM_xmlhttpRequest (fetch: true 优先复用 Firefox/Chrome 真实 Cookie 容器) 跟随 302 跨源 CDN 下载
         const res = await new Promise((resolve, reject) => {
           GM_xmlhttpRequest({
             method: 'GET',
@@ -2161,6 +2173,7 @@
             headers: { Referer: location.href },
             responseType: 'arraybuffer',
             anonymous: false,
+            fetch: true,
             timeout: 120000,
             onload: resolve,
             onerror: (e) => reject(new Error(e.error || '下载请求失败，请检查网络或油猴跨域权限')),
@@ -2168,7 +2181,7 @@
           });
         });
         if (res.status < 200 || res.status >= 300) {
-          throw new Error(`站点返回 HTTP ${res.status}`);
+          throw new Error(`站点返回 HTTP ${res.status} (${res.finalUrl || targetUrl})`);
         }
         const getHeader = (name) => {
           const m = String(res.responseHeaders || '').match(new RegExp(`^${name}\\s*:\\s*(.+)$`, 'im'));
@@ -2177,7 +2190,15 @@
         const ct = getHeader('content-type').toLowerCase();
         const bytes = new Uint8Array(res.response || new ArrayBuffer(0));
         if (ct.includes('text/html') || !isZipMagic(bytes)) {
-          throw new Error('返回内容不是有效的 EPUB（可能是限额提示、需先登录或跳转页），可展开「更多」手动选文件投递');
+          let hint = '';
+          try {
+            const snippet = new TextDecoder('utf-8').decode(bytes.slice(0, 2048));
+            const tm = snippet.match(/<title[^>]*>([^<]{1,80})<\/title>/i);
+            if (tm && tm[1]) hint = `，页面标题「${tm[1].trim()}」`;
+          } catch { /* ignore */ }
+          const shortTarget = targetUrl.replace(/^https?:\/\/[^/]+/, '');
+          const shortFinal = (res.finalUrl || '').replace(/^https?:\/\/[^/]+/, '');
+          throw new Error(`返回的不是 EPUB（请求 ${shortTarget} → ${shortFinal || '同址'}，类型 ${ct || '未知'}${hint}）；可展开「更多」手动选文件投递`);
         }
         let filename = extractPageBookTitle();
         const cd = getHeader('content-disposition');

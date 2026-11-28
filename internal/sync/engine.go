@@ -377,71 +377,34 @@ func (e *Engine) UploadBookAssets(
 	rawOriginal []byte,
 	coverWebP []byte,
 ) (*BookAssetUploadResult, error) {
-	if book.ID == "" {
-		return nil, errors.New("sync: book id is empty")
-	}
-	if book.ContentHash == "" {
-		return nil, errors.New("sync: book contentHash is empty")
-	}
 	if book.RawFilename == "" {
 		return nil, errors.New("sync: book rawFilename is empty")
 	}
 	if len(spbookCompressed) == 0 || len(rawOriginal) == 0 {
 		return nil, errors.New("sync: spbook and raw original bytes are required")
 	}
-
-	parsedPath, err := BookParsedPathFor(book)
-	if err != nil {
-		return nil, err
-	}
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	bookDir := fmt.Sprintf("%s/%s", BooksDir, book.ID)
-	if err := e.client.EnsureDir(ctx, bookDir); err != nil {
-		return nil, fmt.Errorf("sync: ensure book dir %s: %w", bookDir, err)
-	}
-	if parsedDir := path.Dir(parsedPath); parsedDir != bookDir {
-		if err := e.client.EnsureDir(ctx, parsedDir); err != nil {
-			return nil, fmt.Errorf("sync: ensure book build dir %s: %w", parsedDir, err)
+	return e.withBookAssetDirs(ctx, book, func(parsedPath string) (*BookAssetUploadResult, error) {
+		// 1. 上传解析包并回读校验 SHA-256 + 解压可读性 + BookID 一致（带写后短暂 404 退避）
+		if err := e.putAndVerifyParsedSPBook(ctx, book, parsedPath, spbookCompressed, "parsed spbook"); err != nil {
+			return nil, err
 		}
-	}
 
-	// 1. 上传解析包并回读校验 SHA-256 + 解压可读性 + BookID 一致（带写后短暂 404 退避）
-	if _, err := e.client.Put(ctx, parsedPath, spbookCompressed, ContentTypeGzip); err != nil {
-		return nil, fmt.Errorf("sync: put parsed spbook %s: %w", parsedPath, err)
-	}
-	readBackParsed, err := e.readBackWithRetry(ctx, parsedPath, MaxSPBookCompressedBytes)
-	if err != nil {
-		return nil, fmt.Errorf("sync: verify parsed spbook %s: %w", parsedPath, err)
-	}
-	if _, err := DecodeSPBook(readBackParsed, book.ContentHash, book.ID); err != nil {
-		return nil, fmt.Errorf("sync: verify decoded spbook %s: %w", parsedPath, err)
-	}
-
-	// 2. 检查原始导入文件的存在性和可用长度，避免下载整个备份。
-	rawPath := BookRawPath(book.ID, book.RawFilename)
-	if _, err := e.client.Put(ctx, rawPath, rawOriginal, "application/octet-stream"); err != nil {
-		return nil, fmt.Errorf("sync: put raw file %s: %w", rawPath, err)
-	}
-	rawEntry, err := e.statWithRetry(ctx, rawPath)
-	if err != nil {
-		return nil, fmt.Errorf("sync: verify raw file %s: %w", rawPath, err)
-	}
-	if err := validateRawBookEntry(rawEntry, int64(len(rawOriginal))); err != nil {
-		return nil, fmt.Errorf("sync: verify raw file %s: %w", rawPath, err)
-	}
-
-	// 3. 封面图非强依赖，上传失败仅记录警告，不阻断书目发布
-	result := &BookAssetUploadResult{}
-	if len(coverWebP) > 0 {
-		coverPath := BookCoverPath(book.ID)
-		if _, err := e.client.Put(ctx, coverPath, coverWebP, "image/webp"); err != nil {
-			result.CoverWarning = err
+		// 2. 检查原始导入文件的存在性和可用长度，避免下载整个备份。
+		rawPath := BookRawPath(book.ID, book.RawFilename)
+		if _, err := e.client.Put(ctx, rawPath, rawOriginal, "application/octet-stream"); err != nil {
+			return nil, fmt.Errorf("sync: put raw file %s: %w", rawPath, err)
 		}
-	}
-	return result, nil
+		rawEntry, err := e.statWithRetry(ctx, rawPath)
+		if err != nil {
+			return nil, fmt.Errorf("sync: verify raw file %s: %w", rawPath, err)
+		}
+		if err := validateRawBookEntry(rawEntry, int64(len(rawOriginal))); err != nil {
+			return nil, fmt.Errorf("sync: verify raw file %s: %w", rawPath, err)
+		}
+
+		// 3. 封面图非强依赖，上传失败仅记录警告，不阻断书目发布
+		return e.putOptionalBookCover(ctx, book.ID, coverWebP), nil
+	})
 }
 
 // UploadBookParsedAssets 仅上传已解析的 .spbook.json.gz 正文包（及可选封面）并回读校验，
@@ -452,53 +415,15 @@ func (e *Engine) UploadBookParsedAssets(
 	spbookCompressed []byte,
 	coverWebP []byte,
 ) (*BookAssetUploadResult, error) {
-	if book.ID == "" {
-		return nil, errors.New("sync: book id is empty")
-	}
-	if book.ContentHash == "" {
-		return nil, errors.New("sync: book contentHash is empty")
-	}
 	if len(spbookCompressed) == 0 {
 		return nil, errors.New("sync: spbook bytes are required")
 	}
-
-	parsedPath, err := BookParsedPathFor(book)
-	if err != nil {
-		return nil, err
-	}
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	bookDir := fmt.Sprintf("%s/%s", BooksDir, book.ID)
-	if err := e.client.EnsureDir(ctx, bookDir); err != nil {
-		return nil, fmt.Errorf("sync: ensure book dir %s: %w", bookDir, err)
-	}
-	if parsedDir := path.Dir(parsedPath); parsedDir != bookDir {
-		if err := e.client.EnsureDir(ctx, parsedDir); err != nil {
-			return nil, fmt.Errorf("sync: ensure book build dir %s: %w", parsedDir, err)
+	return e.withBookAssetDirs(ctx, book, func(parsedPath string) (*BookAssetUploadResult, error) {
+		if err := e.putAndVerifyParsedSPBook(ctx, book, parsedPath, spbookCompressed, "parsed spbook"); err != nil {
+			return nil, err
 		}
-	}
-
-	if _, err := e.client.Put(ctx, parsedPath, spbookCompressed, ContentTypeGzip); err != nil {
-		return nil, fmt.Errorf("sync: put parsed spbook %s: %w", parsedPath, err)
-	}
-	readBackParsed, err := e.readBackWithRetry(ctx, parsedPath, MaxSPBookCompressedBytes)
-	if err != nil {
-		return nil, fmt.Errorf("sync: verify parsed spbook %s: %w", parsedPath, err)
-	}
-	if _, err := DecodeSPBook(readBackParsed, book.ContentHash, book.ID); err != nil {
-		return nil, fmt.Errorf("sync: verify decoded spbook %s: %w", parsedPath, err)
-	}
-
-	result := &BookAssetUploadResult{}
-	if len(coverWebP) > 0 {
-		coverPath := BookCoverPath(book.ID)
-		if _, err := e.client.Put(ctx, coverPath, coverWebP, "image/webp"); err != nil {
-			result.CoverWarning = err
-		}
-	}
-	return result, nil
+		return e.putOptionalBookCover(ctx, book.ID, coverWebP), nil
+	})
 }
 
 // UploadInboxParsedAssets 用于 inbox 消费闭环：浏览器已将原始 EPUB 上传至 books/<bookId>/<rawFilename>，
@@ -515,6 +440,36 @@ func (e *Engine) UploadInboxParsedAssets(
 	if len(spbookCompressed) == 0 {
 		return nil, errors.New("sync: spbook bytes are required")
 	}
+	return e.withBookAssetDirs(ctx, book, func(parsedPath string) (*BookAssetUploadResult, error) {
+		// 1. 先确认远端原件仍在位且大小匹配
+		rawPath := BookRawPath(book.ID, book.RawFilename)
+		rawEntry, err := e.statWithRetry(ctx, rawPath)
+		if err != nil {
+			return nil, fmt.Errorf("sync: verify inbox raw file %s: %w", rawPath, err)
+		}
+		if err := validateRawBookEntry(rawEntry, book.RawSize); err != nil {
+			return nil, fmt.Errorf("sync: verify inbox raw file %s: %w", rawPath, err)
+		}
+
+		// 2. 上传不可变路径解析包并回读校验
+		if err := e.putAndVerifyParsedSPBook(ctx, book, parsedPath, spbookCompressed, "inbox parsed spbook"); err != nil {
+			return nil, err
+		}
+		return e.putOptionalBookCover(ctx, book.ID, coverWebP), nil
+	})
+}
+
+func (e *Engine) withBookAssetDirs(
+	ctx context.Context,
+	book domain.Book,
+	fn func(parsedPath string) (*BookAssetUploadResult, error),
+) (*BookAssetUploadResult, error) {
+	if book.ID == "" {
+		return nil, errors.New("sync: book id is empty")
+	}
+	if book.ContentHash == "" {
+		return nil, errors.New("sync: book contentHash is empty")
+	}
 	parsedPath, err := BookParsedPathFor(book)
 	if err != nil {
 		return nil, err
@@ -523,46 +478,54 @@ func (e *Engine) UploadInboxParsedAssets(
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	bookDir := fmt.Sprintf("%s/%s", BooksDir, book.ID)
+	if err := e.ensureBookAssetDirs(ctx, book.ID, parsedPath); err != nil {
+		return nil, err
+	}
+	return fn(parsedPath)
+}
+
+func (e *Engine) ensureBookAssetDirs(ctx context.Context, bookID, parsedPath string) error {
+	bookDir := fmt.Sprintf("%s/%s", BooksDir, bookID)
 	if err := e.client.EnsureDir(ctx, bookDir); err != nil {
-		return nil, fmt.Errorf("sync: ensure book dir %s: %w", bookDir, err)
+		return fmt.Errorf("sync: ensure book dir %s: %w", bookDir, err)
 	}
 	if parsedDir := path.Dir(parsedPath); parsedDir != bookDir {
 		if err := e.client.EnsureDir(ctx, parsedDir); err != nil {
-			return nil, fmt.Errorf("sync: ensure book build dir %s: %w", parsedDir, err)
+			return fmt.Errorf("sync: ensure book build dir %s: %w", parsedDir, err)
 		}
 	}
+	return nil
+}
 
-	// 1. 先确认远端原件仍在位且大小匹配
-	rawPath := BookRawPath(book.ID, book.RawFilename)
-	rawEntry, err := e.statWithRetry(ctx, rawPath)
-	if err != nil {
-		return nil, fmt.Errorf("sync: verify inbox raw file %s: %w", rawPath, err)
-	}
-	if err := validateRawBookEntry(rawEntry, book.RawSize); err != nil {
-		return nil, fmt.Errorf("sync: verify inbox raw file %s: %w", rawPath, err)
-	}
-
-	// 2. 上传不可变路径解析包并回读校验
+func (e *Engine) putAndVerifyParsedSPBook(
+	ctx context.Context,
+	book domain.Book,
+	parsedPath string,
+	spbookCompressed []byte,
+	label string,
+) error {
 	if _, err := e.client.Put(ctx, parsedPath, spbookCompressed, ContentTypeGzip); err != nil {
-		return nil, fmt.Errorf("sync: put inbox parsed spbook %s: %w", parsedPath, err)
+		return fmt.Errorf("sync: put %s %s: %w", label, parsedPath, err)
 	}
 	readBackParsed, err := e.readBackWithRetry(ctx, parsedPath, MaxSPBookCompressedBytes)
 	if err != nil {
-		return nil, fmt.Errorf("sync: verify inbox parsed spbook %s: %w", parsedPath, err)
+		return fmt.Errorf("sync: verify %s %s: %w", label, parsedPath, err)
 	}
 	if _, err := DecodeSPBook(readBackParsed, book.ContentHash, book.ID); err != nil {
-		return nil, fmt.Errorf("sync: verify decoded inbox spbook %s: %w", parsedPath, err)
+		return fmt.Errorf("sync: verify decoded %s %s: %w", label, parsedPath, err)
 	}
+	return nil
+}
 
+func (e *Engine) putOptionalBookCover(ctx context.Context, bookID string, coverWebP []byte) *BookAssetUploadResult {
 	result := &BookAssetUploadResult{}
 	if len(coverWebP) > 0 {
-		coverPath := BookCoverPath(book.ID)
+		coverPath := BookCoverPath(bookID)
 		if _, err := e.client.Put(ctx, coverPath, coverWebP, "image/webp"); err != nil {
 			result.CoverWarning = err
 		}
 	}
-	return result, nil
+	return result
 }
 
 // VerifyBookParsedAsset 确认目标工作区已存在且可解码该版本的 parsed.spbook.json.gz。
@@ -574,12 +537,7 @@ func (e *Engine) VerifyBookParsedAsset(ctx context.Context, book domain.Book) er
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	parsed, _, err := e.client.GetWithLimit(ctx, parsedPath, MaxSPBookCompressedBytes)
-	if err != nil {
-		return err
-	}
-	_, err = DecodeSPBook(parsed, book.ContentHash, book.ID)
-	return err
+	return e.verifyBookParsedAssetLocked(ctx, book, parsedPath)
 }
 
 // VerifyBookAssets 确认目标工作区已有该版本的正文与原始文件，可跳过重复迁移。
@@ -591,11 +549,7 @@ func (e *Engine) VerifyBookAssets(ctx context.Context, book domain.Book) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	parsed, _, err := e.client.GetWithLimit(ctx, parsedPath, MaxSPBookCompressedBytes)
-	if err != nil {
-		return err
-	}
-	if _, err := DecodeSPBook(parsed, book.ContentHash, book.ID); err != nil {
+	if err := e.verifyBookParsedAssetLocked(ctx, book, parsedPath); err != nil {
 		return err
 	}
 	entry, err := e.client.Stat(ctx, BookRawPath(book.ID, book.RawFilename))
@@ -603,6 +557,15 @@ func (e *Engine) VerifyBookAssets(ctx context.Context, book domain.Book) error {
 		return err
 	}
 	return validateRawBookEntry(entry, book.RawSize)
+}
+
+func (e *Engine) verifyBookParsedAssetLocked(ctx context.Context, book domain.Book, parsedPath string) error {
+	parsed, _, err := e.client.GetWithLimit(ctx, parsedPath, MaxSPBookCompressedBytes)
+	if err != nil {
+		return err
+	}
+	_, err = DecodeSPBook(parsed, book.ContentHash, book.ID)
+	return err
 }
 
 func validateRawBookEntry(entry *webdav.Entry, expectedSize int64) error {

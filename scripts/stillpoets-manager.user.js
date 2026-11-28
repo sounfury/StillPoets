@@ -181,6 +181,19 @@
     return { deleted: true, deletedAt: Number(yAt || 0), deletedVer: normVersion(yVer) };
   }
 
+  function applyPermanentDelete(out, x, y) {
+    const del = mergePermanentDelete(
+      !!x.deleted, x.deletedAt, x.deletedVer,
+      !!y.deleted, y.deletedAt, y.deletedVer
+    );
+    if (del.deleted) {
+      out.deleted = true;
+      if (del.deletedAt) out.deletedAt = del.deletedAt;
+      out.deletedVer = del.deletedVer;
+    }
+    return out;
+  }
+
   function mergeOneGroup(x, y) {
     const out = {
       id: x.id,
@@ -202,16 +215,7 @@
       out.sortOrder = Number(y.sortOrder || 0);
       out.sortVer = normVersion(y.sortVer);
     }
-    const del = mergePermanentDelete(
-      !!x.deleted, x.deletedAt, x.deletedVer,
-      !!y.deleted, y.deletedAt, y.deletedVer
-    );
-    if (del.deleted) {
-      out.deleted = true;
-      if (del.deletedAt) out.deletedAt = del.deletedAt;
-      out.deletedVer = del.deletedVer;
-    }
-    return out;
+    return applyPermanentDelete(out, x, y);
   }
 
   function mergeGroups(a, b) {
@@ -334,16 +338,7 @@
       if (y.sortVer && (y.sortVer.c || y.sortVer.i)) out.sortVer = normVersion(y.sortVer);
     }
 
-    const del = mergePermanentDelete(
-      !!x.deleted, x.deletedAt, x.deletedVer,
-      !!y.deleted, y.deletedAt, y.deletedVer
-    );
-    if (del.deleted) {
-      out.deleted = true;
-      if (del.deletedAt) out.deletedAt = del.deletedAt;
-      out.deletedVer = del.deletedVer;
-    }
-    return out;
+    return applyPermanentDelete(out, x, y);
   }
 
   function mergeBooks(a, b) {

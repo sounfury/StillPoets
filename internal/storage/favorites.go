@@ -36,43 +36,69 @@ func putFavorite(f domain.FavoritePoem) sqlite.Statement {
 		f.DeletedAt, f.Excerpt, f.HighlightLines, f.IsCustomQuote, f.ExcerptVer.Counter, f.ExcerptVer.InstallID, f.CreatedAt)
 }
 
-func (s *Store) ToggleFavoritePoem(ctx context.Context, bookID, poemID, poemTitle, author, defaultExcerpt string, active bool) (domain.FavoritePoem, error) {
+// FavoritePoemInput 封装收藏与自定义金句节选参数。
+type FavoritePoemInput struct {
+	BookID         string
+	PoemID         string
+	PoemTitle      string
+	Author         string
+	Excerpt        string
+	HighlightLines string
+	Active         bool
+}
+
+func (s *Store) upsertFavoritePoem(
+	ctx context.Context,
+	in FavoritePoemInput,
+	apply func(fav *domain.FavoritePoem, v domain.Version, now int64, created bool),
+) (domain.FavoritePoem, error) {
 	var favorite domain.FavoritePoem
 	err := s.mutate(ctx, func(v domain.Version, now int64) ([]sqlite.Statement, error) {
-		if err := s.requireActiveBook(ctx, bookID); err != nil {
+		if err := s.requireActiveBook(ctx, in.BookID); err != nil {
 			return nil, err
 		}
-		r, err := s.firstRow(ctx, `SELECT `+favoriteColumns+` FROM favorite_poems WHERE book_id = ? AND poem_id = ?`, bookID, poemID)
+		r, err := s.firstRow(ctx, `SELECT `+favoriteColumns+` FROM favorite_poems WHERE book_id = ? AND poem_id = ?`, in.BookID, in.PoemID)
+		created := false
 		switch {
 		case errors.Is(err, ErrNotFound):
+			created = true
 			favorite = domain.FavoritePoem{
-				ID: domain.NewID(), BookID: bookID, PoemID: poemID, Excerpt: defaultExcerpt, ExcerptVer: v, CreatedAt: now,
+				ID: domain.NewID(), BookID: in.BookID, PoemID: in.PoemID, CreatedAt: now,
 			}
 		case err != nil:
 			return nil, err
 		default:
 			favorite, _ = decodeFavorite(r)
-			if active && !favorite.IsCustomQuote && favorite.Excerpt != defaultExcerpt {
-				favorite.Excerpt, favorite.HighlightLines, favorite.ExcerptVer = defaultExcerpt, "", v
-			}
 		}
-		if poemTitle != "" {
-			favorite.PoemTitle = poemTitle
+		if in.PoemTitle != "" {
+			favorite.PoemTitle = in.PoemTitle
 		}
-		if author != "" {
-			favorite.Author = author
+		if in.Author != "" {
+			favorite.Author = in.Author
 		}
-		favorite.Active, favorite.ActiveVer = active, v
-		favorite.DeletedAt = 0
-		if !active {
-			favorite.DeletedAt = now
-		}
+		apply(&favorite, v, now, created)
 		return []sqlite.Statement{putFavorite(favorite)}, nil
 	})
 	if err != nil {
 		return domain.FavoritePoem{}, err
 	}
 	return favorite, nil
+}
+
+func (s *Store) ToggleFavoritePoem(ctx context.Context, in FavoritePoemInput) (domain.FavoritePoem, error) {
+	return s.upsertFavoritePoem(ctx, in, func(favorite *domain.FavoritePoem, v domain.Version, now int64, created bool) {
+		if created {
+			favorite.Excerpt = in.Excerpt
+			favorite.ExcerptVer = v
+		} else if in.Active && !favorite.IsCustomQuote && favorite.Excerpt != in.Excerpt {
+			favorite.Excerpt, favorite.HighlightLines, favorite.ExcerptVer = in.Excerpt, "", v
+		}
+		favorite.Active, favorite.ActiveVer = in.Active, v
+		favorite.DeletedAt = 0
+		if !in.Active {
+			favorite.DeletedAt = now
+		}
+	})
 }
 
 func (s *Store) UpdateFavoriteExcerpt(ctx context.Context, bookID, poemID, excerpt, highlightLines string, isCustom bool) error {
@@ -87,42 +113,16 @@ func (s *Store) UpdateFavoriteExcerpt(ctx context.Context, bookID, poemID, excer
 }
 
 // SetFavoriteCustomExcerpt 在同一事务内原子确保收藏激活并更新手动金句节选，避免两步落库产生中间态（P1-5）。
-func (s *Store) SetFavoriteCustomExcerpt(ctx context.Context, bookID, poemID, poemTitle, author, excerpt, highlightLines string) (domain.FavoritePoem, error) {
-	var favorite domain.FavoritePoem
-	err := s.mutate(ctx, func(v domain.Version, now int64) ([]sqlite.Statement, error) {
-		if err := s.requireActiveBook(ctx, bookID); err != nil {
-			return nil, err
-		}
-		r, err := s.firstRow(ctx, `SELECT `+favoriteColumns+` FROM favorite_poems WHERE book_id = ? AND poem_id = ?`, bookID, poemID)
-		switch {
-		case errors.Is(err, ErrNotFound):
-			favorite = domain.FavoritePoem{
-				ID: domain.NewID(), BookID: bookID, PoemID: poemID, CreatedAt: now,
-			}
-		case err != nil:
-			return nil, err
-		default:
-			favorite, _ = decodeFavorite(r)
-		}
-		if poemTitle != "" {
-			favorite.PoemTitle = poemTitle
-		}
-		if author != "" {
-			favorite.Author = author
-		}
+func (s *Store) SetFavoriteCustomExcerpt(ctx context.Context, in FavoritePoemInput) (domain.FavoritePoem, error) {
+	return s.upsertFavoritePoem(ctx, in, func(favorite *domain.FavoritePoem, v domain.Version, _ int64, _ bool) {
 		favorite.Active = true
 		favorite.ActiveVer = v
 		favorite.DeletedAt = 0
-		favorite.Excerpt = excerpt
-		favorite.HighlightLines = highlightLines
+		favorite.Excerpt = in.Excerpt
+		favorite.HighlightLines = in.HighlightLines
 		favorite.IsCustomQuote = true
 		favorite.ExcerptVer = v
-		return []sqlite.Statement{putFavorite(favorite)}, nil
 	})
-	if err != nil {
-		return domain.FavoritePoem{}, err
-	}
-	return favorite, nil
 }
 
 const activeFavorite = `active = 1 AND EXISTS (SELECT 1 FROM books WHERE books.id = favorite_poems.book_id AND books.deleted = 0)`

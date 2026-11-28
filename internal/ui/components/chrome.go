@@ -226,6 +226,28 @@ func FloatingBottomNavBar(c *ui.Context, pal theme.Palette, active NavTab, onSel
 }
 
 // BottomNavBar 渲染手机端三栏底部导航（Android 经典平铺底栏：书架 / 统计 / 我的）。
+func renderNavItemBody(c *ui.Context, pal theme.Palette, item navItem, isActive bool, iconSize float32, showDot bool) {
+	clr := pal.TextMuted
+	if isActive {
+		if pal.HeroStyle == theme.HeroOpenPaper {
+			clr = pal.Accent
+		} else {
+			clr = pal.TextPrimary
+		}
+	}
+	ui.Icon(c, item.icon).Width(iconSize).Height(iconSize).TextColor(clr)
+	lbl := ui.Text(c, item.label).Font(theme.FontSans).FontSize(11).TextColor(clr)
+	if isActive {
+		lbl.Bold()
+	}
+	dot := ui.Box(c.Key("dot")).Width(4).Height(4).Radius(2).Transition(theme.ColorTransition())
+	if showDot {
+		dot.Background(pal.Accent)
+	} else {
+		dot.Background(ui.Transparent)
+	}
+}
+
 func BottomNavBar(c *ui.Context, pal theme.Palette, active NavTab, onSelect func(NavTab)) {
 	ui.Row(c.Key("bottom-nav")).
 		FillWidth().
@@ -246,25 +268,7 @@ func BottomNavBar(c *ui.Context, pal theme.Palette, active NavTab, onSelect func
 					Cursor(ui.CursorPointer)
 				theme.ApplyPressScale(col, 0.93)
 				col.Children(func() {
-					clr := pal.TextMuted
-					if isActive {
-						if pal.HeroStyle == theme.HeroOpenPaper {
-							clr = pal.Accent
-						} else {
-							clr = pal.TextPrimary
-						}
-					}
-					ui.Icon(c, item.icon).Width(20).Height(20).TextColor(clr)
-					lbl := ui.Text(c, item.label).Font(theme.FontSans).FontSize(11).TextColor(clr)
-					if isActive {
-						lbl.Bold()
-					}
-					dot := ui.Box(c.Key("dot")).Width(4).Height(4).Radius(2).Transition(theme.ColorTransition())
-					if isActive && pal.HeroStyle != theme.HeroOpenPaper {
-						dot.Background(pal.Accent)
-					} else {
-						dot.Background(ui.Transparent)
-					}
+					renderNavItemBody(c, pal, item, isActive, 20, isActive && pal.HeroStyle != theme.HeroOpenPaper)
 				})
 				if col.Clicked() && onSelect != nil {
 					onSelect(item.tab)
@@ -298,25 +302,7 @@ func TabletNavRail(c *ui.Context, pal theme.Palette, active NavTab, onSelect fun
 					Cursor(ui.CursorPointer)
 				theme.ApplyPressScale(col, 0.93)
 				col.Children(func() {
-					clr := pal.TextMuted
-					if isActive {
-						if pal.HeroStyle == theme.HeroOpenPaper {
-							clr = pal.Accent
-						} else {
-							clr = pal.TextPrimary
-						}
-					}
-					ui.Icon(c, item.icon).Width(21).Height(21).TextColor(clr)
-					lbl := ui.Text(c, item.label).Font(theme.FontSans).FontSize(11).TextColor(clr)
-					if isActive {
-						lbl.Bold()
-					}
-					dot := ui.Box(c.Key("dot")).Width(4).Height(4).Radius(2).Transition(theme.ColorTransition())
-					if isActive {
-						dot.Background(pal.Accent)
-					} else {
-						dot.Background(ui.Transparent)
-					}
+					renderNavItemBody(c, pal, item, isActive, 21, isActive)
 				})
 				if col.Clicked() && onSelect != nil {
 					onSelect(item.tab)

@@ -7,12 +7,20 @@ import (
 	"stillpoets/internal/ui/theme"
 )
 
+// DialogOptions 封装居中弹层的标识与最大尺寸。
+type DialogOptions struct {
+	Key       string
+	MaxWidth  float32
+	MaxHeight float32
+}
+
 // AnimatedDialog 渲染带遮罩淡入淡出与卡片弹性缩放上浮的居中弹层。
 // 点击遮罩或按 Escape 会将 *open 设为 false。
-func AnimatedDialog(c *ui.Context, key string, open *bool, pal theme.Palette, maxWidth, maxHeight float32, content func()) {
+func AnimatedDialog(c *ui.Context, open *bool, pal theme.Palette, opts DialogOptions, content func()) {
 	if !*open {
 		return
 	}
+	key, maxWidth, maxHeight := opts.Key, opts.MaxWidth, opts.MaxHeight
 	winW, winH := c.Size()
 	w := maxWidth
 	if winW > 0 && winW-32 < w {
@@ -27,7 +35,7 @@ func AnimatedDialog(c *ui.Context, key string, open *bool, pal theme.Palette, ma
 	}
 
 	ui.Overlay(c, func() {
-		back := ui.Box(c.Key("dlg-back-"+key)).
+		back := ui.Box(c.Key("dlg-back-" + key)).
 			Absolute().
 			Left(0).Top(0).Right(0).Bottom(0).
 			Center().
@@ -59,16 +67,28 @@ func AnimatedDialog(c *ui.Context, key string, open *bool, pal theme.Palette, ma
 	})
 }
 
-// AnimatedSheet 渲染原生移动端手势底部抽屉（支持弹簧弹出、多段高度拖拽、下拉关闭与平板居中限宽）。
+// AnimatedSheet 渲染原生移动端手势底部抽屉（支持弹簧弹出、下拉关闭与平板居中限宽）。
+// 注意：MyGo mobile.Sheet 的多段 detents 是固定按最大高度布局再向下平移偏移量实现的，
+// 半高驻留时会把内部滚动区底部推出屏幕之外；因此统一收敛为单段可见高度，配合 Basis(0) 确保长列表完整滚到底。
 func AnimatedSheet(c *ui.Context, open *bool, pal theme.Palette, detents []float32, label string, content func()) {
 	bg := pal.Surface
+	effective := detents
+	if len(detents) > 1 {
+		best := detents[0]
+		for _, d := range detents[1:] {
+			if d > best {
+				best = d
+			}
+		}
+		effective = []float32{best}
+	}
 	mobile.Sheet(c, open, mobile.SheetOptions{
-		Detents:    detents,
+		Detents:    effective,
 		Background: &bg,
 		Label:      label,
 	}, func() {
-		ui.Column(c).FillWidth().Grow(1).AlignItems(ui.Center).Padding(4, 18, 16, 18).Children(func() {
-			ui.Column(c).FillWidth().MaxWidth(560).Grow(1).Gap(12).Children(content)
+		ui.Column(c).FillWidth().Grow(1).Basis(0).AlignItems(ui.Center).Padding(4, 18, 16, 18).Children(func() {
+			ui.Column(c).FillWidth().MaxWidth(560).Grow(1).Basis(0).Gap(12).Children(content)
 		})
 	})
 }

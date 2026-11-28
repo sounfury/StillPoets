@@ -68,6 +68,32 @@ func parseSimpleSelector(selector string) (styleRule, bool) {
 	return rule, true
 }
 
+func skipAtRule(cleaned string, i int) int {
+	for i < len(cleaned) && cleaned[i] != ';' && cleaned[i] != '{' {
+		i++
+	}
+	if i >= len(cleaned) {
+		return i
+	}
+	if cleaned[i] == ';' {
+		return i + 1
+	}
+	depth := 0
+	for i < len(cleaned) {
+		switch cleaned[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+		i++
+	}
+	return i
+}
+
 func (s *styleSheet) add(text string) {
 	cleaned := cssComment.ReplaceAllString(text, "")
 	i := 0
@@ -82,29 +108,7 @@ func (s *styleSheet) add(text string) {
 		// Skip @-rules (@media, @page, @font-face, @import, @charset, etc.) so
 		// print/media-specific rules cannot leak into base structural styles.
 		if cleaned[i] == '@' {
-			for i < len(cleaned) && cleaned[i] != ';' && cleaned[i] != '{' {
-				i++
-			}
-			if i >= len(cleaned) {
-				break
-			}
-			if cleaned[i] == ';' {
-				i++
-				continue
-			}
-			depth := 0
-			for i < len(cleaned) {
-				if cleaned[i] == '{' {
-					depth++
-				} else if cleaned[i] == '}' {
-					depth--
-					if depth == 0 {
-						i++
-						break
-					}
-				}
-				i++
-			}
+			i = skipAtRule(cleaned, i)
 			continue
 		}
 		brace := strings.IndexByte(cleaned[i:], '{')

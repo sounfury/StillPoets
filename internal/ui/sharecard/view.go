@@ -425,7 +425,7 @@ func renderCollectionBody(c *ui.Context, data CardData, pal CardPalette) {
 	ui.Column(c.Key("sc-col-body")).FillWidth().Gap(16).Children(func() {
 		// 顶部书封 + 书名作者 + 精选计数
 		ui.Row(c.Key("sc-col-head")).FillWidth().Gap(14).AlignItems(ui.Center).Children(func() {
-			renderMiniBookCover(c, "sc-col-cover", data.BookID, data.CoverImg, pal, 46, 60)
+			renderMiniBookCover(c, pal, miniCoverSpec{key: "sc-col-cover", bookID: data.BookID, coverImg: data.CoverImg, w: 46, h: 60})
 			ui.Column(c.Key("sc-col-meta")).Grow(1).Gap(4).Children(func() {
 				title := strings.TrimSpace(data.BookTitle)
 				if title == "" {
@@ -505,7 +505,7 @@ func renderFinishedBody(c *ui.Context, data CardData, pal CardPalette) {
 	ui.Column(c.Key("sc-fin-body")).FillWidth().Gap(16).Children(func() {
 		// 书封 + 书名作者 + 完读日期
 		ui.Row(c.Key("sc-fin-head")).FillWidth().Gap(14).AlignItems(ui.Center).Children(func() {
-			renderMiniBookCover(c, "sc-fin-cover", data.BookID, data.CoverImg, pal, 56, 74)
+			renderMiniBookCover(c, pal, miniCoverSpec{key: "sc-fin-cover", bookID: data.BookID, coverImg: data.CoverImg, w: 56, h: 74})
 			ui.Column(c.Key("sc-fin-meta")).Grow(1).Gap(5).Children(func() {
 				ui.Row(c.Key("sc-fin-pill-row")).FillWidth().Children(func() {
 					ui.Box(c.Key("sc-fin-pill")).Padding(2, 8).Radius(999).Background(pal.AccentSoft).Children(func() {

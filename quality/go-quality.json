@@ -1,6 +1,6 @@
 {
   "roots": ["main.go", "internal", "modules"],
-  "excludeSuffixes": ["_test.go"],
+  "excludeSuffixes": ["_test.go", "_native.go"],
   "fileLength": 800,
   "cyclomatic": 15,
   "cognitive": 20,

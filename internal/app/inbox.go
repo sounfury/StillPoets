@@ -200,7 +200,14 @@ func (s *Service) consumeRemoteInbox(
 		firstRes.PartialSync = true
 		return firstRes, true
 	}
-	applyErr := s.store.ApplyMergedSnapshotEx(ctx, pubRes.MergedData, meta.DirtySeq, pubRes.MaxCounter, pubRes.PublishedRev, pubRes.Published, keepDirty, remoteDeviceRevs)
+	applyErr := s.store.ApplyMergedSnapshotEx(ctx, pubRes.MergedData, storage.ApplySnapshotOptions{
+		ExportedDirtySeq: meta.DirtySeq,
+		MaxCounter:       pubRes.MaxCounter,
+		PublishedRev:     pubRes.PublishedRev,
+		Published:        pubRes.Published,
+		KeepDirty:        keepDirty,
+		RemoteDeviceRevs: remoteDeviceRevs,
+	})
 	if applyErr == nil {
 		s.remoteDevices = slices.Clone(pubRes.RemoteDevices)
 	}

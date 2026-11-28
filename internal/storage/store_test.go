@@ -222,9 +222,9 @@ func TestStoreBookContentAndFTS(t *testing.T) {
 			t.Fatalf("empty search %q = %+v", query, found)
 		}
 	}
-	_, err = s.ToggleFavoritePoem(ctx, book.ID, poem.ID, poem.Title, poem.Author, "摘句", true)
+	_, err = s.ToggleFavoritePoem(ctx, FavoritePoemInput{BookID: book.ID, PoemID: poem.ID, PoemTitle: poem.Title, Author: poem.Author, Excerpt: "摘句", Active: true})
 	must(t, err)
-	_, err = s.CreatePoemExcerptQuote(ctx, book.ID, poem.ID, poem.Title, book.Title, poem.Author, "摘句", "1-1")
+	_, err = s.CreatePoemExcerptQuote(ctx, PoemExcerptQuoteInput{BookID: book.ID, PoemID: poem.ID, PoemTitle: poem.Title, SourceBook: book.Title, Author: poem.Author, Content: "摘句", HighlightLines: "1-1"})
 	must(t, err)
 	_, err = s.RecordPoemRead(ctx, book.ID, poem.ID, 0.3, book.PoemCount)
 	must(t, err)
@@ -285,9 +285,9 @@ func TestStoreFailedImportRollsBackContentAndVersion(t *testing.T) {
 func TestStoreFavoriteActiveAndExcerptAreIndependent(t *testing.T) {
 	s, ctx := openTestStore(t), t.Context()
 	importTestBook(t, s, "b")
-	lit, err := s.ToggleFavoritePoem(ctx, "b", "b-p1", "山间", "山人", "默认节选", true)
+	lit, err := s.ToggleFavoritePoem(ctx, FavoritePoemInput{BookID: "b", PoemID: "b-p1", PoemTitle: "山间", Author: "山人", Excerpt: "默认节选", Active: true})
 	must(t, err)
-	off, err := s.ToggleFavoritePoem(ctx, "b", "b-p1", "山间", "山人", "默认节选", false)
+	off, err := s.ToggleFavoritePoem(ctx, FavoritePoemInput{BookID: "b", PoemID: "b-p1", PoemTitle: "山间", Author: "山人", Excerpt: "默认节选", Active: false})
 	must(t, err)
 	must(t, s.UpdateFavoriteExcerpt(ctx, "b", "b-p1", "自选节选", "2-2", true))
 	visible, err := s.ListFavorites(ctx, "")
@@ -301,7 +301,7 @@ func TestStoreFavoriteActiveAndExcerptAreIndependent(t *testing.T) {
 	if updated.Active || updated.ActiveVer != off.ActiveVer || !updated.ExcerptVer.After(lit.ExcerptVer) || updated.DeletedAt != off.DeletedAt {
 		t.Fatalf("excerpt edit changed membership: %+v", updated)
 	}
-	relit, err := s.ToggleFavoritePoem(ctx, "b", "b-p1", "山间", "山人", "另一个默认节选", true)
+	relit, err := s.ToggleFavoritePoem(ctx, FavoritePoemInput{BookID: "b", PoemID: "b-p1", PoemTitle: "山间", Author: "山人", Excerpt: "另一个默认节选", Active: true})
 	must(t, err)
 	if relit.ID != lit.ID || !relit.Active || !relit.ActiveVer.After(updated.ActiveVer) || relit.Excerpt != "自选节选" ||
 		relit.HighlightLines != "2-2" || !relit.IsCustomQuote || relit.ExcerptVer != updated.ExcerptVer || relit.DeletedAt != 0 {
@@ -312,9 +312,9 @@ func TestStoreFavoriteActiveAndExcerptAreIndependent(t *testing.T) {
 func TestStoreQuoteKindsFacetsAndFTS(t *testing.T) {
 	s, ctx := openTestStore(t), t.Context()
 	book, sp := importTestBook(t, s, "b")
-	one, err := s.CreatePoemExcerptQuote(ctx, book.ID, "b-p1", "山间", book.Title, book.Author, "明月照山间", "1-1")
+	one, err := s.CreatePoemExcerptQuote(ctx, PoemExcerptQuoteInput{BookID: book.ID, PoemID: "b-p1", PoemTitle: "山间", SourceBook: book.Title, Author: book.Author, Content: "明月照山间", HighlightLines: "1-1"})
 	must(t, err)
-	two, err := s.CreatePoemExcerptQuote(ctx, book.ID, "b-p1", "山间", book.Title, book.Author, "又见远山", "2-2")
+	two, err := s.CreatePoemExcerptQuote(ctx, PoemExcerptQuoteInput{BookID: book.ID, PoemID: "b-p1", PoemTitle: "山间", SourceBook: book.Title, Author: book.Author, Content: "又见远山", HighlightLines: "2-2"})
 	must(t, err)
 	manual, err := s.CreateStandaloneQuote(ctx, "clouds", "A", "Z", "reeden")
 	must(t, err)
@@ -413,7 +413,7 @@ func TestStoreReadingProgressAndStats(t *testing.T) {
 	if continueItem == nil || continueItem.Book.ID != "newer" || continueItem.PoemTitle != "山间" {
 		t.Fatalf("continue reading = %+v", continueItem)
 	}
-	_, err = s.ToggleFavoritePoem(ctx, "older", "older-p2", "深林", "", "quiet forest", true)
+	_, err = s.ToggleFavoritePoem(ctx, FavoritePoemInput{BookID: "older", PoemID: "older-p2", PoemTitle: "深林", Excerpt: "quiet forest", Active: true})
 	must(t, err)
 	_, err = s.CreateStandaloneQuote(ctx, "散句", "", "", "manual")
 	must(t, err)
@@ -458,7 +458,7 @@ func TestStoreSyncMergePreservesLocalCacheAndProgress(t *testing.T) {
 	must(t, err)
 	book, sp := importTestBook(t, left, "b")
 	must(t, left.SetBookGroup(ctx, book.ID, group.ID))
-	_, err = left.ToggleFavoritePoem(ctx, book.ID, "b-p1", "山间", book.Author, "默认", true)
+	_, err = left.ToggleFavoritePoem(ctx, FavoritePoemInput{BookID: book.ID, PoemID: "b-p1", PoemTitle: "山间", Author: book.Author, Excerpt: "默认", Active: true})
 	must(t, err)
 	kept, err := left.CreateStandaloneQuote(ctx, "oldtext", "作者", "出处", "manual")
 	must(t, err)
@@ -628,10 +628,10 @@ func TestUpdateSettingsPatchAndKeepDirtyAndMaxCounterGuard(t *testing.T) {
 	// 验证 keepDirty=true 在 published=true 时保留 dirty=1，且拒绝超大 Lamport 计数
 	data, meta, err := s.ExportSnapshot(ctx)
 	must(t, err)
-	if err := s.ApplyMergedSnapshotEx(ctx, data, meta.DirtySeq, ^uint64(0), 1, true, false, nil); err == nil {
+	if err := s.ApplyMergedSnapshotEx(ctx, data, ApplySnapshotOptions{ExportedDirtySeq: meta.DirtySeq, MaxCounter: ^uint64(0), PublishedRev: 1, Published: true}); err == nil {
 		t.Fatalf("expected oversized lamport counter to fail")
 	}
-	must(t, s.ApplyMergedSnapshotEx(ctx, data, meta.DirtySeq, meta.LamportCounter, 1, true, true, nil))
+	must(t, s.ApplyMergedSnapshotEx(ctx, data, ApplySnapshotOptions{ExportedDirtySeq: meta.DirtySeq, MaxCounter: meta.LamportCounter, PublishedRev: 1, Published: true, KeepDirty: true}))
 	after, err := s.GetSyncMeta(ctx)
 	must(t, err)
 	if !after.Dirty || after.LocalRev != 1 {
@@ -647,7 +647,7 @@ func TestApplyMergedSnapshotExPersistsRemoteDeviceRevsAtomically(t *testing.T) {
 		t.Fatalf("fresh database has remote revs: %v", meta.KnownRemoteRevs)
 	}
 	initial := map[string]uint64{"dev-a": 2, "dev-deleted": 1}
-	must(t, s.ApplyMergedSnapshotEx(ctx, booksync.SnapshotData{}, meta.DirtySeq, 2, 1, true, false, initial))
+	must(t, s.ApplyMergedSnapshotEx(ctx, booksync.SnapshotData{}, ApplySnapshotOptions{ExportedDirtySeq: meta.DirtySeq, MaxCounter: 2, PublishedRev: 1, Published: true, RemoteDeviceRevs: initial}))
 	meta, err = s.GetSyncMeta(ctx)
 	must(t, err)
 	if !maps.Equal(meta.KnownRemoteRevs, initial) {
@@ -660,7 +660,7 @@ func TestApplyMergedSnapshotExPersistsRemoteDeviceRevsAtomically(t *testing.T) {
 	must(t, err)
 	changed := booksync.SnapshotData{Groups: []domain.BookGroup{{ID: "remote", Name: "远端分组"}}}
 	replacement := map[string]uint64{"dev-a": 3}
-	if err := s.ApplyMergedSnapshotEx(ctx, changed, meta.DirtySeq, 3, 2, true, false, replacement); err == nil || !strings.Contains(err.Error(), "remote revs test failure") {
+	if err := s.ApplyMergedSnapshotEx(ctx, changed, ApplySnapshotOptions{ExportedDirtySeq: meta.DirtySeq, MaxCounter: 3, PublishedRev: 2, Published: true, RemoteDeviceRevs: replacement}); err == nil || !strings.Contains(err.Error(), "remote revs test failure") {
 		t.Fatalf("expected transaction failure, got %v", err)
 	}
 	dbData, dbMeta, err := s.ExportSnapshot(ctx)
@@ -671,7 +671,7 @@ func TestApplyMergedSnapshotExPersistsRemoteDeviceRevsAtomically(t *testing.T) {
 
 	_, err = s.db.Execute(ctx, `DROP TRIGGER fail_remote_revs`)
 	must(t, err)
-	must(t, s.ApplyMergedSnapshotEx(ctx, changed, meta.DirtySeq, 3, 0, false, false, replacement))
+	must(t, s.ApplyMergedSnapshotEx(ctx, changed, ApplySnapshotOptions{ExportedDirtySeq: meta.DirtySeq, MaxCounter: 3, RemoteDeviceRevs: replacement}))
 	dbData, dbMeta, err = s.ExportSnapshot(ctx)
 	must(t, err)
 	if len(dbData.Groups) != 1 || dbMeta.LocalRev != 1 || !maps.Equal(dbMeta.KnownRemoteRevs, replacement) {

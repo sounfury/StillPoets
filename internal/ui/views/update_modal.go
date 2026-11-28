@@ -407,7 +407,7 @@ func (a *AppUI) renderUpdateModal(c *ui.Context, pal theme.Palette) {
 	}
 
 	wasOpen := a.showUpdateModal
-	components.AnimatedDialog(c, "app-update", &a.showUpdateModal, pal, 396, 520, func() {
+	components.AnimatedDialog(c, &a.showUpdateModal, pal, components.DialogOptions{Key: "app-update", MaxWidth: 396, MaxHeight: 520}, func() {
 		// 1. 顶部标题与版本变化胶囊
 		ui.Row(c.Key("upd-dlg-header")).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Box(c).

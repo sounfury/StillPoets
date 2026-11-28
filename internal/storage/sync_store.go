@@ -75,15 +75,36 @@ func (s *Store) snapshotData(ctx context.Context) (booksync.SnapshotData, error)
 	return data, nil
 }
 
+// ApplySnapshotOptions 封装合并快照提交参数。
+type ApplySnapshotOptions struct {
+	ExportedDirtySeq uint64
+	MaxCounter       uint64
+	PublishedRev     uint64
+	Published        bool
+	KeepDirty        bool
+	RemoteDeviceRevs map[string]uint64
+}
+
 // ApplyMergedSnapshot receives the DirtySeq from the export used for this sync round.
 func (s *Store) ApplyMergedSnapshot(ctx context.Context, merged booksync.SnapshotData, exportedDirtySeq, maxCounter, publishedRev uint64, published bool) error {
-	return s.ApplyMergedSnapshotEx(ctx, merged, exportedDirtySeq, maxCounter, publishedRev, published, false, nil)
+	return s.ApplyMergedSnapshotEx(ctx, merged, ApplySnapshotOptions{
+		ExportedDirtySeq: exportedDirtySeq,
+		MaxCounter:       maxCounter,
+		PublishedRev:     publishedRev,
+		Published:        published,
+	})
 }
 
 // ApplyMergedSnapshotEx 允许在存在未验证资产（keepDirty=true）时推进 local_rev 但仍保留 dirty=1，
 // 防止部分发布后误清脏标记导致新书长期漏发（P1-1），并拒绝超过 MaxInt64 的异常 Lamport 计数（P1-13）。
 // remoteDeviceRevs 非 nil 时，随合并数据提交整个工作区的已验证远端代次记录。
-func (s *Store) ApplyMergedSnapshotEx(ctx context.Context, merged booksync.SnapshotData, exportedDirtySeq, maxCounter, publishedRev uint64, published, keepDirty bool, remoteDeviceRevs map[string]uint64) error {
+func (s *Store) ApplyMergedSnapshotEx(ctx context.Context, merged booksync.SnapshotData, opts ApplySnapshotOptions) error {
+	exportedDirtySeq := opts.ExportedDirtySeq
+	maxCounter := opts.MaxCounter
+	publishedRev := opts.PublishedRev
+	published := opts.Published
+	keepDirty := opts.KeepDirty
+	remoteDeviceRevs := opts.RemoteDeviceRevs
 	if maxCounter > math.MaxInt64 {
 		return fmt.Errorf("storage: remote lamport counter %d exceeds int64 limit", maxCounter)
 	}

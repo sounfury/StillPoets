@@ -139,24 +139,11 @@ func ValidateInboxItem(item InboxItem, expectedImportID string) error {
 	if item.RawSize <= 0 || item.RawSize > MaxInboxEPUBBytes {
 		return fmt.Errorf("sync: invalid inbox rawSize %d", item.RawSize)
 	}
-	if !isHexSHA256(item.RawSHA256) {
+	if !domain.IsHexSHA256(item.RawSHA256) {
 		return fmt.Errorf("sync: invalid inbox rawSha256 %q", item.RawSHA256)
 	}
 	if item.SubmittedAt <= 0 {
 		return errors.New("sync: inbox submittedAt must be positive")
 	}
 	return nil
-}
-
-func isHexSHA256(s string) bool {
-	if len(s) != 64 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-			return false
-		}
-	}
-	return true
 }

@@ -81,24 +81,27 @@ func mergeOneGroup(x, y domain.BookGroup) domain.BookGroup {
 		ID:        x.ID,
 		CreatedAt: minPositive(x.CreatedAt, y.CreatedAt),
 	}
-
-	if cmp := x.NameVer.Compare(y.NameVer); cmp > 0 || (cmp == 0 && x.Name >= y.Name) {
-		out.Name, out.NameVer = x.Name, x.NameVer
-	} else {
-		out.Name, out.NameVer = y.Name, y.NameVer
-	}
-
-	if cmp := x.SortVer.Compare(y.SortVer); cmp > 0 || (cmp == 0 && x.SortOrder >= y.SortOrder) {
-		out.SortOrder, out.SortVer = x.SortOrder, x.SortVer
-	} else {
-		out.SortOrder, out.SortVer = y.SortOrder, y.SortVer
-	}
-
+	out.Name, out.NameVer = mergeVersionedString(x.Name, x.NameVer, y.Name, y.NameVer)
+	out.SortOrder, out.SortVer = mergeVersionedInt(x.SortOrder, x.SortVer, y.SortOrder, y.SortVer)
 	out.Deleted, out.DeletedAt, out.DeletedVer = mergePermanentDelete(
 		x.Deleted, x.DeletedAt, x.DeletedVer,
 		y.Deleted, y.DeletedAt, y.DeletedVer,
 	)
 	return out
+}
+
+func mergeVersionedString(xv string, xVer domain.Version, yv string, yVer domain.Version) (string, domain.Version) {
+	if cmp := xVer.Compare(yVer); cmp > 0 || (cmp == 0 && xv >= yv) {
+		return xv, xVer
+	}
+	return yv, yVer
+}
+
+func mergeVersionedInt(xv int, xVer domain.Version, yv int, yVer domain.Version) (int, domain.Version) {
+	if cmp := xVer.Compare(yVer); cmp > 0 || (cmp == 0 && xv >= yv) {
+		return xv, xVer
+	}
+	return yv, yVer
 }
 
 // MergeBooks 按 bookId 合并纯诗集元数据（不混入本机 LocalState / LocalContentHash）。
@@ -185,11 +188,7 @@ func mergeOneBook(x, y domain.Book) domain.Book {
 	}
 
 	// 独立可编辑字段：GroupID / IsStarred / SortOrder
-	if cmp := x.GroupVer.Compare(y.GroupVer); cmp > 0 || (cmp == 0 && x.GroupID >= y.GroupID) {
-		out.GroupID, out.GroupVer = x.GroupID, x.GroupVer
-	} else {
-		out.GroupID, out.GroupVer = y.GroupID, y.GroupVer
-	}
+	out.GroupID, out.GroupVer = mergeVersionedString(x.GroupID, x.GroupVer, y.GroupID, y.GroupVer)
 
 	if cmp := x.StarredVer.Compare(y.StarredVer); cmp > 0 || (cmp == 0 && (x.IsStarred || !y.IsStarred)) {
 		out.IsStarred, out.StarredVer = x.IsStarred, x.StarredVer
@@ -197,11 +196,7 @@ func mergeOneBook(x, y domain.Book) domain.Book {
 		out.IsStarred, out.StarredVer = y.IsStarred, y.StarredVer
 	}
 
-	if cmp := x.SortVer.Compare(y.SortVer); cmp > 0 || (cmp == 0 && x.SortOrder >= y.SortOrder) {
-		out.SortOrder, out.SortVer = x.SortOrder, x.SortVer
-	} else {
-		out.SortOrder, out.SortVer = y.SortOrder, y.SortVer
-	}
+	out.SortOrder, out.SortVer = mergeVersionedInt(x.SortOrder, x.SortVer, y.SortOrder, y.SortVer)
 
 	out.Deleted, out.DeletedAt, out.DeletedVer = mergePermanentDelete(
 		x.Deleted, x.DeletedAt, x.DeletedVer,

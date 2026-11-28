@@ -80,10 +80,21 @@ func (s *Store) CreateStandaloneQuote(ctx context.Context, content, author, sour
 	})
 }
 
-func (s *Store) CreatePoemExcerptQuote(ctx context.Context, bookID, poemID, poemTitle, sourceBook, author, content, highlightLines string) (domain.Quote, error) {
+// PoemExcerptQuoteInput 封装从诗篇摘录创建散页句子的参数。
+type PoemExcerptQuoteInput struct {
+	BookID         string
+	PoemID         string
+	PoemTitle      string
+	SourceBook     string
+	Author         string
+	Content        string
+	HighlightLines string
+}
+
+func (s *Store) CreatePoemExcerptQuote(ctx context.Context, in PoemExcerptQuoteInput) (domain.Quote, error) {
 	return s.createQuote(ctx, domain.Quote{
-		Kind: domain.QuoteKindExcerpt, BookID: bookID, PoemID: poemID, PoemTitle: poemTitle, SourceBook: sourceBook,
-		Author: author, Content: content, HighlightLines: highlightLines, ImportSource: "reader",
+		Kind: domain.QuoteKindExcerpt, BookID: in.BookID, PoemID: in.PoemID, PoemTitle: in.PoemTitle, SourceBook: in.SourceBook,
+		Author: in.Author, Content: in.Content, HighlightLines: in.HighlightLines, ImportSource: "reader",
 	})
 }
 

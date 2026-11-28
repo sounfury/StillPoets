@@ -105,10 +105,10 @@ func TestShareCardModalAllEntriesAndAsyncExport(t *testing.T) {
 		t.Fatalf("selection share card unexpected state: %+v", appUI.shareCardData)
 	}
 
-	// 3. 阅读器顶栏入口：整诗长图 + 备选本诗金句
+	// 3. 阅读器顶栏入口：纯净的整诗长图（单段/选句分享已收口至长按段落交互）
 	appUI.openPoemShareCard(book, sp.Poems[0])
-	if appUI.shareCardData.Kind != sharecard.KindPoem || appUI.shareCardAltQuote == nil || appUI.shareCardAltPoem == nil {
-		t.Fatalf("poem share card missing alt quote switch")
+	if appUI.shareCardData.Kind != sharecard.KindPoem {
+		t.Fatalf("poem share card unexpected kind: %v", appUI.shareCardData.Kind)
 	}
 	if img := ui.Render(appUI.Render, 1080, 720, 1.0); img == nil {
 		t.Fatalf("tablet render poem share modal returned nil")

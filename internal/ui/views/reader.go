@@ -1,21 +1,47 @@
 package views
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/egoist/mygo/ui"
 
-	"stillpoets/internal/app"
 	"stillpoets/internal/domain"
 	"stillpoets/internal/ui/components"
 	"stillpoets/internal/ui/layout"
 	"stillpoets/internal/ui/theme"
 )
+
+// stanzaLongPressLineLimit 控制长按段落时的默认选中粒度：
+// 诗节行数不超过该阈值时默认选中整节，超过则视为不分节长诗并精准落到当前单行。
+const stanzaLongPressLineLimit = 8
+
+type poemContextTarget struct {
+	poemID     string
+	stanzaIdx  int
+	lineStart  int // 1-based inclusive
+	lineEnd    int // 1-based inclusive
+	isWholeRow bool
+}
+
+func (t *poemContextTarget) lineNumbers() []int {
+	if t == nil || t.lineStart <= 0 || t.lineEnd < t.lineStart {
+		return nil
+	}
+	nums := make([]int, 0, t.lineEnd-t.lineStart+1)
+	for n := t.lineStart; n <= t.lineEnd; n++ {
+		nums = append(nums, n)
+	}
+	return nums
+}
+
+func (a *AppUI) clearPoemSelectionState() {
+	a.selectingLines = false
+	a.selectedLines = map[int]bool{}
+	a.poemCtxTarget = nil
+}
 
 func (a *AppUI) renderReaderPane(c *ui.Context, pal theme.Palette, isTablet bool) {
 	book, hasBook := a.activeBook()
@@ -98,9 +124,9 @@ func (a *AppUI) renderReaderPane(c *ui.Context, pal theme.Palette, isTablet bool
 			a.renderPeekProgressBanner(c, pal, book, current, isTablet)
 		}
 
-		// 2. 若处于「划选诗行」模式，展示平滑展开的轻量操作条（留作散页 / 设为本诗金句）
+		// 2. 若处于「划选诗行」模式（由长按菜单点「勾选」进入），展示平滑展开的多行操作条
 		if a.selectingLines && hasPoem {
-			a.renderSelectionActionBar(c, pal, book, current)
+			a.renderSelectionActionBar(c, pal, book, current, isTablet)
 		}
 
 		// 3. 沉浸式整诗阅读主体（支持跟手左右滑动切换上一首/下一首诗，与长诗纵向滚动及划选模式无冲突）
@@ -248,6 +274,10 @@ func (a *AppUI) renderPoemSwipePager(c *ui.Context, pal theme.Palette, book doma
 			}
 		})
 
+		if track.Dragging() && a.poemCtxTarget != nil {
+			a.poemCtxTarget = nil
+		}
+
 		// 松手落点确定后立即同步顶栏标题、收藏态、页码与已读进度，正文继续平滑完成弹簧落位
 		if !track.Dragging() {
 			target := max(0, min(total-1, int(math.Round(float64(-a.poemPager.offset.X/width)))))
@@ -328,8 +358,7 @@ func (a *AppUI) renderReaderHeader(c *ui.Context, pal theme.Palette, book domain
 				if backBtn.Clicked() {
 					a.flushCurrentPoemDwell(false)
 					a.readerMobile = false
-					a.selectingLines = false
-					a.selectedLines = map[int]bool{}
+					a.clearPoemSelectionState()
 				}
 			}
 
@@ -360,26 +389,7 @@ func (a *AppUI) renderReaderHeader(c *ui.Context, pal theme.Palette, book domain
 					a.toggleCurrentPoemFavorite(book, poem, !isFav)
 				}
 
-				// 🔖 划选留作散页 / 设为本诗金句
-				bmBtn := ui.Box(c.Key("reader-excerpt")).Width(34).Height(34).Center().Radius(6).Cursor(ui.CursorPointer).
-					Transition(theme.ColorTransition())
-				theme.ApplyPressScale(bmBtn, 0.90)
-				if a.selectingLines {
-					bmBtn.Background(pal.HighlightBg)
-				}
-				bmBtn.Children(func() {
-					clr := pal.TextPrimary
-					if a.selectingLines {
-						clr = pal.Accent
-					}
-					ui.Icon(c, components.IconBookmark).Width(18).Height(18).TextColor(clr)
-				})
-				if bmBtn.Clicked() {
-					a.selectingLines = !a.selectingLines
-					a.selectedLines = map[int]bool{}
-				}
-
-				// 导出整诗长图 / 本诗金句卡片
+				// 导出整诗长图卡片（单段/选句分享统一由正文长按菜单触发）
 				cardBtn := ui.Box(c.Key("reader-share-card")).Width(34).Height(34).Center().Radius(6).Cursor(ui.CursorPointer)
 				theme.ApplyPressScale(cardBtn, 0.90)
 				cardBtn.Children(func() {
@@ -425,27 +435,7 @@ func (a *AppUI) renderPeekProgressBanner(c *ui.Context, pal theme.Palette, book 
 	}
 
 	renderPill := func(key, label string, primary bool, onClick func()) {
-		bg, fg, bd := pal.ReaderPaper, pal.TextPrimary, pal.Border
-		if primary {
-			bg, fg, bd = pal.Accent, pal.AccentText, pal.Accent
-		}
-		pill := ui.Box(c.Key(key)).
-			Padding(5, 11).
-			Radius(999).
-			Background(bg).
-			Border(1, bd).
-			Cursor(ui.CursorPointer).
-			Transition(theme.ColorTransition())
-		theme.ApplyPressScale(pill, 0.94)
-		pill.Children(func() {
-			t := ui.Text(c, label).FontSize(12).TextColor(fg)
-			if primary {
-				t.Bold()
-			}
-		})
-		if pill.Clicked() {
-			onClick()
-		}
+		renderReaderPillButton(c, pal, key, label, primary, onClick)
 	}
 
 	renderActions := func() {
@@ -514,40 +504,28 @@ func (a *AppUI) renderPeekProgressBanner(c *ui.Context, pal theme.Palette, book 
 	})
 }
 
-func (a *AppUI) renderSelectionActionBar(c *ui.Context, pal theme.Palette, book domain.Book, poem domain.Poem) {
-	selectedCount := len(a.selectedLines)
-	ui.Row(c.Key("selection-bar")).
-		FillWidth().
-		Padding(10, 24).
-		Gap(8).
-		Wrap().
-		AlignItems(ui.Center).
-		Background(pal.HighlightBg).
-		BorderColor(pal.Border).
-		BorderWidth(1, 0, 1, 0).
-		Transition(theme.BarRevealTransition()).
-		Children(func() {
-			if selectedCount == 0 {
-				ui.Text(c, "点按下方诗行勾选句子（同一首诗可多次划选不同段落）").
-					FontSize(12).TextColor(pal.TextSecondary).Grow(1)
-			} else {
-				ui.Textf(c, "已选 %d 行", selectedCount).FontSize(13).Bold().TextColor(pal.TextPrimary).Grow(1)
-				if ui.PrimaryButton(c, "🔖 留作散页").Clicked() {
-					a.saveSelectedLinesAsQuote(book, poem)
-				}
-				if ui.Button(c, "出卡").Clicked() {
-					content, _ := a.collectSelectedText(poem)
-					a.openSelectionShareCard(book, poem, content)
-				}
-				if ui.Button(c, "设为本诗金句").Clicked() {
-					a.saveSelectedLinesAsWidgetExcerpt(book, poem)
-				}
-			}
-			if ui.Button(c, "完成").Clicked() {
-				a.selectingLines = false
-				a.selectedLines = map[int]bool{}
-			}
-		})
+func renderReaderPillButton(c *ui.Context, pal theme.Palette, key, label string, primary bool, onClick func()) {
+	bg, fg, bd := pal.ReaderPaper, pal.TextPrimary, pal.Border
+	if primary {
+		bg, fg, bd = pal.Accent, pal.AccentText, pal.Accent
+	}
+	pill := ui.Box(c.Key(key)).
+		Padding(5, 11).
+		Radius(999).
+		Background(bg).
+		Border(1, bd).
+		Cursor(ui.CursorPointer).
+		Transition(theme.ColorTransition())
+	theme.ApplyPressScale(pill, 0.94)
+	pill.Children(func() {
+		t := ui.Text(c, label).FontSize(12).TextColor(fg)
+		if primary {
+			t.Bold()
+		}
+	})
+	if pill.Clicked() {
+		onClick()
+	}
 }
 
 func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.Book, poem domain.Poem, isCurrent bool) {
@@ -597,48 +575,15 @@ func (a *AppUI) renderPoemContent(c *ui.Context, pal theme.Palette, book domain.
 				})
 			}
 
-			// 诗节与逐行渲染（支持划选与 Deeplink 高亮）
-			lineNum := 0
-			ui.Column(c).Gap(18).Padding(8, 0, 8, 0).FillWidth().Children(func() {
-				for si, stanza := range poem.Stanzas {
-					ui.Column(c.Key(fmt.Sprintf("stanza-%d", si))).Gap(4).FillWidth().Children(func() {
-						for _, line := range stanza.Lines {
-							lineNum++
-							curLine := lineNum
-							isHighlighted := isCurrent && a.isLineHighlighted(curLine)
-							isSelected := isCurrent && a.selectedLines[curLine]
-
-							lineRow := ui.Box(c.Key(fmt.Sprintf("ln-%d", curLine))).
-								FillWidth().
-								Padding(3, 8).
-								Radius(4).
-								Transition(theme.ColorTransition())
-							if isSelected {
-								lineRow.Background(pal.HighlightBg).Border(1, pal.Accent)
-							} else if isHighlighted {
-								lineRow.Background(pal.HighlightBg)
-							}
-							if isCurrent && a.selectingLines {
-								lineRow.Cursor(ui.CursorPointer)
-							}
-							lineRow.Children(func() {
-								ui.Text(c, line).
-									Font(poetryFont).
-									FontSize(fontSize).
-									FontWeight(fontWeight).
-									LineHeight(lineHeight).
-									TextColor(pal.TextPrimary)
-							})
-							if isCurrent && a.selectingLines && lineRow.Clicked() {
-								if a.selectedLines[curLine] {
-									delete(a.selectedLines, curLine)
-								} else {
-									a.selectedLines[curLine] = true
-								}
-							}
-						}
-					})
-				}
+			// 诗节与逐行渲染（支持长按段落呼出快捷菜单、逐行勾选与 Deeplink 高亮）
+			a.renderPoemStanzas(c, pal, poemStanzaRenderArgs{
+				book:       book,
+				poem:       poem,
+				isCurrent:  isCurrent,
+				poetryFont: poetryFont,
+				fontSize:   fontSize,
+				fontWeight: fontWeight,
+				lineHeight: lineHeight,
 			})
 
 			// 落款 / 写作时间地点（Colophon）
@@ -736,8 +681,7 @@ func (a *AppUI) commitPoemIndex(bookID string, nextIdx int) {
 	}
 	a.activePoemIdx = nextIdx
 	a.highlightRanges = nil
-	a.selectingLines = false
-	a.selectedLines = map[int]bool{}
+	a.clearPoemSelectionState()
 
 	poem := a.activePoems[nextIdx]
 	bookAuthor := ""
@@ -778,8 +722,7 @@ func (a *AppUI) returnToMainlineProgress(bookID string) {
 	a.readerEntrySource = entryMainline
 	a.peekBannerHidden = false
 	a.highlightRanges = nil
-	a.selectingLines = false
-	a.selectedLines = map[int]bool{}
+	a.clearPoemSelectionState()
 	a.activePoemIdx = mainIdx
 	a.recordPoemReadAsync(bookID, mainPoem, a.activePoems)
 	a.showTransientToastOnUI("已回到顺序阅读进度")
@@ -812,97 +755,4 @@ func (a *AppUI) isLineHighlighted(lineNum int) bool {
 		}
 	}
 	return false
-}
-
-func (a *AppUI) collectSelectedText(poem domain.Poem) (string, string) {
-	if len(a.selectedLines) == 0 {
-		return "", ""
-	}
-	nums := make([]int, 0, len(a.selectedLines))
-	for k, ok := range a.selectedLines {
-		if ok {
-			nums = append(nums, k)
-		}
-	}
-	slices.Sort(nums)
-	wanted := make(map[int]bool, len(nums))
-	for _, n := range nums {
-		wanted[n] = true
-	}
-
-	var lines []string
-	cur := 0
-	for _, stanza := range poem.Stanzas {
-		for _, line := range stanza.Lines {
-			cur++
-			if wanted[cur] {
-				lines = append(lines, strings.TrimSpace(line))
-			}
-		}
-	}
-	return strings.Join(lines, "\n"), app.FormatLineRanges(nums)
-}
-
-func (a *AppUI) saveSelectedLinesAsQuote(book domain.Book, poem domain.Poem) {
-	content, lineSpec := a.collectSelectedText(poem)
-	if content == "" {
-		return
-	}
-	a.flushCurrentPoemDwell(true)
-	a.selectingLines = false
-	a.selectedLines = map[int]bool{}
-	a.highlightRanges = app.ParseLineRanges(lineSpec)
-
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if _, err := a.svc.CreatePoemExcerptQuote(ctx, book, poem, content, lineSpec); err != nil {
-			a.showTransientToast("留存散页失败：" + err.Error())
-			return
-		}
-		a.reloadSync(ctx)
-		a.showTransientToast("已留作诗歌节选散页")
-	}()
-}
-
-func (a *AppUI) saveSelectedLinesAsWidgetExcerpt(book domain.Book, poem domain.Poem) {
-	content, lineSpec := a.collectSelectedText(poem)
-	if content == "" {
-		return
-	}
-	a.flushCurrentPoemDwell(true)
-	a.selectingLines = false
-	a.selectedLines = map[int]bool{}
-	a.highlightRanges = app.ParseLineRanges(lineSpec)
-
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := a.svc.SetFavoriteCustomExcerpt(ctx, book, poem, content, lineSpec); err != nil {
-			a.showTransientToast("设置金句失败：" + err.Error())
-			return
-		}
-		a.reloadSync(ctx)
-		a.showTransientToast("已设为本诗小组件金句")
-	}()
-}
-
-func (a *AppUI) toggleCurrentPoemFavorite(book domain.Book, poem domain.Poem, active bool) {
-	if active {
-		a.flushCurrentPoemDwell(true)
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if _, err := a.svc.ToggleFavoritePoem(ctx, book, poem, active); err != nil {
-			a.showTransientToast("操作失败：" + err.Error())
-			return
-		}
-		a.reloadSync(ctx)
-		if active {
-			a.showTransientToast("已加入诗篇精选")
-		} else {
-			a.showTransientToast("已取消精选")
-		}
-	}()
 }

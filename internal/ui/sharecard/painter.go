@@ -71,8 +71,17 @@ func drawDoubleFrame(p *ui.Painter, r ui.Rect, outerClr, innerClr ui.Color) {
 	}
 }
 
-// drawMiniBookCover 在卡片内渲染迷你实体书封（有原书封面图则直接渲染，否则生成稳定抽象几何书封 + 书脊折痕）。
-func renderMiniBookCover(c *ui.Context, key, bookID string, coverImg ui.ImageSource, pal CardPalette, w, h float32) {
+type miniCoverSpec struct {
+	key      string
+	bookID   string
+	coverImg ui.ImageSource
+	w        float32
+	h        float32
+}
+
+// renderMiniBookCover 在卡片内渲染迷你实体书封（有原书封面图则直接渲染，否则生成稳定抽象几何书封 + 书脊折痕）。
+func renderMiniBookCover(c *ui.Context, pal CardPalette, spec miniCoverSpec) {
+	key, bookID, coverImg, w, h := spec.key, spec.bookID, spec.coverImg, spec.w, spec.h
 	shadowClr := ui.RGBA(28, 22, 16, 0.16)
 	if pal.IsDark {
 		shadowClr = ui.RGBA(0, 0, 0, 0.45)

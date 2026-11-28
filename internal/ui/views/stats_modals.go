@@ -29,7 +29,7 @@ func (a *AppUI) renderFinishedBookModal(c *ui.Context, pal theme.Palette) {
 	b := item.Book
 	prog := item.Progress
 
-	components.AnimatedDialog(c, "finished-book-detail", &a.showFinishedModal, pal, 440, 600, func() {
+	components.AnimatedDialog(c, &a.showFinishedModal, pal, components.DialogOptions{Key: "finished-book-detail", MaxWidth: 440, MaxHeight: 600}, func() {
 		// 顶部书封 + 书名 + 完读日期
 		ui.Row(c).FillWidth().Gap(14).AlignItems(ui.Start).Children(func() {
 			components.BookCoverThumbnail(c, "fin-dlg-cov-"+b.ID, b.ID, a.coverImageFor(b), pal)
@@ -156,7 +156,7 @@ func (a *AppUI) openBookCollectionShareCardAsync(book domain.Book, fallback []do
 }
 
 func (a *AppUI) renderAuthorProfileModal(c *ui.Context, pal theme.Palette) {
-	components.AnimatedDialog(c, "author-profile", &a.showAuthorModal, pal, 480, 620, func() {
+	components.AnimatedDialog(c, &a.showAuthorModal, pal, components.DialogOptions{Key: "author-profile", MaxWidth: 480, MaxHeight: 620}, func() {
 		prof := a.detailAuthorProfile
 
 		// 标题栏
@@ -325,16 +325,7 @@ func (a *AppUI) renderAuthorProfileModal(c *ui.Context, pal theme.Palette) {
 						ui.Text(c, "近期读过").Font(theme.FontSerif).FontSize(13.5).Bold().TextColor(pal.TextSecondary)
 						for i, it := range prof.RecentReads {
 							it := it
-							row := ui.Row(c.Key(fmt.Sprintf("au-rd-%d-%s", i, it.Event.ID))).
-								FillWidth().
-								Padding(8, 11).
-								Gap(8).
-								Radius(7).
-								Background(pal.Background).
-								Border(0.75, pal.Border).
-								AlignItems(ui.Center).
-								Cursor(ui.CursorPointer)
-							theme.ApplyPressScale(row, 0.985)
+							row := renderStatsEventRowBox(c, fmt.Sprintf("au-rd-%d-%s", i, it.Event.ID), pal, 8, 8)
 							row.Children(func() {
 								ui.Column(c).Grow(1).Gap(2).Children(func() {
 									title := it.Event.PoemTitle

@@ -198,6 +198,10 @@ func (a *AppUI) renderShelfOrganizeBar(c *ui.Context, pal theme.Palette, isTable
 				Padding(10, 14, bottomPad, 14).
 				Gap(8).
 				Children(func() {
+					label := fmt.Sprintf("已选 %d 本", count)
+					if count == 0 {
+						label = "点选诗集封面"
+					}
 					if a.shelfTargetGroupID != "" {
 						targetName := a.groupNameByID(a.shelfTargetGroupID)
 						if targetName == "" {
@@ -205,13 +209,8 @@ func (a *AppUI) renderShelfOrganizeBar(c *ui.Context, pal theme.Palette, isTable
 							return
 						}
 						ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-							label := fmt.Sprintf("已选 %d 本", count)
-							if count == 0 {
-								label = "点选诗集封面"
-							}
 							ui.Text(c, label).
 								Font(theme.FontSans).FontFeatures("tnum").FontSize(12.5).TextColor(pal.TextSecondary).Grow(1)
-
 							if ui.Button(c, "取消").Clicked() {
 								prevTarget := a.shelfTargetGroupID
 								a.exitShelfOrganize()
@@ -226,20 +225,14 @@ func (a *AppUI) renderShelfOrganizeBar(c *ui.Context, pal theme.Palette, isTable
 					}
 
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-						label := fmt.Sprintf("已选 %d 本", count)
-						if count == 0 {
-							label = "点选诗集封面"
-						}
 						ui.Text(c, label).
 							Font(theme.FontSans).FontFeatures("tnum").FontSize(12.5).TextColor(pal.TextSecondary).Grow(1)
-
 						if a.selectedGrp != "" {
 							removeBtn := ui.Button(c, "移出本组").Disabled(count == 0)
 							if count > 0 && removeBtn.Clicked() {
 								a.applyBatchGroupMoveAsync(ids, "", "", false)
 							}
 						}
-
 						moveBtn := ui.PrimaryButton(c, "移入分组").Disabled(count == 0)
 						if count > 0 && moveBtn.Clicked() {
 							a.batchNewGroupName = ""
@@ -258,6 +251,25 @@ func (a *AppUI) renderShelfOrganizeModals(c *ui.Context, pal theme.Palette) {
 	a.renderBookActionModal(c, pal)
 }
 
+func (a *AppUI) createGroupAndAssignBooksAsync(name string, bookIDs []string, toastSuffix string) {
+	moveIDs := append([]string(nil), bookIDs...)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		grp, err := a.svc.CreateGroup(ctx, name)
+		if err != nil {
+			a.showTransientToast("新建分组失败：" + err.Error())
+			return
+		}
+		if err := a.svc.SetBooksGroup(ctx, moveIDs, grp.ID); err != nil {
+			a.showTransientToast("移入分组失败：" + err.Error())
+			return
+		}
+		a.reloadSync(nil)
+		a.showTransientToast(fmt.Sprintf("已新建「%s」并收入%s", grp.Name, toastSuffix))
+	}()
+}
+
 // renderBatchGroupModal 渲染单层极简「移入分组」选择弹窗，支持一键新建分组并直接移入。
 func (a *AppUI) renderBatchGroupModal(c *ui.Context, pal theme.Palette) {
 	ids := a.selectedShelfBookIDs()
@@ -266,7 +278,7 @@ func (a *AppUI) renderBatchGroupModal(c *ui.Context, pal theme.Palette) {
 		return
 	}
 
-	components.AnimatedDialog(c, "batch-group-pick", &a.showBatchGroupModal, pal, 400, 520, func() {
+	components.AnimatedDialog(c, &a.showBatchGroupModal, pal, components.DialogOptions{Key: "batch-group-pick", MaxWidth: 400, MaxHeight: 520}, func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 			ui.Textf(c, "将 %d 本诗集移入分组", len(ids)).
 				Font(theme.FontSerif).FontSize(16.5).Bold().TextColor(pal.TextPrimary).Grow(1)
@@ -330,22 +342,7 @@ func (a *AppUI) renderBatchGroupModal(c *ui.Context, pal theme.Palette) {
 						a.batchNewGroupName = ""
 						a.showBatchGroupModal = false
 						a.exitShelfOrganize()
-						moveIDs := append([]string(nil), ids...)
-						go func() {
-							ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-							defer cancel()
-							grp, err := a.svc.CreateGroup(ctx, name)
-							if err != nil {
-								a.showTransientToast("新建分组失败：" + err.Error())
-								return
-							}
-							if err := a.svc.SetBooksGroup(ctx, moveIDs, grp.ID); err != nil {
-								a.showTransientToast("移入分组失败：" + err.Error())
-								return
-							}
-							a.reloadSync(nil)
-							a.showTransientToast(fmt.Sprintf("已新建「%s」并收入 %d 本诗集", grp.Name, len(moveIDs)))
-						}()
+						a.createGroupAndAssignBooksAsync(name, ids, fmt.Sprintf(" %d 本诗集", len(ids)))
 					}
 				}
 			})
@@ -368,7 +365,7 @@ func (a *AppUI) renderBookActionModal(c *ui.Context, pal theme.Palette) {
 	isFinished := prog.Status == domain.ReadStatusFinished
 	isDownloaded := book.LocalState == domain.LocalStateDownloaded
 
-	components.AnimatedDialog(c, "book-quick-actions", &a.showBookActionModal, pal, 420, 560, func() {
+	components.AnimatedDialog(c, &a.showBookActionModal, pal, components.DialogOptions{Key: "book-quick-actions", MaxWidth: 420, MaxHeight: 560}, func() {
 		// 顶部书封缩略图 + 书名/作者 + 离线状态
 		ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Start).Children(func() {
 			components.BookCoverThumbnail(c, "ba-thumb-"+book.ID, book.ID, a.coverImageFor(book), pal)
@@ -463,21 +460,7 @@ func (a *AppUI) renderBookActionModal(c *ui.Context, pal theme.Palette) {
 					} else {
 						a.actionGroupError = ""
 						a.actionNewGroupName = ""
-						go func() {
-							ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-							defer cancel()
-							grp, err := a.svc.CreateGroup(ctx, name)
-							if err != nil {
-								a.showTransientToast("新建分组失败：" + err.Error())
-								return
-							}
-							if err := a.svc.SetBookGroup(ctx, book.ID, grp.ID); err != nil {
-								a.showTransientToast("移入分组失败：" + err.Error())
-								return
-							}
-							a.reloadSync(nil)
-							a.showTransientToast(fmt.Sprintf("已新建「%s」并收入《%s》", grp.Name, book.Title))
-						}()
+						a.createGroupAndAssignBooksAsync(name, []string{book.ID}, fmt.Sprintf("《%s》", book.Title))
 					}
 				}
 			})
@@ -499,16 +482,7 @@ func (a *AppUI) renderBookActionModal(c *ui.Context, pal theme.Palette) {
 			}
 			if isDownloaded && ui.Button(c, "清理离线正文").Clicked() {
 				a.showBookActionModal = false
-				go func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-					if err := a.svc.ClearBookCache(ctx, book.ID); err != nil {
-						a.showTransientToast("无法清理：" + err.Error())
-						return
-					}
-					a.reloadSync(nil)
-					a.showTransientToast("已清理本书离线缓存")
-				}()
+				a.clearBookCacheAsync(book.ID)
 			}
 			if ui.Button(c, "批量整理书架").Clicked() {
 				a.showBookActionModal = false
@@ -516,27 +490,7 @@ func (a *AppUI) renderBookActionModal(c *ui.Context, pal theme.Palette) {
 			}
 			if ui.Button(c, "删除诗集").Clicked() {
 				a.showBookActionModal = false
-				if a.activeBookID == book.ID {
-					a.mu.Lock()
-					a.openSeq++
-					a.activeBookID = ""
-					a.mu.Unlock()
-					a.readerMobile = false
-					a.activePoems = nil
-					a.readerEntrySource = entryMainline
-					a.peekBannerHidden = false
-					a.pendingPoemID = ""
-				}
-				go func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-					if err := a.svc.DeleteBook(ctx, book.ID); err != nil {
-						a.showTransientToast("删除诗集失败：" + err.Error())
-						return
-					}
-					a.reloadSync(nil)
-					a.showTransientToast("已删除诗集（相关诗歌节选已保留文字）")
-				}()
+				a.deleteBookAsync(book.ID)
 			}
 		})
 	})

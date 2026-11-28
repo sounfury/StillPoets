@@ -70,7 +70,7 @@ func TestReadingEventsStatsDashboardAndAuthorProfile(t *testing.T) {
 		t.Fatalf("RecordPoemRead hz-2: %v", err)
 	}
 	// 精选与散页
-	if _, err := store.ToggleFavoritePoem(ctx, "bk-haizi", "hz-1", "日记", "海子", "姐姐，今夜我在德令哈", true); err != nil {
+	if _, err := store.ToggleFavoritePoem(ctx, FavoritePoemInput{BookID: "bk-haizi", PoemID: "hz-1", PoemTitle: "日记", Author: "海子", Excerpt: "姐姐，今夜我在德令哈", Active: true}); err != nil {
 		t.Fatalf("ToggleFavoritePoem: %v", err)
 	}
 	if _, err := store.CreateStandaloneQuote(ctx, "黑夜给了我黑色的眼睛", "顾城", "一代人", "manual"); err != nil {
@@ -84,22 +84,22 @@ func TestReadingEventsStatsDashboardAndAuthorProfile(t *testing.T) {
 	day2Morning := time.Date(2026, 11, 24, 7, 45, 0, 0, loc)
 	now := time.Date(2026, 11, 25, 10, 0, 0, 0, loc)
 
-	ev1, ins1, err := store.RecordReadingEvent(ctx, "bk-haizi", "hz-1", "日记", "海子", day1, false)
+	ev1, ins1, err := store.RecordReadingEvent(ctx, RecordReadingEventInput{BookID: "bk-haizi", PoemID: "hz-1", PoemTitle: "日记", Author: "海子", ReadAt: day1})
 	if err != nil || !ins1 || ev1.IsReread {
 		t.Fatalf("expected initial insert on day1, got ev=%+v ins=%v err=%v", ev1, ins1, err)
 	}
 	// 同一天再读同一首诗 -> 去重不插入
-	_, insDup, err := store.RecordReadingEvent(ctx, "bk-haizi", "hz-1", "日记", "海子", day1.Add(10*time.Minute), false)
+	_, insDup, err := store.RecordReadingEvent(ctx, RecordReadingEventInput{BookID: "bk-haizi", PoemID: "hz-1", PoemTitle: "日记", Author: "海子", ReadAt: day1.Add(10 * time.Minute)})
 	if err != nil || insDup {
 		t.Fatalf("expected same-day dedup, got ins=%v err=%v", insDup, err)
 	}
 	// 跨天再次读同一首诗 -> 识别为重读
-	evReread, insReread, err := store.RecordReadingEvent(ctx, "bk-haizi", "hz-1", "", "", day2, false)
+	evReread, insReread, err := store.RecordReadingEvent(ctx, RecordReadingEventInput{BookID: "bk-haizi", PoemID: "hz-1", ReadAt: day2})
 	if err != nil || !insReread || !evReread.IsReread || evReread.PoemTitle != "日记" || evReread.Author != "海子" {
 		t.Fatalf("expected cross-day reread with backfilled metadata, got ev=%+v ins=%v err=%v", evReread, insReread, err)
 	}
 	// 合集中的单首诗应归属顾城（而非书目作者「佚名」）
-	evGucheng, insGC, err := store.RecordReadingEvent(ctx, "bk-anth", "an-1", "", "", day2Morning, false)
+	evGucheng, insGC, err := store.RecordReadingEvent(ctx, RecordReadingEventInput{BookID: "bk-anth", PoemID: "an-1", ReadAt: day2Morning})
 	if err != nil || !insGC || evGucheng.Author != "顾城" {
 		t.Fatalf("expected anthology poem author 顾城, got ev=%+v ins=%v err=%v", evGucheng, insGC, err)
 	}

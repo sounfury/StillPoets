@@ -15,6 +15,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"stillpoets/internal/domain"
 )
 
 const (
@@ -245,7 +247,7 @@ func ParseSHA256ForFile(content, targetFilename string) (string, bool) {
 			continue
 		}
 		digest := strings.ToLower(fields[0])
-		if !isHexSHA256(digest) {
+		if !domain.IsHexSHA256(digest) {
 			continue
 		}
 		validLines++
@@ -263,19 +265,6 @@ func ParseSHA256ForFile(content, targetFilename string) (string, bool) {
 		return singleHash, true
 	}
 	return "", false
-}
-
-func isHexSHA256(s string) bool {
-	if len(s) != 64 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-			return false
-		}
-	}
-	return true
 }
 
 // FetchExpectedSHA256 下载并解析 Release 中附带的 SHA-256 校验值；若 Release 未提供校验文件则返回 "", false, nil。

@@ -501,6 +501,20 @@ func NewShortRandID() string {
 	return hex.EncodeToString(buf[:])
 }
 
+// IsHexSHA256 判断字符串是否为合法的 64 位小写十六进制 SHA-256 摘要。
+func IsHexSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
 // BuildRawFilename 清洗原始导入文件名并拼接短随机 ID，既保留可读性又防止同名文件覆盖。
 // 例如："海子诗全集.epub" -> "海子诗全集_a1b2c3.epub"。
 func BuildRawFilename(originalName, shortID string) string {

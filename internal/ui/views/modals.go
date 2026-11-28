@@ -2,7 +2,6 @@ package views
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -76,7 +75,7 @@ func (a *AppUI) renderAddModal(c *ui.Context, pal theme.Palette) {
 }
 
 func (a *AppUI) renderQuoteEditorModal(c *ui.Context, pal theme.Palette) {
-	components.AnimatedDialog(c, "quote-editor", &a.showQuoteModal, pal, 420, 560, func() {
+	components.AnimatedDialog(c, &a.showQuoteModal, pal, components.DialogOptions{Key: "quote-editor", MaxWidth: 420, MaxHeight: 560}, func() {
 		title := "记一张散页"
 		if a.editingQuoteID != "" {
 			title = "编辑散页"
@@ -144,7 +143,7 @@ func (a *AppUI) submitQuoteForm() {
 }
 
 func (a *AppUI) renderQuoteDetailModal(c *ui.Context, pal theme.Palette) {
-	components.AnimatedDialog(c, "quote-detail", &a.showQuoteDetail, pal, 440, 560, func() {
+	components.AnimatedDialog(c, &a.showQuoteDetail, pal, components.DialogOptions{Key: "quote-detail", MaxWidth: 440, MaxHeight: 560}, func() {
 		qv := a.detailQuote
 		if qv == nil {
 			return
@@ -226,7 +225,7 @@ func (a *AppUI) renderQuoteDetailModal(c *ui.Context, pal theme.Palette) {
 }
 
 func (a *AppUI) renderGroupManagerModal(c *ui.Context, pal theme.Palette) {
-	components.AnimatedDialog(c, "groups", &a.showGroupModal, pal, 440, 540, func() {
+	components.AnimatedDialog(c, &a.showGroupModal, pal, components.DialogOptions{Key: "groups", MaxWidth: 440, MaxHeight: 540}, func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "管理诗集分组").Font(theme.FontSerif).FontSize(17).Bold().TextColor(pal.TextPrimary).Grow(1)
 			closeBtn := ui.Box(c.Key("gm-close")).Padding(4).Cursor(ui.CursorPointer)
@@ -357,7 +356,7 @@ func (a *AppUI) moveGroupByID(groupID string, delta int) {
 }
 
 func (a *AppUI) renderSearchModal(c *ui.Context, pal theme.Palette) {
-	components.AnimatedDialog(c, "search", &a.showSearchModal, pal, 480, 560, func() {
+	components.AnimatedDialog(c, &a.showSearchModal, pal, components.DialogOptions{Key: "search", MaxWidth: 480, MaxHeight: 560}, func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "全局检索").FontSize(17).Bold().TextColor(pal.TextPrimary).Grow(1)
 			closeBtn := ui.Box(c.Key("srch-close")).Padding(4).Cursor(ui.CursorPointer)
@@ -392,10 +391,10 @@ func (a *AppUI) renderSearchModal(c *ui.Context, pal theme.Palette) {
 			}()
 		}
 
-		ui.Scroll(c.Key("search-results-scroll")).Grow(1).FillWidth().Children(func() {
-			ui.Column(c).Gap(10).FillWidth().Children(func() {
+		ui.Scroll(c.Key("search-results-scroll")).Grow(1).FillWidth().MinHeight(120).MaxHeight(420).Children(func() {
+			ui.Column(c).Gap(10).FillWidth().Padding(0, 0, 12, 0).Children(func() {
 				if strings.TrimSpace(a.searchQuery) == "" {
-					ui.Text(c, "支持中文全文检索（SQLite FTS5），同时搜索已离线诗集与所有散页。").
+					ui.Text(c, "支持中文全文检索（SQLite FTS5），同时搜索已离线诗集标题、正文与所有散页。").
 						FontSize(12).TextColor(pal.TextMuted).Padding(8, 0)
 					return
 				}
@@ -405,8 +404,10 @@ func (a *AppUI) renderSearchModal(c *ui.Context, pal theme.Palette) {
 				}
 				if len(a.searchResults.Poems) > 0 {
 					ui.Textf(c, "命中诗篇（%d）", len(a.searchResults.Poems)).FontSize(12).Bold().TextColor(pal.TextSecondary)
+					searchTerms := splitSearchTerms(a.searchQuery)
 					for _, p := range a.searchResults.Poems {
 						p := p
+						match := matchPoemQuery(p, searchTerms)
 						row := ui.Column(c.Key("srch-p-"+p.ID)).
 							FillWidth().
 							Padding(10, 12).
@@ -416,16 +417,30 @@ func (a *AppUI) renderSearchModal(c *ui.Context, pal theme.Palette) {
 							Cursor(ui.CursorPointer)
 						theme.ApplyPressScale(row, 0.985)
 						row.Children(func() {
-							ui.Text(c, p.Title).FontSize(14).Bold().TextColor(pal.TextPrimary)
+							ui.Text(c, p.Title).FontSize(14).Bold().TextColor(pal.TextPrimary).MaxLines(1)
+							if match.snippet != "" {
+								ui.Text(c, match.snippet).FontSize(12).TextColor(pal.TextSecondary).MaxLines(1)
+							}
+							metaParts := make([]string, 0, 2)
+							if bkTitle := a.bookTitleByID(p.BookID); bkTitle != "" {
+								metaParts = append(metaParts, "《"+bkTitle+"》")
+							}
 							if p.Author != "" {
-								ui.Text(c, p.Author).FontSize(12).TextColor(pal.TextMuted)
+								metaParts = append(metaParts, p.Author)
+							}
+							if len(metaParts) > 0 {
+								ui.Text(c, strings.Join(metaParts, " · ")).FontSize(11).TextColor(pal.TextMuted).MaxLines(1)
 							}
 						})
 						if row.Clicked() {
 							a.showSearchModal = false
 							a.activeTab = components.TabShelf
 							a.selectShelfSubTab(components.SubTabBooks)
-							a.openBookWithSource(p.BookID, p.ID, nil, true, entrySearch)
+							var ranges []app.LineRange
+							if match.matchLine > 0 {
+								ranges = []app.LineRange{{Start: match.matchLine, End: match.matchLine}}
+							}
+							a.openBookWithSource(p.BookID, p.ID, ranges, true, entrySearch)
 						}
 					}
 				}
@@ -458,175 +473,8 @@ func (a *AppUI) renderSearchModal(c *ui.Context, pal theme.Palette) {
 	})
 }
 
-func (a *AppUI) renderTOCModal(c *ui.Context, pal theme.Palette) {
-	components.AnimatedSheet(c, &a.showTOCModal, pal, []float32{0.66, 0.92}, "诗集目录", func() {
-		book, ok := a.activeBook()
-		if !ok {
-			return
-		}
-		prog := a.progressMap[book.ID]
-		isFinished := prog.Status == domain.ReadStatusFinished
-
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			ui.Column(c).Grow(1).Gap(2).Children(func() {
-				ui.Text(c, book.Title).FontSize(17).Bold().TextColor(pal.TextPrimary)
-				ui.Textf(c, "%s · 共 %d 篇", book.Author, len(a.activePoems)).FontSize(12).TextColor(pal.TextMuted)
-			})
-			closeBtn := ui.Box(c.Key("toc-close")).Padding(4).Cursor(ui.CursorPointer)
-			theme.ApplyPressScale(closeBtn, 0.90)
-			closeBtn.Children(func() { ui.Icon(c, components.IconClose).Width(16).Height(16).TextColor(pal.TextMuted) })
-			if closeBtn.Clicked() {
-				a.showTOCModal = false
-			}
-		})
-
-		// 书本快捷管理行（完读 / 移入分组 / 清理缓存 / 删除）
-		ui.Row(c.Key("toc-book-actions")).Gap(8).Wrap().Children(func() {
-			finLabel := "标记已完读"
-			if isFinished {
-				finLabel = "已完读 ✓"
-			}
-			if ui.Button(c, finLabel).Clicked() {
-				go func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-					_, _ = a.svc.MarkBookFinished(ctx, book.ID, !isFinished)
-					a.reloadSync(ctx)
-				}()
-			}
-			if len(a.activeFavorites) > 0 {
-				if ui.Button(c, "精选合辑卡").Clicked() {
-					favs := make([]domain.FavoritePoem, 0, len(a.activeFavorites))
-					for _, fv := range a.activeFavorites {
-						favs = append(favs, fv)
-					}
-					a.openCollectionShareCard(book, favs)
-				}
-			}
-			if ui.Button(c, "清理离线正文").Clicked() {
-				a.showTOCModal = false
-				go func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-					if err := a.svc.ClearBookCache(ctx, book.ID); err != nil {
-						a.showTransientToast("无法清理：" + err.Error())
-						return
-					}
-					a.reloadSync(nil)
-					a.showTransientToast("已清理本书离线缓存")
-				}()
-			}
-			if ui.Button(c, "删除诗集").Clicked() {
-				a.showTOCModal = false
-				a.mu.Lock()
-				a.openSeq++
-				a.activeBookID = ""
-				a.mu.Unlock()
-				a.readerMobile = false
-				a.activePoems = nil
-				a.readerEntrySource = entryMainline
-				a.peekBannerHidden = false
-				a.pendingPoemID = ""
-				go func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-					if err := a.svc.DeleteBook(ctx, book.ID); err != nil {
-						a.showTransientToast("删除诗集失败：" + err.Error())
-						return
-					}
-					a.reloadSync(nil)
-					a.showTransientToast("已删除诗集（相关诗歌节选已保留文字）")
-				}()
-			}
-		})
-
-		// 移入分组切换
-		if len(a.groups) > 0 {
-			ui.Row(c.Key("toc-group-assign")).Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "分组：").FontSize(12).TextColor(pal.TextMuted)
-				renderAssign := func(gid, label string) {
-					active := book.GroupID == gid
-					bg, fg, bd := pal.Background, pal.TextSecondary, pal.Border
-					if active {
-						bg, fg, bd = pal.Accent, pal.AccentText, pal.Accent
-					}
-					chip := ui.Box(c.Key("asg-"+gid)).Padding(4, 9).Radius(999).Background(bg).Border(1, bd).Cursor(ui.CursorPointer).
-						Transition(theme.ColorTransition())
-					chip.Children(func() { ui.Text(c, label).FontSize(11).TextColor(fg) })
-					if chip.Clicked() {
-						go func() {
-							ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-							defer cancel()
-							_ = a.svc.SetBookGroup(ctx, book.ID, gid)
-							a.reloadSync(ctx)
-						}()
-					}
-				}
-				renderAssign("", "未分组")
-				for _, g := range a.groups {
-					renderAssign(g.ID, g.Name)
-				}
-			})
-		}
-
-		ui.Divider(c)
-
-		// 诗集目录列表
-		ui.Scroll(c.Key("toc-list-scroll")).Grow(1).FillWidth().Children(func() {
-			ui.Column(c).Gap(4).FillWidth().Children(func() {
-				for i, p := range a.activePoems {
-					i, p := i, p
-					isCurrent := i == a.activePoemIdx
-					isMainline := prog.LastPoemID != "" && p.ID == prog.LastPoemID
-					_, isFav := a.activeFavorites[p.ID]
-					bg := ui.Transparent
-					if isCurrent {
-						bg = pal.HighlightBg
-					}
-					row := ui.Row(c.Key(fmt.Sprintf("toc-item-%d", i))).
-						FillWidth().
-						Padding(8, 10).
-						Gap(8).
-						Radius(6).
-						Background(bg).
-						AlignItems(ui.Center).
-						Cursor(ui.CursorPointer)
-					row.Children(func() {
-						ui.Textf(c, "%d.", i+1).FontSize(12).TextColor(pal.TextMuted).Width(28)
-						titleEl := ui.Text(c, p.Title).FontSize(13).MaxLines(1).Grow(1)
-						if isCurrent {
-							titleEl.Bold().TextColor(pal.Accent)
-						} else {
-							titleEl.TextColor(pal.TextPrimary)
-						}
-						if isMainline {
-							ui.Box(c).Padding(2, 6).Radius(999).Border(1, pal.Accent).Children(func() {
-								ui.Text(c, "续读").FontSize(10).TextColor(pal.Accent)
-							})
-						}
-						if !p.IsPoem() {
-							ui.Text(c, "附文").FontSize(10).TextColor(pal.TextMuted)
-						}
-						if isFav {
-							ui.Icon(c, components.IconHeartFilled).Width(13).Height(13).TextColor(pal.Accent)
-						}
-					})
-					if row.Clicked() {
-						a.showTOCModal = false
-						if a.readerEntrySource.isPeek() && isMainline {
-							a.returnToMainlineProgress(book.ID)
-						} else {
-							a.navigatePoem(book.ID, i)
-						}
-					}
-				}
-			})
-		})
-	})
-}
-
 func (a *AppUI) renderTypographyModal(c *ui.Context, pal theme.Palette) {
-	components.AnimatedSheet(c, &a.showTypoModal, pal, []float32{0.62, 0.85}, "排版与外观", func() {
+	components.AnimatedSheet(c, &a.showTypoModal, pal, []float32{0.78}, "排版与外观", func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "排版与外观").FontSize(17).Bold().TextColor(pal.TextPrimary).Grow(1)
 			closeBtn := ui.Box(c.Key("typo-close")).Padding(4).Cursor(ui.CursorPointer)
@@ -637,7 +485,7 @@ func (a *AppUI) renderTypographyModal(c *ui.Context, pal theme.Palette) {
 			}
 		})
 
-		ui.Scroll(c.Key("typo-modal-scroll")).Grow(1).FillWidth().Children(func() {
+		ui.Scroll(c.Key("typo-modal-scroll")).Grow(1).Basis(0).FillWidth().Children(func() {
 			ui.Column(c).FillWidth().Gap(12).Padding(0, 0, 8, 0).Children(func() {
 				ui.Row(c.Key("typo-themes")).FillWidth().Gap(8).Children(func() {
 					for _, preset := range theme.Presets() {

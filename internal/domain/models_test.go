@@ -72,3 +72,25 @@ func TestNormalizeWidgetRefreshMinutes(t *testing.T) {
 		}
 	}
 }
+
+func TestIsHexSHA256(t *testing.T) {
+	valid := strings.Repeat("a1", 32)
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{valid, true},
+		{strings.Repeat("0", 64), true},
+		{strings.Repeat("f", 64), true},
+		{strings.ToUpper(valid), false},
+		{strings.Repeat("a", 63), false},
+		{strings.Repeat("a", 65), false},
+		{strings.Repeat("g", 64), false},
+		{"", false},
+	}
+	for _, tc := range tests {
+		if got := IsHexSHA256(tc.in); got != tc.want {
+			t.Fatalf("IsHexSHA256(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}

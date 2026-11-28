@@ -123,21 +123,37 @@ type BookCoverAction struct {
 	LongPressed bool
 }
 
+// BookCoverProps 封装书架封面卡片的渲染参数。
+type BookCoverProps struct {
+	Key               string
+	BookID            string
+	Title             string
+	Author            string
+	CoverImg          ui.ImageSource
+	Selected          bool
+	IsRemote          bool
+	ForceCaptionBelow bool
+	Organize          BookCoverOrganizeOptions
+}
+
 // BookCoverCard 渲染诗集封面卡：开启原书封面且有图时展示 EPUB 原封面，否则呈现抽象几何色块封面。
 // 封面带左侧书脊压痕高光/阴影、棉纸肌理与底部柔和接触投影，营造立在书架上的实体书物感。
-func BookCoverCard(c *ui.Context, key, bookID, title, author string, coverImg ui.ImageSource, pal theme.Palette, selected, isRemote, forceCaptionBelow bool) bool {
-	return BookCoverShelfCard(c, key, bookID, title, author, coverImg, pal, selected, isRemote, forceCaptionBelow, BookCoverOrganizeOptions{}).Clicked
+func BookCoverCard(c *ui.Context, pal theme.Palette, props BookCoverProps) bool {
+	props.Organize = BookCoverOrganizeOptions{}
+	return BookCoverShelfCard(c, pal, props).Clicked
 }
 
 // BookCoverShelfCard 渲染支持日常点击、长按/右键唤出快捷操作，以及原地批量整理勾选的书架封面卡。
-func BookCoverShelfCard(
-	c *ui.Context,
-	key, bookID, title, author string,
-	coverImg ui.ImageSource,
-	pal theme.Palette,
-	selected, isRemote, forceCaptionBelow bool,
-	org BookCoverOrganizeOptions,
-) BookCoverAction {
+func BookCoverShelfCard(c *ui.Context, pal theme.Palette, props BookCoverProps) BookCoverAction {
+	key := props.Key
+	bookID := props.BookID
+	title := props.Title
+	author := props.Author
+	coverImg := props.CoverImg
+	selected := props.Selected
+	isRemote := props.IsRemote
+	forceCaptionBelow := props.ForceCaptionBelow
+	org := props.Organize
 	seed := coverSeed(bookID)
 	sw := pal.CoverSwatches[int(seed)%len(pal.CoverSwatches)]
 	pattern := int(seed/7) % 4

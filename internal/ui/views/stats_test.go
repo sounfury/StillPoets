@@ -90,7 +90,14 @@ func TestStatsDashboardRenderAndInteractions(t *testing.T) {
 	}
 	for _, ev := range events {
 		ts := time.Date(now.Year(), now.Month(), now.Day()-ev.daysAgo, ev.hour, 18, 0, 0, now.Location())
-		if _, _, err := svc.Store().RecordReadingEvent(ctx, ev.bookID, ev.poemID, ev.title, ev.author, ts, ev.reread); err != nil {
+		if _, _, err := svc.Store().RecordReadingEvent(ctx, storage.RecordReadingEventInput{
+			BookID:        ev.bookID,
+			PoemID:        ev.poemID,
+			PoemTitle:     ev.title,
+			Author:        ev.author,
+			ReadAt:        ts,
+			WasReadBefore: ev.reread,
+		}); err != nil {
 			t.Fatalf("RecordReadingEvent: %v", err)
 		}
 	}

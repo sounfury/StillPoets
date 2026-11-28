@@ -283,54 +283,10 @@ func (p *publication) parseDocument(d *document, result *ParseResult, section *s
 	}
 	// Without TOC anchors, only the document's top heading level introduces entries.
 	if !anchored {
-		for i, b := range blocks {
-			if b.node != nil && heading(b.node) == minHeading && !numberedPart.MatchString(strings.TrimSpace(b.text)) {
-				t := tocEntry{title: StripNoteRefs(strings.TrimSpace(strings.Split(b.text, "\n")[0])), section: fileEntry.section}
-				if i == firstHeading(blocks) {
-					t = fileEntry
-					if t.title == "" {
-						t.title = StripNoteRefs(strings.TrimSpace(strings.Split(b.text, "\n")[0]))
-					}
-				}
-				boundaries[i] = t
-			}
-		}
+		applyTopHeadingBoundaries(blocks, minHeading, fileEntry, boundaries)
 	}
 	if !anchored && (fileEntry.src == "" || fileEntry.parent) {
-		for i, b := range blocks {
-			if b.node == nil || heading(b.node) != minHeading {
-				continue
-			}
-			childLevel := 0
-			for _, next := range blocks[i+1:] {
-				if strings.TrimSpace(next.text) == "" {
-					continue
-				}
-				if next.node != nil && heading(next.node) > minHeading && !numberedPart.MatchString(strings.TrimSpace(next.text)) {
-					childLevel = heading(next.node)
-				}
-				break
-			}
-			if childLevel == 0 {
-				continue
-			}
-			parent := boundaries[i]
-			parent.parent = true
-			boundaries[i] = parent
-			for j := i + 1; j < len(blocks); j++ {
-				next := blocks[j]
-				if next.node == nil {
-					continue
-				}
-				level := heading(next.node)
-				if level > 0 && level <= minHeading {
-					break
-				}
-				if level == childLevel && !numberedPart.MatchString(strings.TrimSpace(next.text)) {
-					boundaries[j] = tocEntry{title: StripNoteRefs(strings.TrimSpace(strings.Split(next.text, "\n")[0])), section: joinText(fileEntry.section, parent.title, " · ")}
-				}
-			}
-		}
+		applySubHeadingBoundaries(blocks, minHeading, fileEntry, boundaries)
 	}
 	var current []textBlock
 	currentTOC := fileEntry
@@ -357,6 +313,65 @@ func (p *publication) parseDocument(d *document, result *ParseResult, section *s
 	}
 	flush(len(blocks))
 }
+func applyTopHeadingBoundaries(blocks []textBlock, minHeading int, fileEntry tocEntry, boundaries map[int]tocEntry) {
+	first := firstHeading(blocks)
+	for i, b := range blocks {
+		if b.node == nil || heading(b.node) != minHeading || numberedPart.MatchString(strings.TrimSpace(b.text)) {
+			continue
+		}
+		headingTitle := StripNoteRefs(strings.TrimSpace(strings.Split(b.text, "\n")[0]))
+		t := tocEntry{title: headingTitle, section: fileEntry.section}
+		if i == first {
+			t = fileEntry
+			if t.title == "" {
+				t.title = headingTitle
+			}
+		}
+		boundaries[i] = t
+	}
+}
+
+func applySubHeadingBoundaries(blocks []textBlock, minHeading int, fileEntry tocEntry, boundaries map[int]tocEntry) {
+	for i, b := range blocks {
+		if b.node == nil || heading(b.node) != minHeading {
+			continue
+		}
+		childLevel := nextSubHeadingLevel(blocks[i+1:], minHeading)
+		if childLevel == 0 {
+			continue
+		}
+		parent := boundaries[i]
+		parent.parent = true
+		boundaries[i] = parent
+		for j := i + 1; j < len(blocks); j++ {
+			next := blocks[j]
+			if next.node == nil {
+				continue
+			}
+			level := heading(next.node)
+			if level > 0 && level <= minHeading {
+				break
+			}
+			if level == childLevel && !numberedPart.MatchString(strings.TrimSpace(next.text)) {
+				boundaries[j] = tocEntry{title: StripNoteRefs(strings.TrimSpace(strings.Split(next.text, "\n")[0])), section: joinText(fileEntry.section, parent.title, " · ")}
+			}
+		}
+	}
+}
+
+func nextSubHeadingLevel(rest []textBlock, minHeading int) int {
+	for _, next := range rest {
+		if strings.TrimSpace(next.text) == "" {
+			continue
+		}
+		if next.node != nil && heading(next.node) > minHeading && !numberedPart.MatchString(strings.TrimSpace(next.text)) {
+			return heading(next.node)
+		}
+		break
+	}
+	return 0
+}
+
 func firstHeading(bs []textBlock) int {
 	for i, b := range bs {
 		if b.node != nil && heading(b.node) > 0 {

@@ -22,17 +22,25 @@
       "type": "0",
       "lock": "0",
       "isLanZouCloud": "0",
-      "version": "0.1.7",
-      "versionDate": "2026-11-25T06:00:30Z",
-      "versionDescription": "• Phase 3 完整读诗统计看板：新增全局时间窗口（本周 / 本月 / 今年 / 全部）、52 周与按自然年读诗热力图（点选任意日期下钻当日读诗列表并直达原诗）、昼夜阅读节律（五时段矢量环图 / 24 小时柱状图切换）、完读诗集墙与回望卡弹窗、诗人作者云（综合 / 读过 / 精选三权重切换及诗人档案下钻）；同步扩展 SQLite v4 reading_events 与 WebDAV 跨端确定性合集同步。\n• 书架原地批量整理与长按单本操作：书架「我的诗集」新增「整理」原地多选模式（含空分组「从书架选入」定向挑书、单层「移入分组」弹窗与一键「新建分组并移入」）；长按/右键任意书封直接弹出单本快捷管理弹窗，支持单层胶囊改分组、标为完读、清缓存与删书（兼容未下载云端诗集）。\n• 修复桌面小组件提前换诗问题：小组件时间线改为基于日期与诗池的一致性哈希确定性排序，无变更时跳过冗余重写；Android 与 iOS 桥接层改为按 poolRevision 控制手动偏移归零（并修复 iOS App Group 时间戳 31-bit 截断问题），冷启动、WebDAV 同步或调整主题/字号/间隔均不再提前打断设定的 3 小时等换诗周期。",
-      "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.7/StillPoets-0.1.7-ios-arm64-unsigned.ipa",
-      "size": 9776817,
+      "version": "0.1.8",
+      "versionDate": "2026-11-28T08:40:28Z",
+      "versionDescription": "• 高清分享卡片导出（Phase 3）：新增纯 Go 离屏 3× 高清 PNG（1080px 宽、动态自然高度）卡片渲染引擎，所见即所得复用当前自定义字体、棉纸肌理与书封样式；覆盖 单句卡片（散页详情 / 阅读器划选）、整诗长图 / 本诗金句（阅读器顶栏）、诗集精选合辑（目录抽屉 & 完读弹窗）、完读纪念卡（完读墙详情）与 周期读诗报告长图（统计页顶部周期栏，含热力图、24h 节律与常读诗人榜）五大场景。\n• 5 套纸书模板 × 5 套纸色与双端直存：内置极简纸笺、古典印章（双线书框 + 矢量朱文印）、刊物版式、日历诗笺、画册留白 5 套模板，配色打通 App 画册/刊物/暗夜主题并新增宣纸素笺与复古牛皮纸，支持角标开关；新增原生 photosaver 模块支持 Android（MediaStore 零权限）与 iOS（PHPhotoLibrary）一键存相册及系统原生纯图分享。\n• 更新日志抽屉体验优化：「关于 → 更新日志」下拉抽屉限制仅展示最新前 5 条版本记录，并提供直达 GitHub Releases 的外链入口以便按需查阅更多历史版本。",
+      "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.8/StillPoets-0.1.8-ios-arm64-unsigned.ipa",
+      "size": 9920427,
       "screenshotURLs": [
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-shelf-fragments.png",
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-editorial.png",
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-settings.png"
       ],
       "versions": [
+        {
+          "version": "0.1.8",
+          "date": "2026-11-28T08:40:28Z",
+          "localizedDescription": "• 高清分享卡片导出（Phase 3）：新增纯 Go 离屏 3× 高清 PNG（1080px 宽、动态自然高度）卡片渲染引擎，所见即所得复用当前自定义字体、棉纸肌理与书封样式；覆盖 单句卡片（散页详情 / 阅读器划选）、整诗长图 / 本诗金句（阅读器顶栏）、诗集精选合辑（目录抽屉 & 完读弹窗）、完读纪念卡（完读墙详情）与 周期读诗报告长图（统计页顶部周期栏，含热力图、24h 节律与常读诗人榜）五大场景。\n• 5 套纸书模板 × 5 套纸色与双端直存：内置极简纸笺、古典印章（双线书框 + 矢量朱文印）、刊物版式、日历诗笺、画册留白 5 套模板，配色打通 App 画册/刊物/暗夜主题并新增宣纸素笺与复古牛皮纸，支持角标开关；新增原生 photosaver 模块支持 Android（MediaStore 零权限）与 iOS（PHPhotoLibrary）一键存相册及系统原生纯图分享。\n• 更新日志抽屉体验优化：「关于 → 更新日志」下拉抽屉限制仅展示最新前 5 条版本记录，并提供直达 GitHub Releases 的外链入口以便按需查阅更多历史版本。",
+          "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.8/StillPoets-0.1.8-ios-arm64-unsigned.ipa",
+          "size": 9920427,
+          "minOSVersion": "17.0"
+        },
         {
           "version": "0.1.7",
           "date": "2026-11-25T06:00:30Z",

@@ -22,17 +22,25 @@
       "type": "0",
       "lock": "0",
       "isLanZouCloud": "0",
-      "version": "0.1.9",
-      "versionDate": "2026-11-28T09:27:40Z",
-      "versionDescription": "• 零部署 Web 书库管理与 Z-Library 一键投递（油猴脚本）：新增单文件零依赖油猴脚本 [scripts/stillpoets-manager.user.js](https://raw.githubusercontent.com/sounfury/StillPoets/main/scripts/stillpoets-manager.user.js)（支持 GitHub Raw 直装自动更新与 Greasy Fork 同步）；提供独立可信入口的纸书极简风全屏管理台（Shadow DOM 隔离，绝不在第三方页面暴露 WebDAV 密码输入），支持 2A 累计稀疏快照读写（仅管理 groups / books 绝不污染收藏/散页/进度/统计）、批量移组/标星/软删、安全墓碑原件清理、多本 EPUB 拖拽投递及 Z-Library 详情页复用登录态一键投递。\n• WebDAV inbox/ 任意移动设备无感消费：新增 StillPoets/inbox/<bookId>.ready.json 就绪清单协议与 Book.ContentPath 不可变构建路径（SQLite 自动幂等补列，完全兼容旧书）；电脑端投递后，无论接下来先打开 iPhone 还是 Android 平板，均会在同步时自动校验 SHA-256、复用远端原件免重传、写入独立 builds/<attemptId>/parsed.spbook.json.gz 防并发覆盖，并在新快照回读验证包含该书后再逐书清理清单。\n• 切回前台自动防抖同步：补齐 App 从后台切回前台（OnAppActivated）的 15 秒冷却静默同步，先秒拉元数据刷新书架再后台消费新书，电脑端整理的分类与投递的诗集切回手机即无感可见。",
-      "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.9/StillPoets-0.1.9-ios-arm64-unsigned.ipa",
-      "size": 9942372,
+      "version": "0.1.10",
+      "versionDate": "2026-11-28T13:32:19Z",
+      "versionDescription": "• 阅读器长按悬浮菜单与顶栏精简：长按段落（≤8行选整节、>8行选单行，兼容右键）唤出\n复制 / 分享 / 留散页 / 勾选；移除顶栏书签，顶栏分享纯化为整诗。\n• 目录实时全文检索与全局搜索增强：目录抽屉支持按诗题与正文实时多词检索；\n全局搜索新增命中摘要、所属书名与跳转高亮定位。\n• 底部抽屉滚动修复：修复目录、排版、更新日志等底部抽屉长列表划不到底问题。\n• 油猴脚本 Z-Library 投递增强（v0.1.5）：兼容新版异步渲染与 Shadow DOM，\n内联直投按钮栏、跨源 CDN 下载绕过 CORS 并还原中文文件名乱码。\n• 全仓架构重构与 8 项 CI 质量门禁全绿：前后端按领域拆解大文件与高复杂度函数，\n接入 Woodpecker 8 项质量门禁并全部清零通过。",
+      "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.10/StillPoets-0.1.10-ios-arm64-unsigned.ipa",
+      "size": 9989289,
       "screenshotURLs": [
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-shelf-fragments.png",
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-editorial.png",
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-settings.png"
       ],
       "versions": [
+        {
+          "version": "0.1.10",
+          "date": "2026-11-28T13:32:19Z",
+          "localizedDescription": "• 阅读器长按悬浮菜单与顶栏精简：长按段落（≤8行选整节、>8行选单行，兼容右键）唤出\n复制 / 分享 / 留散页 / 勾选；移除顶栏书签，顶栏分享纯化为整诗。\n• 目录实时全文检索与全局搜索增强：目录抽屉支持按诗题与正文实时多词检索；\n全局搜索新增命中摘要、所属书名与跳转高亮定位。\n• 底部抽屉滚动修复：修复目录、排版、更新日志等底部抽屉长列表划不到底问题。\n• 油猴脚本 Z-Library 投递增强（v0.1.5）：兼容新版异步渲染与 Shadow DOM，\n内联直投按钮栏、跨源 CDN 下载绕过 CORS 并还原中文文件名乱码。\n• 全仓架构重构与 8 项 CI 质量门禁全绿：前后端按领域拆解大文件与高复杂度函数，\n接入 Woodpecker 8 项质量门禁并全部清零通过。",
+          "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.10/StillPoets-0.1.10-ios-arm64-unsigned.ipa",
+          "size": 9989289,
+          "minOSVersion": "17.0"
+        },
         {
           "version": "0.1.9",
           "date": "2026-11-28T09:27:40Z",

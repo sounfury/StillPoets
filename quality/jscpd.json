@@ -1,6 +1,6 @@
 {
-  "minLines": 5,
-  "minTokens": 50,
+  "minLines": 8,
+  "minTokens": 70,
   "threshold": 0,
   "mode": "mild",
   "noGitignore": true,

@@ -105,3 +105,14 @@ test('isZipMagic and buildSafeRawFilename', () => {
   assert.equal(core.isZipMagic(new Uint8Array([0x3c, 0x68, 0x74, 0x6d])), false);
   assert.equal(core.buildSafeRawFilename('../海子:诗选.epub', 'abc123'), '海子_诗选_abc123.epub');
 });
+
+test('parseContentDispositionFilename prefers UTF-8 filename* and repairs Latin-1 mojibake', () => {
+  const utf8Bytes = Buffer.from('另一个，同一个 (z-library.sk, 1lib.sk).epub', 'utf8');
+  const latin1Mojibake = utf8Bytes.toString('latin1');
+
+  const cdBoth = `attachment; filename="${latin1Mojibake}"; filename*=UTF-8''${encodeURIComponent('另一个，同一个 (z-library.sk).epub')}`;
+  assert.equal(core.parseContentDispositionFilename(cdBoth, 'fallback.epub'), '另一个，同一个.epub');
+
+  const cdMojibakeOnly = `attachment; filename="${latin1Mojibake}"`;
+  assert.equal(core.parseContentDispositionFilename(cdMojibakeOnly, 'fallback.epub'), '另一个，同一个.epub');
+});

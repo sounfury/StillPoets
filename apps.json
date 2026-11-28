@@ -22,17 +22,25 @@
       "type": "0",
       "lock": "0",
       "isLanZouCloud": "0",
-      "version": "0.1.10",
-      "versionDate": "2026-11-28T13:32:19Z",
-      "versionDescription": "• 阅读器长按悬浮菜单与顶栏精简：长按段落（≤8行选整节、>8行选单行，兼容右键）唤出\n复制 / 分享 / 留散页 / 勾选；移除顶栏书签，顶栏分享纯化为整诗。\n• 目录实时全文检索与全局搜索增强：目录抽屉支持按诗题与正文实时多词检索；\n全局搜索新增命中摘要、所属书名与跳转高亮定位。\n• 底部抽屉滚动修复：修复目录、排版、更新日志等底部抽屉长列表划不到底问题。\n• 油猴脚本 Z-Library 投递增强（v0.1.5）：兼容新版异步渲染与 Shadow DOM，\n内联直投按钮栏、跨源 CDN 下载绕过 CORS 并还原中文文件名乱码。\n• 全仓架构重构与 8 项 CI 质量门禁全绿：前后端按领域拆解大文件与高复杂度函数，\n接入 Woodpecker 8 项质量门禁并全部清零通过。",
-      "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.10/StillPoets-0.1.10-ios-arm64-unsigned.ipa",
-      "size": 9989289,
+      "version": "0.1.11",
+      "versionDate": "2026-11-28T15:27:39Z",
+      "versionDescription": "• 读书级长按跨行/跨段选区（带起止圆点竖杆手柄）：长按任意诗行（桌面端兼容右键）\n即可高亮选中并显示首尾拖拽手柄，拖动手柄可跨行、跨诗节丝滑扩选或反向翻转，\n选区底色即时跟手无延迟。\n• 全功能悬浮操作菜单：顶栏实时显示已选行数，内置一键 选本节 / 全选 / 勾选\n（保留非连续多选模式），主操作区一步直达 复制 / 留散页 / 设为金句 / 分享。\n• 开源协议确立与文档同步：正式采用 GPL-3.0 开源协议（新增根目录 LICENSE\n并同步油猴脚本 @license），全面更新 README.md 与 AGENTS.md 开发指南。",
+      "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.11/StillPoets-0.1.11-ios-arm64-unsigned.ipa",
+      "size": 9999995,
       "screenshotURLs": [
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-shelf-fragments.png",
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-editorial.png",
         "https://raw.githubusercontent.com/sounfury/StillPoets/main/docs/prototypes/stillpoets-v3-settings.png"
       ],
       "versions": [
+        {
+          "version": "0.1.11",
+          "date": "2026-11-28T15:27:39Z",
+          "localizedDescription": "• 读书级长按跨行/跨段选区（带起止圆点竖杆手柄）：长按任意诗行（桌面端兼容右键）\n即可高亮选中并显示首尾拖拽手柄，拖动手柄可跨行、跨诗节丝滑扩选或反向翻转，\n选区底色即时跟手无延迟。\n• 全功能悬浮操作菜单：顶栏实时显示已选行数，内置一键 选本节 / 全选 / 勾选\n（保留非连续多选模式），主操作区一步直达 复制 / 留散页 / 设为金句 / 分享。\n• 开源协议确立与文档同步：正式采用 GPL-3.0 开源协议（新增根目录 LICENSE\n并同步油猴脚本 @license），全面更新 README.md 与 AGENTS.md 开发指南。",
+          "downloadURL": "https://github.com/sounfury/StillPoets/releases/download/v0.1.11/StillPoets-0.1.11-ios-arm64-unsigned.ipa",
+          "size": 9999995,
+          "minOSVersion": "17.0"
+        },
         {
           "version": "0.1.10",
           "date": "2026-11-28T13:32:19Z",

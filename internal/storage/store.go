@@ -68,7 +68,24 @@ func (s *Store) initialize(ctx context.Context) error {
 	statements = append(statements, stmt(`INSERT INTO sync_state (key, value, updated_at) VALUES ('install_id', ?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at WHERE sync_state.value = ''`,
 		domain.NewInstallID(), domain.NowMillis()))
-	return s.transact(ctx, statements)
+	if err := s.transact(ctx, statements); err != nil {
+		return err
+	}
+	return s.ensureBookContentPathColumn(ctx)
+}
+
+func (s *Store) ensureBookContentPathColumn(ctx context.Context) error {
+	rows, err := s.db.Query(ctx, `PRAGMA table_info(books)`)
+	if err != nil {
+		return err
+	}
+	for _, values := range rows.Values {
+		if len(values) > 1 && row(values).text(1) == "content_path" {
+			return nil
+		}
+	}
+	_, err = s.db.Execute(ctx, `ALTER TABLE books ADD COLUMN content_path TEXT NOT NULL DEFAULT ''`)
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }

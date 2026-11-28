@@ -122,10 +122,27 @@ func (s *Store) requireActiveGroup(ctx context.Context, id string) error {
 	return err
 }
 
+// IsActiveGroup 判断指定分组是否仍处于未解散的活跃状态。
+func (s *Store) IsActiveGroup(ctx context.Context, id string) (bool, error) {
+	if strings.TrimSpace(id) == "" {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := s.requireActiveGroup(ctx, id)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 const bookColumns = `id, title, author, dynasty_or_genre, cover_hash, content_hash, content_size,
 	raw_filename, raw_size, poem_count, content_ver_c, content_ver_i, group_id, group_ver_c, group_ver_i,
 	is_starred, starred_ver_c, starred_ver_i, sort_order, sort_ver_c, sort_ver_i, created_at,
-	deleted, deleted_at, deleted_ver_c, deleted_ver_i`
+	deleted, deleted_at, deleted_ver_c, deleted_ver_i, content_path`
 
 func decodeBook(r row) (domain.Book, error) {
 	return domain.Book{
@@ -134,6 +151,7 @@ func decodeBook(r row) (domain.Book, error) {
 		PoemCount: int(r.integer(9)), ContentVer: r.version(10), GroupID: r.text(12), GroupVer: r.version(13),
 		IsStarred: r.flag(15), StarredVer: r.version(16), SortOrder: int(r.integer(18)), SortVer: r.version(19),
 		CreatedAt: r.integer(21), Deleted: r.flag(22), DeletedAt: r.integer(23), DeletedVer: r.version(24),
+		ContentPath: r.text(26),
 	}, nil
 }
 
@@ -143,10 +161,10 @@ const localBookColumns = bookColumns + `, local_content_hash, ` + activeBookGrou
 func decodeLocalBook(r row) (domain.Book, error) {
 	book, _ := decodeBook(r)
 	// A group tombstone also hides assignments made on another device before it saw the dissolution.
-	if !r.flag(27) {
+	if !r.flag(28) {
 		book.GroupID = ""
 	}
-	book.LocalContentHash = r.text(26)
+	book.LocalContentHash = r.text(27)
 	book.LocalState = domain.DeriveLocalBookState(book, book.LocalContentHash)
 	return book, nil
 }
@@ -154,7 +172,7 @@ func decodeLocalBook(r row) (domain.Book, error) {
 // The shared metadata upsert leaves local_content_hash to the cache methods.
 func putBook(b domain.Book) sqlite.Statement {
 	return stmt(`INSERT INTO books (`+bookColumns+`) VALUES
-		(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET title = excluded.title, author = excluded.author,
 		dynasty_or_genre = excluded.dynasty_or_genre, cover_hash = excluded.cover_hash, content_hash = excluded.content_hash,
 		content_size = excluded.content_size, raw_filename = excluded.raw_filename, raw_size = excluded.raw_size,
@@ -163,11 +181,11 @@ func putBook(b domain.Book) sqlite.Statement {
 		is_starred = excluded.is_starred, starred_ver_c = excluded.starred_ver_c, starred_ver_i = excluded.starred_ver_i,
 		sort_order = excluded.sort_order, sort_ver_c = excluded.sort_ver_c, sort_ver_i = excluded.sort_ver_i,
 		created_at = excluded.created_at, deleted = excluded.deleted, deleted_at = excluded.deleted_at,
-		deleted_ver_c = excluded.deleted_ver_c, deleted_ver_i = excluded.deleted_ver_i`,
+		deleted_ver_c = excluded.deleted_ver_c, deleted_ver_i = excluded.deleted_ver_i, content_path = excluded.content_path`,
 		b.ID, b.Title, b.Author, b.DynastyOrGenre, b.CoverHash, b.ContentHash, b.ContentSize, b.RawFilename, b.RawSize,
 		b.PoemCount, b.ContentVer.Counter, b.ContentVer.InstallID, b.GroupID, b.GroupVer.Counter, b.GroupVer.InstallID,
 		b.IsStarred, b.StarredVer.Counter, b.StarredVer.InstallID, b.SortOrder, b.SortVer.Counter, b.SortVer.InstallID,
-		b.CreatedAt, b.Deleted, b.DeletedAt, b.DeletedVer.Counter, b.DeletedVer.InstallID)
+		b.CreatedAt, b.Deleted, b.DeletedAt, b.DeletedVer.Counter, b.DeletedVer.InstallID, b.ContentPath)
 }
 
 func (s *Store) UpsertImportedBook(ctx context.Context, book domain.Book, sp *domain.SPBook) error {
@@ -190,7 +208,15 @@ func (s *Store) UpsertImportedBookWithUpload(ctx context.Context, book domain.Bo
 					return nil, err
 				}
 			}
-			book.GroupVer, book.StarredVer, book.SortVer = v, v, v
+			if book.GroupVer.IsZero() {
+				book.GroupVer = v
+			}
+			if book.StarredVer.IsZero() {
+				book.StarredVer = v
+			}
+			if book.SortVer.IsZero() {
+				book.SortVer = v
+			}
 			if book.CreatedAt == 0 {
 				book.CreatedAt = now
 			}
@@ -355,7 +381,7 @@ func (s *Store) UpdateBookParsedContentMeta(ctx context.Context, bookID, content
 			return nil, err
 		}
 		return []sqlite.Statement{
-			stmt(`UPDATE books SET content_hash = ?, content_size = ?, content_ver_c = ?, content_ver_i = ?, local_content_hash = ? WHERE id = ? AND deleted = 0`,
+			stmt(`UPDATE books SET content_hash = ?, content_size = ?, content_path = '', content_ver_c = ?, content_ver_i = ?, local_content_hash = ? WHERE id = ? AND deleted = 0`,
 				contentHash, contentSize, v.Counter, v.InstallID, contentHash, bookID),
 		}, nil
 	})
@@ -387,6 +413,15 @@ func (s *Store) ListBooks(ctx context.Context, groupID string) ([]domain.Book, e
 
 func (s *Store) GetBook(ctx context.Context, bookID string) (domain.Book, error) {
 	r, err := s.firstRow(ctx, `SELECT `+localBookColumns+` FROM books WHERE id = ? AND deleted = 0`, bookID)
+	if err != nil {
+		return domain.Book{}, err
+	}
+	return decodeLocalBook(r)
+}
+
+// GetBookIncludingDeleted 按 bookID 查询书目（包含永久删除墓碑），用于 inbox 消费幂等判定。
+func (s *Store) GetBookIncludingDeleted(ctx context.Context, bookID string) (domain.Book, error) {
+	r, err := s.firstRow(ctx, `SELECT `+localBookColumns+` FROM books WHERE id = ?`, bookID)
 	if err != nil {
 		return domain.Book{}, err
 	}

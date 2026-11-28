@@ -787,3 +787,38 @@ func TestSetBooksGroupBatch(t *testing.T) {
 		t.Fatalf("expected error for non-existent target group")
 	}
 }
+
+func TestStoreContentPathAndGetBookIncludingDeleted(t *testing.T) {
+	s, ctx := openTestStore(t), t.Context()
+	book, sp := importTestBook(t, s, "bpath")
+	book.ContentPath = "builds/att123/parsed.spbook.json.gz"
+	book.GroupVer = domain.Version{Counter: 9, InstallID: "tm-web"}
+	must(t, s.UpsertImportedBook(ctx, book, sp))
+
+	got, err := s.GetBook(ctx, book.ID)
+	must(t, err)
+	if got.ContentPath != "builds/att123/parsed.spbook.json.gz" {
+		t.Fatalf("ContentPath = %q, want builds/att123/parsed.spbook.json.gz", got.ContentPath)
+	}
+
+	must(t, s.DeleteBook(ctx, book.ID))
+	if _, err := s.GetBook(ctx, book.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for deleted GetBook, got %v", err)
+	}
+	tomb, err := s.GetBookIncludingDeleted(ctx, book.ID)
+	must(t, err)
+	if !tomb.Deleted || tomb.ID != book.ID {
+		t.Fatalf("GetBookIncludingDeleted = %+v", tomb)
+	}
+
+	// 验证分组活跃判定
+	g, err := s.CreateGroup(ctx, "临时组")
+	must(t, err)
+	if ok, err := s.IsActiveGroup(ctx, g.ID); err != nil || !ok {
+		t.Fatalf("IsActiveGroup(active) = %v, %v", ok, err)
+	}
+	must(t, s.DissolveGroup(ctx, g.ID))
+	if ok, err := s.IsActiveGroup(ctx, g.ID); err != nil || ok {
+		t.Fatalf("IsActiveGroup(dissolved) = %v, %v", ok, err)
+	}
+}

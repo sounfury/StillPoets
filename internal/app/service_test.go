@@ -367,7 +367,10 @@ func TestSyncPersistsRemoteDeviceRevsAndSkipsUnchangedGET(t *testing.T) {
 	mu.Lock()
 	got := maps.Clone(requests)
 	mu.Unlock()
-	want := map[string]int{"PROPFIND /dav/StillPoets/state/": 1}
+	want := map[string]int{
+		"PROPFIND /dav/StillPoets/state/": 1,
+		"PROPFIND /dav/StillPoets/inbox/": 1,
+	}
 	if !maps.Equal(got, want) {
 		t.Errorf("unchanged sync requests = %v, want %v", got, want)
 	}

@@ -152,6 +152,8 @@ func mergeOneBook(x, y domain.Book) domain.Book {
 	} else if cmp == 0 {
 		if x.ContentHash != y.ContentHash {
 			useXContent = x.ContentHash > y.ContentHash
+		} else if x.ContentPath != y.ContentPath {
+			useXContent = x.ContentPath > y.ContentPath
 		} else {
 			useXContent = x.Title >= y.Title
 		}
@@ -163,6 +165,7 @@ func mergeOneBook(x, y domain.Book) domain.Book {
 		out.CoverHash = x.CoverHash
 		out.ContentHash = x.ContentHash
 		out.ContentSize = x.ContentSize
+		out.ContentPath = x.ContentPath
 		out.RawFilename = x.RawFilename
 		out.RawSize = x.RawSize
 		out.PoemCount = x.PoemCount
@@ -174,6 +177,7 @@ func mergeOneBook(x, y domain.Book) domain.Book {
 		out.CoverHash = y.CoverHash
 		out.ContentHash = y.ContentHash
 		out.ContentSize = y.ContentSize
+		out.ContentPath = y.ContentPath
 		out.RawFilename = y.RawFilename
 		out.RawSize = y.RawSize
 		out.PoemCount = y.PoemCount

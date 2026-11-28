@@ -366,9 +366,9 @@ jobs:
           - **iOS (IPA)**：内嵌 WidgetKit 桌面小组件（`StillPoetsWidget.appex`），免证书未签名真机包，可使用全能签 / 轻松签 / AltStore / SideStore 自签安装。
 
           ### 本次核心更新
-          - **高清分享卡片导出（Phase 3）**：新增纯 Go 离屏 3× 高清 PNG（1080px 宽、动态自然高度）卡片渲染引擎，所见即所得复用当前自定义字体、棉纸肌理与书封样式；覆盖 **单句卡片**（散页详情 / 阅读器划选）、**整诗长图 / 本诗金句**（阅读器顶栏）、**诗集精选合辑**（目录抽屉 & 完读弹窗）、**完读纪念卡**（完读墙详情）与 **周期读诗报告长图**（统计页顶部周期栏，含热力图、24h 节律与常读诗人榜）五大场景。
-          - **5 套纸书模板 × 5 套纸色与双端直存**：内置极简纸笺、古典印章（双线书框 + 矢量朱文印）、刊物版式、日历诗笺、画册留白 5 套模板，配色打通 App 画册/刊物/暗夜主题并新增宣纸素笺与复古牛皮纸，支持角标开关；新增原生 `photosaver` 模块支持 Android（MediaStore 零权限）与 iOS（PHPhotoLibrary）一键存相册及系统原生纯图分享。
-          - **更新日志抽屉体验优化**：「关于 → 更新日志」下拉抽屉限制仅展示最新前 5 条版本记录，并提供直达 GitHub Releases 的外链入口以便按需查阅更多历史版本。
+          - **零部署 Web 书库管理与 Z-Library 一键投递（油猴脚本）**：新增单文件零依赖油猴脚本 [`scripts/stillpoets-manager.user.js`](https://raw.githubusercontent.com/sounfury/StillPoets/main/scripts/stillpoets-manager.user.js)（支持 GitHub Raw 直装自动更新与 Greasy Fork 同步）；提供独立可信入口的纸书极简风全屏管理台（Shadow DOM 隔离，绝不在第三方页面暴露 WebDAV 密码输入），支持 2A 累计稀疏快照读写（仅管理 `groups` / `books` 绝不污染收藏/散页/进度/统计）、批量移组/标星/软删、安全墓碑原件清理、多本 EPUB 拖拽投递及 Z-Library 详情页复用登录态一键投递。
+          - **WebDAV `inbox/` 任意移动设备无感消费**：新增 `StillPoets/inbox/<bookId>.ready.json` 就绪清单协议与 `Book.ContentPath` 不可变构建路径（SQLite 自动幂等补列，完全兼容旧书）；电脑端投递后，无论接下来先打开 iPhone 还是 Android 平板，均会在同步时自动校验 SHA-256、复用远端原件免重传、写入独立 `builds/<attemptId>/parsed.spbook.json.gz` 防并发覆盖，并在新快照回读验证包含该书后再逐书清理清单。
+          - **切回前台自动防抖同步**：补齐 App 从后台切回前台（`OnAppActivated`）的 15 秒冷却静默同步，先秒拉元数据刷新书架再后台消费新书，电脑端整理的分类与投递的诗集切回手机即无感可见。
           EOF
 
           if gh release view "${TAG}" >/dev/null 2>&1; then

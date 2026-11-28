@@ -550,7 +550,10 @@ func (s *Service) EnsureBookContent(ctx context.Context, bookID string) error {
 		return fmt.Errorf("无法按需下载云端诗集：%w", err)
 	}
 
-	remotePath := booksync.BookParsedPath(book.ID)
+	remotePath, err := booksync.BookParsedPathFor(book)
+	if err != nil {
+		return fmt.Errorf("诗集正文路径异常：%w", err)
+	}
 	raw, _, err := client.GetWithLimit(ctx, remotePath, booksync.MaxSPBookCompressedBytes)
 	if err != nil {
 		return fmt.Errorf("下载诗集正文失败：%w", err)
@@ -1389,11 +1392,20 @@ func (s *Service) SyncNow(ctx context.Context, forcePush bool) (*booksync.SyncRe
 		return nil, err
 	}
 
+	// 第一阶段元数据已落库：先通知书架刷新，确保浏览器整理的分组/书架秒见，不被后续大 EPUB 下载阻塞
+	s.notifyDataChanged()
+
+	// 第二阶段：扫描并无感消费 WebDAV inbox/*.ready.json（任意联网设备先到先消费）
+	var inboxConsumed bool
+	res, inboxConsumed = s.consumeRemoteInbox(runCtx, client, engine, startEpoch, res)
+
 	// 先释放同步串行锁，再派发小组件重建与 UI 回调，避免外部回调重入同步锁（P2-2）
 	release()
 
 	_, _ = s.RebuildWidgetTimeline(context.Background())
-	s.notifyDataChanged()
+	if inboxConsumed {
+		s.notifyDataChanged()
+	}
 
 	if res.PartialSync {
 		s.LogEvent("sync", "partial sync finished (published=%v rev=%d remoteDevices=%d warnings=%d remainingPending=%d)",
@@ -1529,6 +1541,12 @@ func uploadPendingBook(ctx context.Context, engine *booksync.Engine, book domain
 	spBytes, rawBytes, coverBytes, err := readLocalBookAssets(book, item)
 	if err != nil {
 		return err
+	}
+	// 来自 inbox 消费且带不可变构建路径的书目，远端大概率已有浏览器上传的原件，优先校验原件免重传
+	if book.ContentPath != "" {
+		if _, err := engine.UploadInboxParsedAssets(ctx, book, spBytes, coverBytes); err == nil {
+			return nil
+		}
 	}
 	_, err = engine.UploadBookAssets(ctx, book, spBytes, rawBytes, coverBytes)
 	return err

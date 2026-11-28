@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS books (
     cover_hash TEXT NOT NULL DEFAULT '',
     content_hash TEXT NOT NULL DEFAULT '',
     content_size INTEGER NOT NULL DEFAULT 0,
+    content_path TEXT NOT NULL DEFAULT '',
     raw_filename TEXT NOT NULL DEFAULT '',
     raw_size INTEGER NOT NULL DEFAULT 0,
     poem_count INTEGER NOT NULL DEFAULT 0,

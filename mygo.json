@@ -2,7 +2,7 @@
   "name": "StillPoets",
   "slug": "stillpoets",
   "identifier": "app.stillpoets.client",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "icon": "resources/icon.png",
   "urlSchemes": ["stillpoets"],
   "ios": {

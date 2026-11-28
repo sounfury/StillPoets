@@ -47,6 +47,9 @@ const (
 	// 有效读诗事件判定阈值：停留满 5 秒自动记录；若读完短诗（>= 1.5 秒）后切走也计入，过滤快速扫目录噪声。
 	poemDwellConfirmDelay = 5 * time.Second
 	poemDwellMinLeave     = 1500 * time.Millisecond
+
+	// 前台回切自动同步冷却窗口：防止冷启动 WhenReady + 首帧 OnActivate 或高频切屏连打 WebDAV。
+	foregroundSyncCooldown = 15 * time.Second
 )
 
 type poemDwellSession struct {
@@ -218,6 +221,8 @@ type AppUI struct {
 	davHasSecret      bool
 	confirmDisconnect bool
 	confirmDeleteFont string
+	autoSyncRunning   bool
+	lastAutoSyncAt    time.Time
 
 	// 「关于 StillPoets」二级页与自动更新状态（检查更新 / 应用内下载安装 / 更新日志 / 分析日志导出）
 	appUpdater         AppUpdaterBridge
@@ -790,10 +795,38 @@ func (a *AppUI) HandleDeeplink(rawURL string) {
 
 // TriggerStartupSync 应用启动时若已启用 WebDAV，则在后台静默拉取最新元数据；完成后如有挂起的冷启动 Deeplink 则自动重试（P1-7）。
 func (a *AppUI) TriggerStartupSync() {
+	a.triggerAutoSync(true)
+}
+
+// TriggerForegroundSync 应用从后台切回前台时带短冷却窗口静默同步一次，确保电脑端刚整理的分组与投递的新书切回即见。
+func (a *AppUI) TriggerForegroundSync() {
+	a.triggerAutoSync(false)
+}
+
+func (a *AppUI) triggerAutoSync(ignoreCooldown bool) {
 	if !a.svc.LoadWebDAVProfile().Enabled {
 		return
 	}
+	now := time.Now()
+	a.mu.Lock()
+	if a.autoSyncRunning {
+		a.mu.Unlock()
+		return
+	}
+	if !ignoreCooldown && !a.lastAutoSyncAt.IsZero() && now.Sub(a.lastAutoSyncAt) < foregroundSyncCooldown {
+		a.mu.Unlock()
+		return
+	}
+	a.autoSyncRunning = true
+	a.lastAutoSyncAt = now
+	a.mu.Unlock()
+
 	go func() {
+		defer func() {
+			a.mu.Lock()
+			a.autoSyncRunning = false
+			a.mu.Unlock()
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		_, err := a.svc.SyncNow(ctx, false)

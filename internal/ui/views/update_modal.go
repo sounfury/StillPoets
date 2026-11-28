@@ -55,12 +55,14 @@ func (a *AppUI) canInAppUpdate() bool {
 
 // OnAppActivated 在应用冷启动就绪或从后台切回前台时调用：
 // 1. 若用户刚前往系统设置开启「允许安装未知应用」权限后返回，自动衔接调起安装器；
-// 2. 自动静默检查一次远端 GitHub Release 更新，发现新版本时弹出轻量更新小弹窗。
+// 2. 自动静默检查一次远端 GitHub Release 更新，发现新版本时弹出轻量更新小弹窗；
+// 3. 带短冷却静默触发一次 WebDAV 同步，确保电脑端刚整理的书架与投递的新书切回即见。
 func (a *AppUI) OnAppActivated() {
 	if a.tryResumePendingInstallAfterPermission() {
 		return
 	}
 	a.TriggerAutoUpdateCheck()
+	a.TriggerForegroundSync()
 }
 
 // TriggerAutoUpdateCheck 在进入应用时静默检查一次新版本（带极短防重窗口，失败静默不打扰）。

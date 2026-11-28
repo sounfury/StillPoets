@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"path"
 	"strconv"
 	"strings"
 
@@ -26,6 +27,7 @@ const (
 
 	StateDir           = "state"
 	BooksDir           = "books"
+	InboxDir           = "inbox"
 	LegacyManifestPath = "manifest.json"
 
 	ContentTypeGzip = "application/gzip"
@@ -131,9 +133,62 @@ func ParseSnapshotFilename(name string) (installID string, rev uint64, ok bool) 
 	return id, parsedRev, true
 }
 
-// BookParsedPath 返回指定诗集标准化解析包的远端路径。
+// BookParsedPath 返回指定诗集默认标准化解析包的远端路径。
 func BookParsedPath(bookID string) string {
 	return fmt.Sprintf("%s/%s/parsed.spbook.json.gz", BooksDir, bookID)
+}
+
+// BookBuildParsedRelPath 返回不可变构建子路径（相对于 books/<bookId>/）。
+func BookBuildParsedRelPath(attemptID string) string {
+	return fmt.Sprintf("builds/%s/parsed.spbook.json.gz", attemptID)
+}
+
+// NormalizeBookContentPath 校验并归一化 Book.ContentPath（空串代表默认 parsed.spbook.json.gz）。
+// 仅允许 books/<bookId>/ 下的相对路径，禁止路径穿越、前导斜杠或反斜杠。
+func NormalizeBookContentPath(rel string) (string, error) {
+	rel = strings.TrimSpace(rel)
+	if rel == "" {
+		return "", nil
+	}
+	if strings.Contains(rel, "\\") || strings.HasPrefix(rel, "/") || strings.HasSuffix(rel, "/") {
+		return "", fmt.Errorf("sync: invalid book contentPath %q", rel)
+	}
+	for _, seg := range strings.Split(rel, "/") {
+		if seg == "" || seg == "." || seg == ".." || strings.ContainsRune(seg, '\x00') {
+			return "", fmt.Errorf("sync: invalid book contentPath %q", rel)
+		}
+	}
+	cleaned := path.Clean(rel)
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") || strings.HasPrefix(cleaned, "/") {
+		return "", fmt.Errorf("sync: invalid book contentPath %q", rel)
+	}
+	return cleaned, nil
+}
+
+// BookParsedPathFor 返回某本诗集实际对应的远端解析包路径（支持可选不可变 ContentPath，旧书默认走根路径）。
+func BookParsedPathFor(book domain.Book) (string, error) {
+	if !IsValidSafeSegment(book.ID) {
+		return "", fmt.Errorf("sync: invalid book id %q", book.ID)
+	}
+	rel, err := NormalizeBookContentPath(book.ContentPath)
+	if err != nil {
+		return "", err
+	}
+	if rel == "" {
+		return BookParsedPath(book.ID), nil
+	}
+	return fmt.Sprintf("%s/%s/%s", BooksDir, book.ID, rel), nil
+}
+
+// IsValidSafeSegment 校验单个远端路径段（不含路径分隔符、控制字符或相对目录段）。
+func IsValidSafeSegment(seg string) bool {
+	if seg == "" || seg == "." || seg == ".." || len(seg) > 255 {
+		return false
+	}
+	if strings.ContainsAny(seg, "/\\\x00") {
+		return false
+	}
+	return true
 }
 
 // BookRawPath 返回指定诗集原始导入文件的远端路径（保留原文件名+随机短ID）。
@@ -153,7 +208,7 @@ func EnsureWorkspace(ctx context.Context, client *webdav.Client) (*WorkspaceInit
 		return nil, err
 	}
 
-	for _, dir := range []string{StateDir, BooksDir} {
+	for _, dir := range []string{StateDir, BooksDir, InboxDir} {
 		if err := client.EnsureDir(ctx, dir); err != nil {
 			return nil, fmt.Errorf("sync: ensure workspace dir %s: %w", dir, err)
 		}

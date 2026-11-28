@@ -98,6 +98,11 @@ func ParseEPUBFile(filename, bookID string) (*ParseResult, error) {
 
 // ParseEPUBReader parses an EPUB in spine order. IDs derive from bookID and entry order.
 func ParseEPUBReader(r io.ReaderAt, size int64, bookID string) (*ParseResult, error) {
+	return ParseEPUBReaderAtTime(r, size, bookID, 0)
+}
+
+// ParseEPUBReaderAtTime parses an EPUB with an optional deterministic parsedAt timestamp (ms).
+func ParseEPUBReaderAtTime(r io.ReaderAt, size int64, bookID string, parsedAt int64) (*ParseResult, error) {
 	if strings.TrimSpace(bookID) == "" {
 		return nil, fmt.Errorf("parser: bookID is required")
 	}
@@ -133,7 +138,10 @@ func ParseEPUBReader(r io.ReaderAt, size int64, bookID string) (*ParseResult, er
 	if err = xml.Unmarshal(data, &opf); err != nil {
 		return nil, fmt.Errorf("parser: OPF: %w", err)
 	}
-	result := &ParseResult{Book: &domain.SPBook{SchemaVersion: 1, BookID: bookID, SourceFormat: "epub", ParsedAt: domain.NowMillis(), Poems: []domain.Poem{}}}
+	if parsedAt <= 0 {
+		parsedAt = domain.NowMillis()
+	}
+	result := &ParseResult{Book: &domain.SPBook{SchemaVersion: 1, BookID: bookID, SourceFormat: "epub", ParsedAt: parsedAt, Poems: []domain.Poem{}}}
 	book := result.Book
 	if len(opf.Metadata.Titles) > 0 {
 		book.Title = strings.TrimSpace(opf.Metadata.Titles[0])

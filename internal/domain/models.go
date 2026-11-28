@@ -105,11 +105,12 @@ type Book struct {
 	Author         string  `json:"author"`
 	DynastyOrGenre string  `json:"dynastyOrGenre,omitempty"`
 	CoverHash      string  `json:"coverHash,omitempty"`
-	ContentHash    string  `json:"contentHash"`       // parsed.spbook.json.gz 的 SHA-256
-	ContentSize    int64   `json:"contentSize"`       // parsed.spbook.json.gz 字节大小
-	RawFilename    string  `json:"rawFilename"`       // 远端原始文件名，如 海子诗全集_a1b2c3.epub
-	RawSize        int64   `json:"rawSize,omitempty"` // 原始文件字节大小
-	PoemCount      int     `json:"poemCount"`         // 总篇目数
+	ContentHash    string  `json:"contentHash"`           // parsed.spbook.json.gz 的 SHA-256
+	ContentSize    int64   `json:"contentSize"`           // parsed.spbook.json.gz 字节大小
+	ContentPath    string  `json:"contentPath,omitempty"` // 空串默认 parsed.spbook.json.gz；非空时为 books/<bookId>/ 下相对路径
+	RawFilename    string  `json:"rawFilename"`           // 远端原始文件名，如 海子诗全集_a1b2c3.epub
+	RawSize        int64   `json:"rawSize,omitempty"`     // 原始文件字节大小
+	PoemCount      int     `json:"poemCount"`             // 总篇目数
 	ContentVer     Version `json:"contentVer"`
 
 	// 可独立编辑的书架属性

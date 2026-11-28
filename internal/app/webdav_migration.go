@@ -405,7 +405,11 @@ func readLocalBookAssets(book domain.Book, item storage.PendingUpload) (sp, raw,
 }
 
 func readRemoteBookAssets(ctx context.Context, source *webdav.Client, book domain.Book) (sp, raw, cover []byte, err error) {
-	sp, _, err = source.GetWithLimit(ctx, booksync.BookParsedPath(book.ID), booksync.MaxSPBookCompressedBytes)
+	parsedPath, err := booksync.BookParsedPathFor(book)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	sp, _, err = source.GetWithLimit(ctx, parsedPath, booksync.MaxSPBookCompressedBytes)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("读取旧工作区正文失败：%w", err)
 	}

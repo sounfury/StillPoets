@@ -85,4 +85,8 @@
   - 5 类卡片场景与全入口打通：单句卡片（散页详情 / 阅读器划选操作条「出卡」）、整诗长图（阅读器顶栏「出卡」，弹窗内支持一键切「整诗长图 / 本诗金句」）、诗集精选合辑（阅读器目录抽屉 & 完读弹窗）、完读纪念卡（统计完读详情弹窗）、周期读诗报告长图（统计页顶部周期栏「导出报告」，含热力图缩略图/24h 节律柱状图/常读诗人榜）。
   - 5 套排版模板（极简纸笺 / 古典印章 / 刊物版式 / 日历诗笺 / 画册留白）× 5 套纸面配色（画册风 / 刊物风 / 暗夜极简 / 宣纸素笺 / 复古牛皮纸）+ 极轻角标水印开关，统一在「卡片预览与导出」弹窗内实时预览与切换。
   - 双端保存与分享：新增原生模块 `modules/photosaver/`（Android `MediaStore` 零权限直存 `Pictures/StillPoets/`，iOS `PHPhotoLibrary` 存相册并补齐 `mygo.json` `NSPhotoLibraryAddUsageDescription`），系统分享通过 `mygo.Share` 纯图直达社交应用，桌面预览自动回退系统另存为对话框。
+- [x] 零部署 Web 管理与 Z-Library 投递闭环（单文件油猴脚本 + 任意移动设备无感消费 `inbox/`）：
+  - 协议与存储扩展：`domain.Book` 新增可选 `ContentPath` 字段（SQLite 启动幂等自动补列 `content_path`，向下兼容存量旧书）；新增 `StillPoets/inbox/<bookId>.ready.json` 就绪清单协议（含 `RawSize`/`RawSHA256`/`ParserRuleVersion`/初始字段版本）；`parser.ParseEPUBReaderAtTime` 支持固定 `ParsedAt`。
+  - 任意设备无感消费与切回前台同步：`SyncNow` 先完成元数据合并并刷新书架，再扫描 `inbox/*.ready.json`——已入库或永久墓碑直接清理、半传/哈希不符留待重试、新书直读原件免重传并写入不可变 `books/<bookId>/builds/<attemptId>/parsed.spbook.json.gz`，仅在新代次快照回读验证包含该 `bookId` 后逐书删除清单；`OnAppActivated` 补齐 15 秒冷却的前台回切自动同步。
+  - 零部署油猴脚本（`scripts/stillpoets-manager.user.js` + `scripts/stillpoets-manager.test.js`）：纯零依赖可读单文件（兼容 GitHub Raw 直装自动更新与 Greasy Fork 同步），Shadow DOM 纸书风全屏管理页限定于可信入口（绝不在第三方页暴露 WebDAV 密码输入），支持 2A 累计稀疏快照（仅管 `groups`/`books` 绝不污染其余 4 集合）、批量移组/标星/软删、安全墓碑原件回收、拖拽多本 EPUB 投递及 Z-Library 详情页一键复用登录态投递。
 - [ ] 推进 Phase 3（V1.1 其余扩展功能）：单诗微批注与长书评、古诗词竖排阅读。

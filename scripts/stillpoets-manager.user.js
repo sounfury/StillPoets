@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         StillPoets 书库管理与 Z-Library 投递助手
 // @namespace    https://github.com/sounfury/StillPoets
-// @version      0.1.0
+// @version      0.1.1
 // @description  StillPoets 零部署 WebDAV 诗集分组管理、EPUB 批量投递与 Z-Library 一键导入助手
 // @author       sounfury
 // @license      MIT
@@ -1914,27 +1914,91 @@
     return loadZlibHosts().some((dom) => host === dom || host.endsWith('.' + dom));
   }
 
-  function findZLibraryEpubDownloadLink() {
-    const selectors = [
-      'a.addDownloadedBook[href*="/dl/"]',
-      'a[href*="/dl/"][data-format="epub"]',
-      'a[href*="/dl/"]',
-      'a[href*="download"][href*="epub"]',
-    ];
-    for (const sel of selectors) {
-      const links = Array.from(document.querySelectorAll(sel));
-      const epubMatch = links.find((a) => /epub/i.test(a.textContent || '') || /epub/i.test(a.getAttribute('data-format') || ''));
-      if (epubMatch && epubMatch.href) return epubMatch;
-      if (links.length > 0 && links[0].href && (sel.includes('addDownloadedBook') || /epub/i.test(document.body.innerText.slice(0, 4000)))) {
-        return links[0];
+  function isZLibraryBookPage() {
+    return /^\/book\//i.test(location.pathname) || /^\/md5\//i.test(location.pathname);
+  }
+
+  function collectNodesDeep(root, acc = [], depth = 0) {
+    if (!root || depth > 8) return acc;
+    const nodes = root.querySelectorAll ? root.querySelectorAll('*') : [];
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i];
+      acc.push(el);
+      if (el.shadowRoot) {
+        collectNodesDeep(el.shadowRoot, acc, depth + 1);
       }
     }
-    return null;
+    return acc;
+  }
+
+  function resolveCandidateHref(el) {
+    if (!el) return '';
+    const attrs = ['href', 'data-href', 'data-url', 'data-download', 'data-download-url'];
+    for (const attr of attrs) {
+      const val = el.getAttribute ? el.getAttribute(attr) : '';
+      if (val && val !== '#' && !val.startsWith('javascript:')) {
+        try {
+          return new URL(val, location.href).href;
+        } catch { /* ignore invalid url */ }
+      }
+    }
+    if (el.href && typeof el.href === 'string' && !el.href.startsWith('javascript:')) {
+      return el.href;
+    }
+    return '';
+  }
+
+  function findZLibraryEpubDownloadURL() {
+    const all = collectNodesDeep(document);
+
+    // 1. 优先匹配明确的下载链接（含 /dl/、addDownloadedBook、dlButton 等）
+    const dlCandidates = [];
+    for (const el of all) {
+      const url = resolveCandidateHref(el);
+      if (!url) continue;
+      const cls = typeof el.className === 'string' ? el.className : '';
+      const txt = (el.textContent || '').trim();
+      const fmt = (el.getAttribute && (el.getAttribute('data-format') || el.getAttribute('data-extension') || '')) || '';
+      const isDlPath = /\/dl\/|\/download\b|addDownloadedBook|dlButton|download-book/i.test(url + ' ' + cls);
+      if (isDlPath) {
+        dlCandidates.push({ url, isEpub: /epub/i.test(txt + ' ' + fmt + ' ' + url) });
+      }
+    }
+    const epubDl = dlCandidates.find((c) => c.isEpub);
+    if (epubDl) return epubDl.url;
+    if (dlCandidates.length > 0) return dlCandidates[0].url;
+
+    // 2. 匹配新版按钮文本（例如 "EPUB, 4.17 MB"），向上/向下查找关联链接
+    for (const el of all) {
+      const txt = (el.textContent || '').trim();
+      if (!txt || txt.length > 60 || !/\bEPUB\b/i.test(txt)) continue;
+      let cur = el;
+      for (let hop = 0; hop < 4 && cur; hop++) {
+        const u = resolveCandidateHref(cur);
+        if (u && u !== location.href) return u;
+        cur = cur.parentElement || (cur.getRootNode && cur.getRootNode().host) || null;
+      }
+    }
+
+    // 3. 扫描内联 script 中的 "/dl/<id>/<hash>" 路径（新版异步按钮常把直链放在页面数据里）
+    const scripts = document.scripts || [];
+    for (let i = 0; i < scripts.length; i++) {
+      const code = scripts[i].textContent || '';
+      if (!code || !code.includes('/dl/')) continue;
+      const m = code.match(/["'](\/dl\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+(?:\?[^"']*)?)["']/);
+      if (m && m[1]) {
+        try {
+          return new URL(m[1], location.href).href;
+        } catch { /* ignore */ }
+      }
+    }
+    return '';
   }
 
   function extractPageBookTitle() {
-    const h1 = document.querySelector('h1[itemprop="name"], h1.book-title, h1');
-    const raw = (h1 && h1.textContent ? h1.textContent : document.title || 'zlibrary-book').trim();
+    const all = collectNodesDeep(document);
+    const h1 = all.find((el) => el.tagName === 'H1' && (el.textContent || '').trim());
+    const raw = (h1 ? h1.textContent : document.title || 'zlibrary-book').trim();
     return raw.replace(/\s+/g, ' ').slice(0, 80) + '.epub';
   }
 
@@ -1942,20 +2006,21 @@
   :host { all: initial; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
   .fab { display: flex; align-items: center; gap: 7px; padding: 10px 15px; border-radius: 99px; background: #BC5B46; color: #FFF; border: none; cursor: pointer; font-size: 13.5px; font-weight: 500; box-shadow: 0 8px 24px rgba(188,91,70,.32); }
   .fab:hover { background: #A44C39; }
-  .pop { width: 280px; background: #FFF; border: 1px solid #E6E3DA; border-radius: 12px; padding: 14px; box-shadow: 0 12px 32px rgba(0,0,0,.16); margin-bottom: 10px; color: #1C1B19; font-size: 13px; }
+  .pop { width: 300px; background: #FFF; border: 1px solid #E6E3DA; border-radius: 12px; padding: 14px; box-shadow: 0 12px 32px rgba(0,0,0,.16); margin-bottom: 10px; color: #1C1B19; font-size: 13px; }
   .pop h4 { margin: 0 0 8px; font-size: 14px; }
-  select { width: 100%; padding: 6px 8px; border-radius: 7px; border: 1px solid #D8D3C6; margin-bottom: 10px; font: inherit; }
-  .row { display: flex; justify-content: space-between; gap: 8px; }
+  select, input[type="text"] { width: 100%; padding: 6px 8px; border-radius: 7px; border: 1px solid #D8D3C6; margin-bottom: 8px; font: inherit; box-sizing: border-box; }
+  .row { display: flex; justify-content: space-between; gap: 8px; margin-top: 4px; }
   button.act { flex: 1; padding: 7px 10px; border-radius: 7px; border: 1px solid #DDD8CC; background: #FFF; cursor: pointer; font: inherit; }
   button.act.pri { background: #BC5B46; color: #FFF; border-color: #BC5B46; }
   button.act:disabled { opacity: .5; cursor: not-allowed; }
-  .st { margin-top: 8px; font-size: 12px; color: #5C574E; line-height: 1.45; }
+  .st { margin-top: 8px; font-size: 12px; color: #5C574E; line-height: 1.45; word-break: break-word; }
+  .sub-link { margin-top: 8px; font-size: 12px; color: #7C776C; display: flex; justify-content: space-between; align-items: center; }
+  .link-btn { background: none; border: none; color: #BC5B46; cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
   `;
 
   function mountZLibraryQuickButton() {
     if (!isZLibraryHost()) return;
-    const dlLink = findZLibraryEpubDownloadLink();
-    if (!dlLink) return;
+    if (!isZLibraryBookPage() && !findZLibraryEpubDownloadURL()) return;
     if (document.getElementById('stillpoets-zlib-btn')) return;
 
     const host = document.createElement('div');
@@ -1969,6 +2034,74 @@
     let open = false;
     let busy = false;
     let statusText = '';
+    let manualUrl = '';
+    let showManualInput = false;
+
+    async function runDeliverFromURL(targetUrl, grpId) {
+      const cfg = loadSavedConfig();
+      if (!cfg || !cfg.baseURL) {
+        statusText = '尚未配置 WebDAV，请先点击「打开书库」完成连接配置。';
+        draw();
+        return;
+      }
+      GM_setValue(STORAGE_KEYS.lastUploadGroupId, grpId);
+      busy = true;
+      statusText = '正在复用当前登录态下载 EPUB…';
+      draw();
+      try {
+        const resp = await fetch(targetUrl, { credentials: 'include', redirect: 'follow' });
+        if (!resp.ok) throw new Error(`站点返回 HTTP ${resp.status}`);
+        const ct = (resp.headers.get('content-type') || '').toLowerCase();
+        const bytes = new Uint8Array(await resp.arrayBuffer());
+        if (ct.includes('text/html') || !isZipMagic(bytes)) {
+          throw new Error('返回内容不是有效的 EPUB（可能是限额提示、需先登录或跳转页），请点击下方「本地选文件投递」');
+        }
+        let filename = extractPageBookTitle();
+        const cd = resp.headers.get('content-disposition') || '';
+        const fnMatch = cd.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
+        if (fnMatch) filename = decodePathSafe(fnMatch[1] || fnMatch[2] || filename);
+        const client = new WebDAVClient(cfg);
+        const session = new StillPoetsSyncSession(client);
+        await session.deliverEPUB(bytes, filename, grpId, 'zlibrary', (msg) => {
+          statusText = msg;
+          draw();
+        });
+        statusText = '✓ 已投递到 WebDAV 收件箱！打开手机或平板同步即自动解析入库。';
+      } catch (err) {
+        statusText = `✗ ${err.message}`;
+      } finally {
+        busy = false;
+        draw();
+      }
+    }
+
+    async function runDeliverFromFile(file, grpId) {
+      const cfg = loadSavedConfig();
+      if (!cfg || !cfg.baseURL) {
+        statusText = '尚未配置 WebDAV，请先点击「打开书库」完成连接配置。';
+        draw();
+        return;
+      }
+      GM_setValue(STORAGE_KEYS.lastUploadGroupId, grpId);
+      busy = true;
+      statusText = `正在读取 ${file.name}…`;
+      draw();
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const client = new WebDAVClient(cfg);
+        const session = new StillPoetsSyncSession(client);
+        await session.deliverEPUB(bytes, file.name, grpId, 'zlibrary', (msg) => {
+          statusText = msg;
+          draw();
+        });
+        statusText = '✓ 已投递到 WebDAV 收件箱！打开手机或平板同步即自动解析入库。';
+      } catch (err) {
+        statusText = `✗ ${err.message}`;
+      } finally {
+        busy = false;
+        draw();
+      }
+    }
 
     function draw() {
       const cachedGroups = GM_getValue(STORAGE_KEYS.cachedGroups, []);
@@ -1977,54 +2110,49 @@
         h('option', { value: '', selected: !lastGroup }, '默认（全部诗集）'),
         cachedGroups.map((g) => h('option', { value: g.id, selected: g.id === lastGroup }, g.name))
       );
+      const urlInput = showManualInput ? h('input', {
+        type: 'text',
+        placeholder: '粘贴右键复制的 EPUB 下载链接…',
+        value: manualUrl,
+        disabled: busy,
+        onInput: (e) => { manualUrl = e.target.value; },
+      }) : null;
+      const localFileInput = h('input', {
+        type: 'file',
+        accept: '.epub',
+        style: 'display:none',
+        onChange: (e) => {
+          const f = e.target.files && e.target.files[0];
+          e.target.value = '';
+          if (f) runDeliverFromFile(f, grpSelect.value);
+        },
+      });
 
       const pop = open ? h('div', { className: 'pop' },
         h('h4', null, '投递到 StillPoets'),
         grpSelect,
+        urlInput,
         h('div', { className: 'row' },
           h('button', { className: 'act', onClick: () => GM_openInTab(MANAGER_ENTRY_URL, { active: true }) }, '打开书库'),
           h('button', {
             className: 'act pri',
             disabled: busy,
-            onClick: async () => {
-              const cfg = loadSavedConfig();
-              if (!cfg || !cfg.baseURL) {
-                statusText = '尚未配置 WebDAV，请点击「打开书库」先完成连接配置。';
+            onClick: () => {
+              const detected = manualUrl.trim() || findZLibraryEpubDownloadURL();
+              if (!detected) {
+                showManualInput = true;
+                statusText = '未能自动识别到直链（按钮可能由页面脚本动态触发）。可右键「EPUB」按钮复制链接粘到上方，或直接下载后点下方「本地选文件」。';
                 draw();
                 return;
               }
-              const grpId = grpSelect.value;
-              GM_setValue(STORAGE_KEYS.lastUploadGroupId, grpId);
-              busy = true;
-              statusText = '正在复用当前登录态下载 EPUB…';
-              draw();
-              try {
-                const resp = await fetch(dlLink.href, { credentials: 'include', redirect: 'follow' });
-                if (!resp.ok) throw new Error(`站点返回 HTTP ${resp.status}`);
-                const ct = (resp.headers.get('content-type') || '').toLowerCase();
-                const bytes = new Uint8Array(await resp.arrayBuffer());
-                if (ct.includes('text/html') || !isZipMagic(bytes)) {
-                  throw new Error('返回内容不是有效的 EPUB（可能是限额提示或跳转页），请手动下载后拖入书库管理页');
-                }
-                let filename = extractPageBookTitle();
-                const cd = resp.headers.get('content-disposition') || '';
-                const fnMatch = cd.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
-                if (fnMatch) filename = decodePathSafe(fnMatch[1] || fnMatch[2] || filename);
-                const client = new WebDAVClient(cfg);
-                const session = new StillPoetsSyncSession(client);
-                await session.deliverEPUB(bytes, filename, grpId, 'zlibrary', (msg) => {
-                  statusText = msg;
-                  draw();
-                });
-                statusText = '✓ 已投递到 WebDAV 收件箱！打开手机或平板同步即自动解析入库。';
-              } catch (err) {
-                statusText = `✗ ${err.message}`;
-              } finally {
-                busy = false;
-                draw();
-              }
+              runDeliverFromURL(detected, grpSelect.value);
             },
           }, busy ? '投递中…' : '立即投递')
+        ),
+        localFileInput,
+        h('div', { className: 'sub-link' },
+          h('button', { className: 'link-btn', disabled: busy, onClick: () => localFileInput.click() }, '本地选 EPUB 投递'),
+          h('button', { className: 'link-btn', disabled: busy, onClick: () => { showManualInput = !showManualInput; draw(); } }, showManualInput ? '收起链接框' : '手动贴下载链接')
         ),
         statusText ? h('div', { className: 'st' }, statusText) : null
       ) : null;
@@ -2034,6 +2162,21 @@
     }
 
     draw();
+  }
+
+  // 监听 SPA 路由与异步加载的 Z-Library 详情页
+  function watchZLibraryPage() {
+    if (!isZLibraryHost()) return;
+    mountZLibraryQuickButton();
+    let timer = null;
+    const obs = new MutationObserver(() => {
+      if (document.getElementById('stillpoets-zlib-btn')) return;
+      clearTimeout(timer);
+      timer = setTimeout(mountZLibraryQuickButton, 300);
+    });
+    if (document.body) {
+      obs.observe(document.body, { childList: true, subtree: true });
+    }
   }
   // ============================================================================
   // 6. 入口注册
@@ -2052,7 +2195,7 @@
   if (isManagerEntryPage()) {
     mountManagerApp();
   } else {
-    mountZLibraryQuickButton();
+    watchZLibraryPage();
   }
 
   window.addEventListener('hashchange', () => {

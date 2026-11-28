@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         StillPoets 书库管理与 Z-Library 投递助手
 // @namespace    https://github.com/sounfury/StillPoets
-// @version      0.1.4
+// @version      0.1.5
 // @description  StillPoets 零部署 WebDAV 诗集分组管理、EPUB 批量投递与 Z-Library 一键导入助手
 // @author       sounfury
 // @license      MIT
@@ -474,6 +474,53 @@
     return true;
   }
 
+  function decodePathSafe(p) {
+    try {
+      return decodeURIComponent(p);
+    } catch {
+      return p;
+    }
+  }
+
+  function tryFixLatin1UTF8(str) {
+    if (!str) return str;
+    let hasHighLatin1 = false;
+    for (let i = 0; i < str.length; i++) {
+      const code = str.charCodeAt(i);
+      if (code > 0xff) return str;
+      if (code >= 0x80) hasHighLatin1 = true;
+    }
+    if (!hasHighLatin1) return str;
+    try {
+      const bytes = new Uint8Array(str.length);
+      for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i);
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      return str;
+    }
+  }
+
+  function parseContentDispositionFilename(cd, fallback) {
+    const raw = String(cd || '');
+    // 1. 严格优先解析 RFC 5987 filename*=UTF-8''...
+    const star = raw.match(/filename\*\s*=\s*(?:UTF-8|utf-8)''([^;\r\n]+)/i);
+    let name = '';
+    if (star && star[1]) {
+      name = decodePathSafe(star[1].trim().replace(/^["']|["']$/g, ''));
+    } else {
+      // 2. 退回 filename="..."，自动还原 HTTP 头把 UTF-8 字节按 Latin-1 解码产生的乱码
+      const plain = raw.match(/filename\s*=\s*"([^"]+)"|filename\s*=\s*([^;\r\n]+)/i);
+      if (plain) {
+        const candidate = (plain[1] || plain[2] || '').trim();
+        name = tryFixLatin1UTF8(decodePathSafe(candidate));
+      }
+    }
+    if (!name) return fallback;
+    // 顺手精简 Z-Library 常见的域名尾注，保留干净书名
+    name = name.replace(/\s*\((?:[^)]*z-?lib[^)]*)\)/gi, '').trim();
+    return name || fallback;
+  }
+
   // 允许在 Node.js 单元测试中直接导入核心纯函数验证与 Go 协议一致性
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
@@ -493,6 +540,7 @@
       validateDecodedSnapshot,
       isZipMagic,
       buildSafeRawFilename,
+      parseContentDispositionFilename,
     };
     return;
   }
@@ -757,14 +805,6 @@
       if (res.status < 200 || res.status >= 300) {
         throw new Error(`删除 ${relPath} 失败 (HTTP ${res.status})`);
       }
-    }
-  }
-
-  function decodePathSafe(p) {
-    try {
-      return decodeURIComponent(p);
-    } catch {
-      return p;
     }
   }
 
@@ -2200,10 +2240,7 @@
           const shortFinal = (res.finalUrl || '').replace(/^https?:\/\/[^/]+/, '');
           throw new Error(`返回的不是 EPUB（请求 ${shortTarget} → ${shortFinal || '同址'}，类型 ${ct || '未知'}${hint}）；可展开「更多」手动选文件投递`);
         }
-        let filename = extractPageBookTitle();
-        const cd = getHeader('content-disposition');
-        const fnMatch = cd.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
-        if (fnMatch) filename = decodePathSafe(fnMatch[1] || fnMatch[2] || filename);
+        const filename = parseContentDispositionFilename(getHeader('content-disposition'), extractPageBookTitle());
         const client = new WebDAVClient(cfg);
         const session = new StillPoetsSyncSession(client);
         await session.deliverEPUB(bytes, filename, grpId, 'zlibrary', (msg) => {

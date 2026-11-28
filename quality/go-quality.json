@@ -1,0 +1,9 @@
+{
+  "roots": ["main.go", "internal", "modules"],
+  "excludeSuffixes": ["_test.go"],
+  "fileLength": 600,
+  "cyclomatic": 12,
+  "cognitive": 15,
+  "nesting": 4,
+  "params": 5
+}

@@ -1,0 +1,32 @@
+{
+  "minLines": 5,
+  "minTokens": 50,
+  "threshold": 0,
+  "mode": "mild",
+  "noGitignore": true,
+  "maxSize": "1gb",
+  "reporters": ["json", "console", "threshold"],
+  "absolute": true,
+  "failOnEmpty": true,
+  "ignorePattern": [
+    "(?m)^import\\s+.+$",
+    "(?m)^package\\s+.+$"
+  ],
+  "ignore": [
+    "**/.git/**",
+    "**/.mygo/**",
+    "**/build/**",
+    "**/.gradle/**",
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/test-books/**",
+    "**/.woodpecker/**",
+    "**/.github/workflows/**",
+    "**/quality/**",
+    "**/docs/**",
+    "**/resources/**/*.svg",
+    "**/*.md",
+    "**/*_test.go",
+    "**/*.test.js"
+  ]
+}
